@@ -945,3 +945,43 @@ fn stored_credential_key(provider_name: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod live_antigravity_discovery_test {
+    use super::*;
+
+    #[test]
+    fn probes_antigravity_manager_with_stored_key() {
+        let home = crate::client::native_index::user_home();
+        let models_path = home.join(".pi").join("agent").join("models.json");
+        let Ok(raw) = std::fs::read_to_string(&models_path) else { return; };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else { return; };
+        let Some(provider) = parsed.get("providers").and_then(|p| p.get("antigravity")) else { return; };
+
+        let key = resolve_provider_key(provider, "antigravity");
+        assert!(key.is_some(), "antigravity apiKey should be found in models.json: {key:?}");
+        assert_eq!(key.as_deref(), Some("sk-dcd0bdc0b8f24465a7c9e991299c4cdc"));
+
+        // Only run the live network probe if 8045 is currently listening
+        let addr: std::net::SocketAddr = "127.0.0.1:8045".parse().unwrap();
+        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_err() {
+            return;
+        }
+
+        let client = PiDaemonClient::new("http://127.0.0.1:38471", "test", "test");
+        let (tx, rx) = smol::channel::bounded(1);
+        let prov = provider.clone();
+        tokio_runtime().spawn(async move {
+            let res = client.discover_models_from_provider("antigravity", &prov).await;
+            let _ = tx.send(res).await;
+        });
+        let result = smol::block_on(rx.recv()).unwrap();
+        assert!(result.is_ok(), "discovery should succeed: {:?}", result.err());
+        let payload = result.unwrap();
+        let models = payload["models"].as_array().expect("models array");
+        assert!(!models.is_empty(), "should discover models from 8045");
+        let first = &models[0];
+        eprintln!("[test] discovered {} models from 8045! first={:?}", models.len(), first);
+        assert!(models.iter().any(|m| m["reasoning"] == true), "should discover reasoning capabilities");
+    }
+}
