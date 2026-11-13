@@ -2,11 +2,12 @@ use crate::app_state::{AppState, SettingsAddKind};
 use crate::i18n::{AppLocale, format_commas, tr};
 use crate::settings::SETTINGS_BTN_W;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
-use gpui_kit::{App, Entity, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::{App, Entity, IntoElement as _, ParentElement as _, SharedString, Styled as _, div, px};
 use serde_json::json;
 
 pub fn subagents_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App) -> SettingPage {
@@ -296,61 +297,77 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
         .item(
             SettingItem::new(
                 tr(locale, "settings.pluginManagement"),
-                SettingField::render(move |_, _, _| {
+                SettingField::render({
                     let app_btn = app_add_plugin.clone();
                     let app_upd = app_upd_all.clone();
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("add-plugin-btn")
-                                .primary()
-                                .small()
-                                .h(px(28.))
-                                .w(SETTINGS_BTN_W)
-                                .icon(IconName::Plus)
-                                .label(tr(locale, "settings.add"))
-                                .on_click(move |_, _, cx| {
-                                    app_btn.update(cx, |s, cx| {
-                                        s.settings_add_kind = Some(SettingsAddKind::Plugin);
-                                        cx.notify();
-                                    });
-                                }),
-                        )
-                        .child(
+                    let app_read_btn = app_state.clone();
+                    move |_, _, cx| {
+                        let is_upd = app_read_btn.read(cx).plugins_updating;
+                        let app_btn = app_btn.clone();
+                        let app_upd = app_upd.clone();
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("add-plugin-btn")
+                                    .primary()
+                                    .small()
+                                    .h(px(28.))
+                                    .w(SETTINGS_BTN_W)
+                                    .icon(IconName::Plus)
+                                    .label(tr(locale, "settings.add"))
+                                    .on_click(move |_, _, cx| {
+                                        app_btn.update(cx, |s, cx| {
+                                            s.settings_add_kind = Some(SettingsAddKind::Plugin);
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .child({
                             Button::new("update-all-plugins-btn")
                                 .outline()
                                 .small()
                                 .h(px(28.))
                                 .w(SETTINGS_BTN_W)
+                                .disabled(is_upd)
+                                .loading(is_upd)
+                                .loading_icon(Icon::new(crate::icons::LoaderCircleIcon))
                                 .icon(IconName::RefreshCw)
-                                .label(tr(locale, "settings.updateAll"))
+                                .label(if is_upd {
+                                    tr(locale, "settings.updating")
+                                } else {
+                                    tr(locale, "settings.updateAll")
+                                })
                                 .on_click(move |_, _, cx| {
                                     app_upd.update(cx, |s, cx| {
-                                        if s.sidecar_connected {
+                                        if s.sidecar_connected && !s.plugins_updating {
+                                            s.plugins_updating = true;
+                                            cx.notify();
                                             let client = s.client.clone();
                                             let cwd = s.active_cwd.to_string_lossy().into_owned();
                                             let entity = cx.entity().clone();
                                             cx.spawn(async move |_, cx| {
-                                                if let Ok(res) = client
+                                                let res = client
                                                     .plugin_action(json!({
                                                         "cwd": cwd,
                                                         "action": "update",
                                                     }))
-                                                    .await
-                                                {
-                                                    let _ = entity.update(cx, |s, cx| {
-                                                        s.apply_plugins_response(&res);
-                                                        cx.notify();
-                                                    });
-                                                }
+                                                    .await;
+                                                let _ = entity.update(cx, |s, cx| {
+                                                    s.plugins_updating = false;
+                                                    if let Ok(val) = res {
+                                                        s.apply_plugins_response(&val);
+                                                    }
+                                                    cx.notify();
+                                                });
                                             })
                                             .detach();
                                         }
                                     });
-                                }),
-                        )
+                                })
+                        })
+                    }
                 }),
             ),
         );
@@ -428,7 +445,13 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                                 cx.notify();
                                             });
                                         }),
-                                ),
+                                )
+                                .children(app_read.read(cx).plugins_updating.then(|| {
+                                    Spinner::new()
+                                        .icon(Icon::new(crate::icons::LoaderCircleIcon))
+                                        .xsmall()
+                                        .color(cx.theme().primary)
+                                }))
                         )
                         .child({
                             let src_for_del = src_w.clone();

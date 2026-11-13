@@ -7,7 +7,9 @@ use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::component::tag::Tag;
+use std::time::Duration;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, IndexPath, Selectable as _, Sizable as _,
     StyledExt as _, h_flex, v_flex,
@@ -634,7 +636,20 @@ impl SettingsAddDialogView {
     }
 
     pub fn render_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(kind) = self.app_state.read(cx).settings_add_kind.clone() else {
+        let is_open = self.app_state.read(cx).settings_add_kind.is_some();
+        let presence = Presence::new("settings-add-dialog-presence", is_open)
+            .transition(
+                Transition::new(Duration::from_millis(160))
+                    .easing(cx.theme().motion_tokens().easing_move.clone()),
+            )
+            .sample(window, cx);
+        if !presence.should_render() {
+            self.last_kind = None;
+            return div().into_any_element();
+        }
+        let progress = presence.progress;
+
+        let Some(kind) = self.app_state.read(cx).settings_add_kind.clone().or_else(|| self.last_kind.clone()) else {
             self.last_kind = None;
             return div().into_any_element();
         };
@@ -1463,7 +1478,7 @@ impl SettingsAddDialogView {
             .flex()
             .items_center()
             .justify_center()
-            .bg(cx.theme().background.opacity(0.65))
+            .bg(cx.theme().background.opacity(0.65 * progress))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
                 this.close(cx);
@@ -1474,6 +1489,8 @@ impl SettingsAddDialogView {
                     .occlude()
                     .w(if is_provider_picker { px(680.) } else if is_model_picker { px(380.) } else if is_info_card { px(460.) } else { px(560.) })
                     .max_w_full()
+                    .mt(px(14.0 * (1.0 - progress)))
+                    .opacity(progress)
                     .p_4()
                     .gap_3()
                     .rounded_xl()
