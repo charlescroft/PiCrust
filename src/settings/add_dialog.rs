@@ -87,6 +87,8 @@ pub struct SettingsAddDialogView {
 
     // Skills search results
     skill_results: Vec<(String, String)>,
+    discovered_models: Vec<ConfiguredModelInfo>,
+    selected_model_ids: std::collections::HashSet<String>,
 }
 
 impl Render for SettingsAddDialogView {
@@ -153,6 +155,8 @@ impl SettingsAddDialogView {
             textarea_a: cx.new(|cx| TextareaState::new(window, cx).rows(5)),
             provider_search_input,
             skill_results: Vec::new(),
+            discovered_models: Vec::new(),
+            selected_model_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -187,6 +191,10 @@ impl SettingsAddDialogView {
             SettingsAddKind::AddModelToProvider { .. } => {
                 self.input_c.update(cx, |s, cx| s.set_value("128000", window, cx));
                 self.input_d.update(cx, |s, cx| s.set_value("8192", window, cx));
+            }
+            SettingsAddKind::DiscoveredModelsPicker { discovered, .. } => {
+                self.discovered_models = discovered.clone();
+                self.selected_model_ids = discovered.iter().map(|m| m.id.clone()).collect();
             }
             SettingsAddKind::EditProvider { provider_id } => {
                 let prefill = {
@@ -344,6 +352,25 @@ impl SettingsAddDialogView {
             return;
         }
 
+        if let SettingsAddKind::DiscoveredModelsPicker { provider_id, .. } = kind {
+            let to_add: Vec<ConfiguredModelInfo> = self
+                .discovered_models
+                .iter()
+                .filter(|m| self.selected_model_ids.contains(&m.id))
+                .cloned()
+                .collect();
+            if to_add.is_empty() {
+                self.close(cx);
+                return;
+            }
+            self.app_state.update(cx, |s, cx| {
+                s.add_models_to_configured_provider(provider_id, to_add, cx);
+                s.settings_add_kind = None;
+                cx.notify();
+            });
+            return;
+        }
+
         if let SettingsAddKind::AddModelToProvider { provider_id } = kind {
             if a.is_empty() {
                 self.error = Some("Model ID is required".to_string());
@@ -401,6 +428,7 @@ impl SettingsAddDialogView {
             let res: anyhow::Result<()> = match kind {
                 SettingsAddKind::AddProviderPicker
                 | SettingsAddKind::AddModelToProvider { .. }
+                | SettingsAddKind::DiscoveredModelsPicker { .. }
                 | SettingsAddKind::EditProvider { .. }
                 | SettingsAddKind::EditModel { .. } => Ok(()),
                 SettingsAddKind::ProviderModel => {
@@ -633,6 +661,9 @@ impl SettingsAddDialogView {
             SettingsAddKind::AddModelToProvider { provider_id } => {
                 format!("{} — {provider_id}", tr(locale, "settings.addModel"))
             }
+            SettingsAddKind::DiscoveredModelsPicker { provider_id, .. } => {
+                format!("{} — {provider_id}", tr(locale, "settings.selectDiscoveredModels"))
+            }
             SettingsAddKind::EditProvider { provider_id } => {
                 format!("{} — {provider_id}", tr(locale, "settings.editingProvider"))
             }
@@ -697,7 +728,8 @@ impl SettingsAddDialogView {
             );
         }
 
-        let is_picker = matches!(kind, SettingsAddKind::AddProviderPicker);
+        let is_provider_picker = matches!(kind, SettingsAddKind::AddProviderPicker);
+        let is_model_picker = matches!(kind, SettingsAddKind::DiscoveredModelsPicker { .. });
 
         match &kind {
             SettingsAddKind::AddProviderPicker => {
@@ -1252,10 +1284,118 @@ impl SettingsAddDialogView {
                     cx,
                 ));
             }
+            SettingsAddKind::DiscoveredModelsPicker { .. } => {
+                let q = self.provider_search_input.read(cx).value().trim().to_lowercase();
+                let filtered: Vec<_> = self
+                    .discovered_models
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| {
+                        q.is_empty()
+                            || m.id.to_lowercase().contains(&q)
+                            || m.name.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                    })
+                    .collect();
+
+                let all_checked = !self.discovered_models.is_empty()
+                    && self.selected_model_ids.len() == self.discovered_models.len();
+
+                body = body
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().child(Input::new(&self.provider_search_input).small()))
+                            .child(
+                                Button::new("toggle-all-disc-models")
+                                    .ghost()
+                                    .xsmall()
+                                    .h(px(26.))
+                                    .label(if all_checked {
+                                        tr(locale, "settings.deselectAll")
+                                    } else {
+                                        tr(locale, "settings.selectAll")
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if this.selected_model_ids.len() == this.discovered_models.len() {
+                                            this.selected_model_ids.clear();
+                                        } else {
+                                            this.selected_model_ids = this.discovered_models.iter().map(|m| m.id.clone()).collect();
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    );
+
+                let mut list = v_flex()
+                    .id("disc-models-scroll")
+                    .max_h(px(260.))
+                    .overflow_y_scroll()
+                    .gap_1();
+
+                for (idx, m) in filtered {
+                    let mid = m.id.clone();
+                    let is_checked = self.selected_model_ids.contains(&mid);
+                    let title = m.name.clone().unwrap_or_else(|| m.id.clone());
+                    let mid_toggle = mid.clone();
+                    list = list.child(
+                        h_flex()
+                            .id(("disc-m-row", idx))
+                            .w_full()
+                            .px_2p5()
+                            .py_1p5()
+                            .gap_2()
+                            .items_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(if is_checked { cx.theme().primary.opacity(0.35) } else { cx.theme().border })
+                            .bg(if is_checked { cx.theme().primary.opacity(0.06) } else { cx.theme().secondary })
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.selected_model_ids.contains(&mid_toggle) {
+                                    this.selected_model_ids.remove(&mid_toggle);
+                                } else {
+                                    this.selected_model_ids.insert(mid_toggle.clone());
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                Checkbox::new(("cb-disc-m", idx))
+                                    .checked(is_checked)
+                                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                        if *checked {
+                                            this.selected_model_ids.insert(mid.clone());
+                                        } else {
+                                            this.selected_model_ids.remove(&mid);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(div().text_xs().font_semibold().truncate().child(SharedString::from(title)))
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(SharedString::from(m.id.clone()))),
+                            )
+                            .children(m.context_window.map(|cw| {
+                                Tag::secondary().small().child(SharedString::from(format!("{} ctx", crate::i18n::format_tokens_km(cw))))
+                            }))
+                            .children(m.reasoning.then(|| {
+                                Tag::secondary().small().child("reasoning")
+                            })),
+                    );
+                }
+
+                body = body.child(list);
+            }
         }
 
         let submit_label = match kind {
             SettingsAddKind::Skill | SettingsAddKind::Plugin => tr(locale, "settings.install"),
+            SettingsAddKind::DiscoveredModelsPicker { .. } => tr(locale, "settings.addSelected"),
             _ => tr(locale, "scheduled.save"),
         };
         let kind_for_submit = kind.clone();
@@ -1278,7 +1418,7 @@ impl SettingsAddDialogView {
                 v_flex()
                     .id("settings-add-card")
                     .occlude()
-                    .w(if is_picker { px(680.) } else { px(560.) })
+                    .w(if is_provider_picker { px(680.) } else if is_model_picker { px(380.) } else { px(560.) })
                     .max_w_full()
                     .p_4()
                     .gap_3()
@@ -1308,7 +1448,7 @@ impl SettingsAddDialogView {
                             .text_color(cx.theme().danger)
                             .child(SharedString::from(err.clone()))
                     }))
-                    .children((!is_picker).then(|| {
+                    .children((!is_provider_picker).then(|| {
                         h_flex()
                             .justify_end()
                             .gap_2()

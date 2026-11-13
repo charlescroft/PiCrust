@@ -793,7 +793,7 @@ pub struct ExtensionStatusItem {
     pub command: Option<SharedString>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfiguredModelInfo {
     pub id: String,
     pub name: Option<String>,

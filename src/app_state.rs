@@ -27,6 +27,10 @@ pub enum SettingsAddKind {
     AddModelToProvider {
         provider_id: String,
     },
+    DiscoveredModelsPicker {
+        provider_id: String,
+        discovered: Vec<ConfiguredModelInfo>,
+    },
     EditProvider {
         provider_id: String,
     },
@@ -1680,6 +1684,62 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn add_models_to_configured_provider(
+        &mut self,
+        provider_id: String,
+        models: Vec<ConfiguredModelInfo>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.sidecar_connected || models.is_empty() {
+            return;
+        }
+        let mut config = if self.configured_providers_raw.is_object() {
+            self.configured_providers_raw.clone()
+        } else {
+            json!({ "providers": {} })
+        };
+
+        if let Some(provs) = config.get_mut("providers").and_then(Value::as_object_mut) {
+            let entry = provs.entry(provider_id.clone()).or_insert_with(|| json!({}));
+            if let Some(pobj) = entry.as_object_mut() {
+                let arr = pobj.entry("models").or_insert_with(|| json!([]));
+                if let Some(vec) = arr.as_array_mut() {
+                    for model in models {
+                        let mut obj = serde_json::Map::new();
+                        obj.insert("id".to_string(), json!(model.id));
+                        if let Some(name) = model.name.filter(|s| !s.trim().is_empty()) {
+                            obj.insert("name".to_string(), json!(name));
+                        }
+                        if let Some(cw) = model.context_window {
+                            obj.insert("contextWindow".to_string(), json!(cw));
+                        }
+                        if let Some(mt) = model.max_tokens {
+                            obj.insert("maxTokens".to_string(), json!(mt));
+                        }
+                        if !model.input.is_empty() {
+                            obj.insert("input".to_string(), json!(model.input));
+                        }
+                        obj.insert("reasoning".to_string(), json!(model.reasoning));
+
+                        vec.retain(|m| m.get("id").and_then(Value::as_str) != Some(model.id.as_str()));
+                        vec.push(Value::Object(obj));
+                    }
+                }
+            }
+        }
+        self.expanded_configured_providers.insert(provider_id);
+        let client = self.client.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            let _ = client.put_models_config(config).await;
+            let _ = entity.update(cx, |s, cx| {
+                s.refresh_from_sidecar(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub fn add_model_to_configured_provider(
         &mut self,
         provider_id: String,
@@ -1773,55 +1833,47 @@ impl AppState {
             };
 
             let mut failure: Option<String> = None;
-            let mut added = 0usize;
+            let mut parsed_models: Vec<ConfiguredModelInfo> = Vec::new();
             match discovered.map_err(anyhow::Error::msg) {
                 Ok(payload) => {
                     if let Some(models_arr) = payload.get("models").and_then(Value::as_array) {
-                        if !models_arr.is_empty() {
-                            if let Some(provs) =
-                                config.get_mut("providers").and_then(Value::as_object_mut)
-                            {
-                                let entry = provs
-                                    .entry(provider_id.clone())
-                                    .or_insert_with(|| json!({}));
-                                if let Some(pobj) = entry.as_object_mut() {
-                                    let arr = pobj.entry("models").or_insert_with(|| json!([]));
-                                    if let Some(vec) = arr.as_array_mut() {
-                                        for item in models_arr {
-                                            let Some(mid) =
-                                                item.get("id").and_then(Value::as_str)
-                                            else {
-                                                continue;
-                                            };
-                                            if !vec.iter().any(|x| {
-                                                x.get("id").and_then(Value::as_str) == Some(mid)
-                                            }) {
-                                                vec.push(item.clone());
-                                                added += 1;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        for item in models_arr {
+                            let Some(mid) = item.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) else { continue };
+                            let name = item.get("name").and_then(Value::as_str).map(String::from);
+                            let context_window = item.get("contextWindow").and_then(Value::as_u64);
+                            let max_tokens = item.get("maxTokens").and_then(Value::as_u64);
+                            let reasoning = item.get("reasoning").and_then(Value::as_bool).unwrap_or(false);
+                            let input = item.get("input").and_then(Value::as_array).map(|arr| {
+                                arr.iter().filter_map(Value::as_str).map(String::from).collect()
+                            }).unwrap_or_else(|| vec!["text".to_string()]);
+                            parsed_models.push(ConfiguredModelInfo {
+                                id: mid.to_string(),
+                                name,
+                                context_window,
+                                max_tokens,
+                                input,
+                                reasoning,
+                                reasoning_declared: true,
+                                thinking_level_map: Default::default(),
+                            });
                         }
                     }
-                    if added > 0 {
-                        if let Err(err) = client.put_models_config(config).await {
-                            failure = Some(err.to_string());
-                        }
-                    } else if failure.is_none() {
-                        failure = Some(
-                            "No new models found for this provider".to_string(),
-                        );
+                    if parsed_models.is_empty() {
+                        failure = Some("No models found for this provider".to_string());
                     }
                 }
                 Err(err) => failure = Some(err.to_string()),
             }
             let _ = entity.update(cx, |s, cx| {
                 s.discovering_provider_id = None;
-                s.discover_error = failure.map(|msg| (pid_for_error, msg));
-                s.expanded_configured_providers
-                    .insert(provider_id.clone());
+                s.discover_error = failure.map(|msg| (pid_for_error.clone(), msg));
+                s.expanded_configured_providers.insert(provider_id.clone());
+                if !parsed_models.is_empty() {
+                    s.settings_add_kind = Some(SettingsAddKind::DiscoveredModelsPicker {
+                        provider_id: pid_for_error,
+                        discovered: parsed_models,
+                    });
+                }
                 s.refresh_from_sidecar(cx);
             });
         })
