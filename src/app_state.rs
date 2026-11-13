@@ -1737,16 +1737,34 @@ impl AppState {
                 .and_then(Value::as_str)
                 .map(|u| !u.trim().is_empty())
                 .unwrap_or(false);
-            let discovered = if has_base_url {
-                client.discover_models_from_provider(&provider_raw).await
+            let mut discovered = if has_base_url {
+                client
+                    .discover_models_from_provider(&provider_id, &provider_raw)
+                    .await
+                .map_err(|e| e.to_string())
             } else {
                 client
-                    .discover_provider_models(&provider_id, provider_raw)
+                    .discover_provider_models(&provider_id, provider_raw.clone())
                     .await
+                    .map_err(|e| e.to_string())
             };
+            // A rejected probe means the key we resolved is not the one the provider
+            // wants; pi's server-side resolver knows every credential shape, so retry
+            // there instead of reporting a bare 401.
+            let rejected = discovered
+                .as_ref()
+                .err()
+                .map(|e| e.contains("401") || e.contains("403") || e.to_lowercase().contains("unauthorized"))
+                .unwrap_or(false);
+            if rejected {
+                discovered = client
+                    .discover_provider_models(&provider_id, provider_raw.clone())
+                    .await
+                    .map_err(|e| e.to_string());
+            }
             let mut failure: Option<String> = None;
             let mut added = 0usize;
-            match discovered {
+            match discovered.map_err(anyhow::Error::msg) {
                 Ok(payload) => {
                     if let Some(models_arr) = payload.get("models").and_then(Value::as_array) {
                         if !models_arr.is_empty() {

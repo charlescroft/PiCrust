@@ -306,6 +306,7 @@ impl PiDaemonClient {
     /// endpoints are stripped first). No pi service is involved.
     pub async fn discover_models_from_provider(
         &self,
+        provider_name: &str,
         provider: &Value,
     ) -> Result<Value> {
         let base = provider
@@ -321,11 +322,10 @@ impl PiDaemonClient {
             .and_then(Value::as_str)
             .unwrap_or("openai-completions")
             .to_string();
-        let api_key = provider
-            .get("apiKey")
-            .and_then(Value::as_str)
-            .filter(|k| !k.starts_with('$') && !k.starts_with('!'))
-            .map(str::to_string);
+        // Credentials come from, in order: a models.json `$ENV` reference (resolved
+        // here), a literal `apiKey`, then pi's own credential store — GET redacts
+        // literal keys, and without a token every authenticated provider answers 401.
+        let api_key = resolve_provider_key(provider, provider_name);
 
         let mut url = build_models_url(&base, &api)?;
         match api.as_str() {
@@ -774,6 +774,25 @@ mod discovery_tests {
     }
 
     #[test]
+    fn resolves_env_and_literal_keys_for_probing() {
+        // SAFETY: single-threaded test setup, no other thread reads the environment.
+        unsafe { std::env::set_var("PI_GPUI_TEST_KEY", "sk-test-123") };
+        let env_ref = serde_json::json!({ "apiKey": "$PI_GPUI_TEST_KEY" });
+        assert_eq!(
+            resolve_provider_key(&env_ref, "unused"),
+            Some("sk-test-123".to_string())
+        );
+        let literal = serde_json::json!({ "apiKey": "sk-literal" });
+        assert_eq!(
+            resolve_provider_key(&literal, "unused"),
+            Some("sk-literal".to_string())
+        );
+        // A shell reference is never executed by the client.
+        let shell = serde_json::json!({ "apiKey": "!echo secret" });
+        assert_eq!(resolve_provider_key(&shell, ""), None);
+    }
+
+    #[test]
     fn parses_openai_anthropic_and_google_lists() {
         let openai = serde_json::json!({ "data": [{ "id": "m-2" }, { "id": "m-1" }] });
         let parsed = parse_models_list(&openai);
@@ -794,4 +813,51 @@ mod discovery_tests {
         assert_eq!(parsed[0]["id"], "gemini-2");
         assert_eq!(parsed[0]["name"], "Gemini 2");
     }
+}
+
+/// Resolves the token used to probe a provider's model list.
+///
+/// Order mirrors pi: a models.json `$ENV` reference (read from the environment),
+/// then a literal `apiKey` when the file was written locally, then pi's own
+/// `~/.pi/agent/auth.json` entry for that provider (api_key `key`, or an OAuth
+/// `access` token). `!command` references are deliberately not executed here.
+pub fn resolve_provider_key(provider: &Value, provider_name: &str) -> Option<String> {
+    let declared = provider.get("apiKey").and_then(Value::as_str);
+    if let Some(raw) = declared {
+        let raw = raw.trim();
+        if let Some(var) = raw.strip_prefix('$') {
+            let name = var.trim_start_matches('{').trim_end_matches('}');
+            if let Ok(value) = std::env::var(name) {
+                if !value.trim().is_empty() {
+                    return Some(value.trim().to_string());
+                }
+            }
+        } else if !raw.is_empty() && !raw.starts_with('!') {
+            return Some(raw.to_string());
+        }
+    }
+    if provider_name.is_empty() {
+        return None;
+    }
+    stored_credential_key(provider_name)
+}
+
+/// Reads a provider credential from pi's credential store.
+fn stored_credential_key(provider_name: &str) -> Option<String> {
+    let path = crate::client::native_index::user_home()
+        .join(".pi")
+        .join("agent")
+        .join("auth.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let entry = parsed.get(provider_name)?;
+    let key = entry
+        .get("key")
+        .or_else(|| entry.get("apiKey"))
+        .or_else(|| entry.get("access"))
+        .or_else(|| entry.get("accessToken"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|k| !k.is_empty())?;
+    Some(key.to_string())
 }
