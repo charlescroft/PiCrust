@@ -150,6 +150,7 @@ pub struct ChatPanel {
     last_tail_sig: Option<(u64, usize, usize, usize, bool)>,
     hovered_turn_idx: Option<usize>,
     nav_window_start: usize,
+    show_all_turns: bool,
 }
 
 impl Focusable for ChatPanel {
@@ -189,6 +190,7 @@ impl ChatPanel {
             last_tail_sig: None,
             hovered_turn_idx: None,
             nav_window_start: 0,
+            show_all_turns: false,
         }
     }
 
@@ -316,6 +318,7 @@ impl ChatPanel {
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
             self.nav_window_start = usize::MAX;
+            self.show_all_turns = false;
             self.scroller.update(cx, |s, cx| {
                 s.reset(new_count, cx);
             });
@@ -421,8 +424,35 @@ impl Render for ChatPanel {
                 .unwrap_or(0)
         };
 
-        let (nav_start, nav_end) = compute_nav_window(turns.len(), active_turn, self.nav_window_start);
-        self.nav_window_start = nav_start;
+        let total_turns = turns.len();
+        let (nav_start, nav_end) = if self.show_all_turns || total_turns <= MAX_NAV_TICKS {
+            (0, total_turns)
+        } else {
+            let initial_start = total_turns.saturating_sub(MAX_NAV_TICKS);
+            if active_turn < initial_start {
+                self.show_all_turns = true;
+                (0, total_turns)
+            } else {
+                (initial_start, total_turns)
+            }
+        };
+        let visible_count = nav_end - nav_start;
+
+        let (tick_h, gap_px) = if visible_count <= 8 {
+            (10.0f32, 8.0f32)
+        } else {
+            let avail = (f32::from(window.viewport_size().height) - 220.0).max(180.0);
+            let t = ((visible_count - 8) as f32 / 40.0).clamp(0.0, 1.0);
+            let th = 10.0 - (10.0 - 4.0) * t;
+            let needed = visible_count as f32 * th;
+            let rem_space = (avail - needed).max(0.0);
+            let gap = if visible_count > 1 {
+                (rem_space / (visible_count - 1) as f32).clamp(1.5, 8.0)
+            } else {
+                8.0
+            };
+            (th, gap)
+        };
 
         let hovered_turn = self
             .hovered_turn_idx
@@ -431,7 +461,7 @@ impl Render for ChatPanel {
         let navigator_gutter = if has_gutter_space && turns.len() >= 2 {
             let mut ticks = v_flex()
                 .w(px(32.))
-                .gap(px(8.))
+                .gap(px(gap_px))
                 .py_2()
                 .items_start();
 
@@ -445,7 +475,7 @@ impl Render for ChatPanel {
                     div()
                         .id(("turn-tick", t_idx))
                         .w(px(30.))
-                        .h(px(10.))
+                        .h(px(tick_h))
                         .flex()
                         .items_center()
                         .cursor_pointer()
@@ -465,7 +495,7 @@ impl Render for ChatPanel {
                         }))
                         .child(
                             div()
-                                .h(if is_active || is_hovered { px(3.5) } else { px(2.5) })
+                                .h(if is_active || is_hovered { px((tick_h * 0.45).max(3.0)) } else { px((tick_h * 0.3).max(2.0)) })
                                 .w(if is_active {
                                     px(24.)
                                 } else if is_hovered {

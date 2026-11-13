@@ -2,6 +2,7 @@ use crate::app_state::{AppState, RightPanelTab};
 use crate::client::types::WorkspaceKind;
 use crate::i18n::tr;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tooltip::Tooltip;
@@ -122,19 +123,38 @@ pub fn render_status_bar(
         );
 
     if let Some(branch_name) = branch {
-        bar = bar.left(Separator::vertical()).left(
-            h_flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap_1p5()
-                .child(Icon::new(IconName::Globe).xsmall())
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().foreground)
-                        .child(branch_name),
-                ),
-        );
+        let branches = get_local_git_branches(&state.active_cwd);
+        let app_switch_branch = app_state.clone();
+        let current_branch = branch_name.to_string();
+
+        let branch_button = Button::new("sb-branch-btn")
+            .ghost()
+            .small()
+            .h(px(26.))
+            .icon(Icon::new(crate::icons::GitBranchIcon))
+            .label(branch_name)
+            .tooltip(tr(locale, "status.switchBranch"))
+            .dropdown_menu_with_anchor(gpui_kit::Anchor::BottomLeft, move |mut menu, _, _| {
+                menu = menu.label(tr(locale, "status.branchesHeading"));
+                for b in &branches {
+                    let b_name = b.clone();
+                    let is_current = b_name == current_branch;
+                    let app_sw = app_switch_branch.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(SharedString::from(b_name.clone()))
+                            .checked(is_current)
+                            .on_click(move |_, _, cx| {
+                                let target = b_name.clone();
+                                app_sw.update(cx, |s, cx| {
+                                    s.switch_git_branch(target, cx);
+                                });
+                            }),
+                    );
+                }
+                menu
+            });
+
+        bar = bar.left(Separator::vertical()).left(branch_button);
     }
 
     bar.right(
@@ -168,4 +188,25 @@ pub fn render_status_bar(
                     }),
             ),
     )
+}
+
+fn get_local_git_branches(cwd: &std::path::Path) -> Vec<String> {
+    use std::process::Command;
+    let Ok(out) = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(&["branch", "--format=%(refname:short)"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
 }

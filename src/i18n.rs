@@ -131,6 +131,11 @@ fn en_text(key: &'static str) -> &'static str {
         "status.running" => "Pi Agent: Running",
         "status.disconnected" => "Pi Agent: Disconnected (click to reconnect)",
         "status.chatWorkspace" => "Chat Workspace",
+        "status.switchBranch" => "Switch Git branch",
+        "status.branchesHeading" => "Git Branches",
+        "sidebar.archiveSession" => "Archive Session",
+        "sidebar.unarchiveSession" => "Unarchive Session",
+        "sidebar.archivedGroup" => "Archived",
         "status.terminal" => "Terminal",
         "status.settings" => "Settings",
 
@@ -612,6 +617,11 @@ fn zh_text(key: &'static str) -> &'static str {
         "status.running" => "Pi Agent：运行中",
         "status.disconnected" => "Pi Agent：未连接（点击重连）",
         "status.chatWorkspace" => "对话工作区",
+        "status.switchBranch" => "切换 Git 分支",
+        "status.branchesHeading" => "Git 分支列表",
+        "sidebar.archiveSession" => "归档会话",
+        "sidebar.unarchiveSession" => "取消归档",
+        "sidebar.archivedGroup" => "已归档",
         "status.terminal" => "终端",
         "status.settings" => "设置",
 

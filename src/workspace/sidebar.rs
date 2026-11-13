@@ -214,6 +214,7 @@ pub fn render_sidebar(
                 running,
                 unread,
                 is_pinned,
+                false,
                 rel_time,
                 active_sid.as_deref(),
                 active_page == WorkspacePage::Chat,
@@ -357,6 +358,7 @@ pub fn render_sidebar(
                     running,
                     unread,
                     is_pinned,
+                    false,
                     rel_time,
                     active_sid.as_deref(),
                     active_page == WorkspacePage::Chat,
@@ -614,6 +616,7 @@ pub fn render_sidebar(
                         running,
                         unread,
                         is_pinned,
+                        false,
                         rel_time,
                         active_sid.as_deref(),
                         active_page == WorkspacePage::Chat,
@@ -629,6 +632,61 @@ pub fn render_sidebar(
         }
 
         scroll_body = scroll_body.child(projects_list);
+    }
+
+    let archived_list: Vec<_> = state
+        .sessions
+        .iter()
+        .filter(|s| s.archived || state.archived_session_ids.contains(&s.id))
+        .map(|s| {
+            let is_run = s.is_running || running_ids.contains(&s.id);
+            let is_unr = unread_ids.contains(&s.id);
+            let rel_time = format_compact_relative_time(s.updated_at.as_deref());
+            (s.id.clone(), s.display_title(), is_run, is_unr, s.pinned, rel_time)
+        })
+        .collect();
+
+    if !archived_list.is_empty() {
+        scroll_body = scroll_body.child(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .pt_3()
+                .child(
+                    h_flex()
+                        .px_2p5()
+                        .py_1()
+                        .items_center()
+                        .gap_1p5()
+                        .child(Icon::new(crate::icons::ArchiveIcon).xsmall().text_color(cx.theme().muted_foreground))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{} ({})", tr(locale, "sidebar.archivedGroup"), format_commas(archived_list.len()))),
+                        ),
+                )
+                .children(archived_list.into_iter().enumerate().map(|(a_idx, (sid, title, is_run, is_unr, is_pin, rel_time))| {
+                    build_session_row(
+                        ("arch-sess", a_idx),
+                        sid,
+                        title,
+                        is_run,
+                        is_unr,
+                        is_pin,
+                        true,
+                        rel_time,
+                        active_sid.as_deref(),
+                        active_page == WorkspacePage::Chat,
+                        rename_state.as_ref(),
+                        app_state,
+                        false,
+                        locale,
+                        cx,
+                    )
+                })),
+        );
     }
 
     v_flex()
@@ -775,6 +833,7 @@ fn build_session_row(
     running: bool,
     unread: bool,
     is_pinned: bool,
+    is_archived: bool,
     rel_time: SharedString,
     active_sid: Option<&str>,
     on_chat_page: bool,
@@ -868,7 +927,7 @@ fn build_session_row(
             });
         })
         .context_menu(move |menu, _, _| {
-            populate_session_popup_menu(menu, &app_ctx, &sid_ctx, is_pinned, locale)
+            populate_session_popup_menu(menu, &app_ctx, &sid_ctx, is_pinned, is_archived, locale)
         })
         .when_session_status_badge(running, unread, cx)
         .child(
@@ -923,6 +982,7 @@ fn build_session_row(
                                         &app_menu,
                                         &sid_m,
                                         is_pinned,
+                                        is_archived,
                                         locale,
                                     )
                                 }),
@@ -1050,16 +1110,19 @@ fn populate_session_popup_menu(
     app_state: &Entity<AppState>,
     sid: &str,
     is_pinned: bool,
+    is_archived: bool,
     locale: AppLocale,
 ) -> PopupMenu {
     let app_ren = app_state.clone();
     let app_fork = app_state.clone();
     let app_pin = app_state.clone();
     let app_del = app_state.clone();
+    let app_arch = app_state.clone();
     let sid_r = sid.to_string();
     let sid_f = sid.to_string();
     let sid_p = sid.to_string();
     let sid_d = sid.to_string();
+    let sid_a = sid.to_string();
 
     menu.item(
         PopupMenuItem::new(tr(locale, "sidebar.rename"))
@@ -1099,8 +1162,21 @@ fn populate_session_popup_menu(
     )
     .separator()
     .item(
+        PopupMenuItem::new(if is_archived {
+            tr(locale, "sidebar.unarchiveSession")
+        } else {
+            tr(locale, "sidebar.archiveSession")
+        })
+        .icon(Icon::new(crate::icons::ArchiveIcon))
+        .on_click(move |_, _, cx| {
+            app_arch.update(cx, |s, cx| {
+                s.toggle_archive_session(sid_a.clone(), cx);
+            });
+        }),
+    )
+    .item(
         PopupMenuItem::new(tr(locale, "sidebar.delete"))
-            .icon(IconName::Delete)
+            .icon(Icon::new(crate::icons::TrashIcon))
             .on_click(move |_, _, cx| {
                 app_del.update(cx, |s, cx| {
                     s.delete_session_by_id(sid_d.clone(), cx);

@@ -123,6 +123,7 @@ pub struct AppState {
     pub unread_session_ids: HashSet<String>,
     pub collapsed_projects: HashSet<String>,
     pub archived_projects: HashSet<String>,
+    pub archived_session_ids: HashSet<String>,
     pub extra_projects: Vec<PathBuf>,
     pub projects_section_collapsed: bool,
     pub chats_section_collapsed: bool,
@@ -453,6 +454,7 @@ impl AppState {
             unread_session_ids: HashSet::new(),
             collapsed_projects: HashSet::new(),
             archived_projects: HashSet::new(),
+            archived_session_ids: HashSet::new(),
             extra_projects: Vec::new(),
             projects_section_collapsed: false,
             chats_section_collapsed: false,
@@ -581,7 +583,7 @@ impl AppState {
     pub fn grouped_project_sessions(&self) -> BTreeMap<String, Vec<&SessionSummary>> {
         let mut map: BTreeMap<String, Vec<&SessionSummary>> = BTreeMap::new();
         for sess in &self.sessions {
-            if sess.archived || sess.pinned {
+            if sess.archived || self.archived_session_ids.contains(&sess.id) || sess.pinned {
                 continue;
             }
             if sess.workspace_kind == Some(WorkspaceKind::Chat) {
@@ -612,6 +614,32 @@ impl AppState {
             }
         }
         map
+    }
+
+    pub fn switch_git_branch(&mut self, branch: String, cx: &mut Context<Self>) {
+        let cwd = self.active_cwd.clone();
+        let target = branch.clone();
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&cwd)
+                .args(&["checkout", &target])
+                .output();
+        });
+        self.active_branch = Some(SharedString::from(branch));
+        cx.notify();
+    }
+
+    pub fn toggle_archive_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session_id) {
+            sess.archived = !sess.archived;
+        }
+        if self.archived_session_ids.contains(&session_id) {
+            self.archived_session_ids.remove(&session_id);
+        } else {
+            self.archived_session_ids.insert(session_id);
+        }
+        cx.notify();
     }
 
     pub fn add_project_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {

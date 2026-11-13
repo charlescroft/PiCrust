@@ -63,3 +63,21 @@ impl IconNamed for LoaderCircleIcon {
         gpui_kit::assets::IconName::LoaderCircle.path()
     }
 }
+
+#[derive(Clone, Copy)]
+pub struct GitBranchIcon;
+
+impl IconNamed for GitBranchIcon {
+    fn path(self) -> SharedString {
+        gpui_kit::assets::IconName::GitBranch.path()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ArchiveIcon;
+
+impl IconNamed for ArchiveIcon {
+    fn path(self) -> SharedString {
+        gpui_kit::assets::IconName::Archive.path()
+    }
+}
