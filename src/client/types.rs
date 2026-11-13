@@ -778,14 +778,6 @@ impl ChatFontSize {
     }
 }
 
-/// One file changed in the project's working tree, for the turn summary card.
-#[derive(Debug, Clone)]
-pub struct ChangedFile {
-    pub path: String,
-    pub added: Option<u64>,
-    pub removed: Option<u64>,
-}
-
 #[derive(Debug, Clone)]
 pub struct TodoWidgetItem {
     pub id: SharedString,

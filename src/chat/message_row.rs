@@ -559,21 +559,9 @@ fn render_assistant_row(
 ) -> AnyElement {
     let mut stack = v_flex().gap_3().w_full().min_w_0();
     let has_answer_text = !row_cache.last_text_snapshot.trim().is_empty();
-    let (active_cwd, thinking_expanded_default, is_last_assistant_message, changed_files) = {
+    let (active_cwd, thinking_expanded_default) = {
         let s = app_state.read(cx);
-        let is_last_asst = s
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == MessageRole::Assistant)
-            .map(|m| m.id)
-            == Some(msg.id);
-        (
-            s.active_cwd.clone(),
-            s.thinking_expanded_default,
-            is_last_asst,
-            s.changed_files.clone(),
-        )
+        (s.active_cwd.clone(), s.thinking_expanded_default)
     };
 
     // Model name displayed ONCE at the top of the assistant turn
@@ -1323,79 +1311,6 @@ fn render_assistant_row(
         }
 
         stack = stack.child(mf_card);
-    }
-
-    // 5b. Working-tree changes after the run settles: catches edits made through
-    //     shell commands or scripts, which the per-turn tool summary cannot see.
-    if is_last_assistant_message && !msg.is_streaming && !changed_files.is_empty() {
-        let app_open = app_state.clone();
-        let count = changed_files.len();
-        let mut card = v_flex()
-            .w_full()
-            .overflow_hidden()
-            .rounded_md()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .items_center()
-                    .gap_2()
-                    .child(Icon::new(IconName::FileText).xsmall())
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_medium()
-                            .child(SharedString::from(if locale == AppLocale::ZhCn {
-                                format!("工作区改动 · {count} 个文件")
-                            } else if count == 1 {
-                                "1 file changed in the working tree".to_string()
-                            } else {
-                                format!("{count} files changed in the working tree")
-                            })),
-                    ),
-            );
-
-        for (idx, f) in changed_files.iter().enumerate() {
-            let app_row = app_open.clone();
-            let abs = resolve_against_cwd(&active_cwd, &f.path);
-            let label = SharedString::from(f.path.clone());
-            card = card.child(
-                h_flex()
-                    .id(("wt-file", msg.id * 100 + idx as u64))
-                    .w_full()
-                    .min_w_0()
-                    .px_3()
-                    .py_1()
-                    .gap_2()
-                    .items_center()
-                    .cursor_pointer()
-                    .hover(|this| this.bg(cx.theme().background.opacity(0.5)))
-                    .on_click(move |_, _, cx| {
-                        let path = abs.clone();
-                        app_row.update(cx, |s, cx| s.open_file(path, cx));
-                    })
-                    .child(Icon::new(IconName::File).xsmall())
-                    .child(div().flex_1().min_w_0().truncate().text_xs().child(label))
-                    .children(f.added.map(|a| {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().success)
-                            .child(format!("+{}", format_commas(a)))
-                    }))
-                    .children(f.removed.map(|d| {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(format!("-{}", format_commas(d)))
-                    })),
-            );
-        }
-
-        stack = stack.child(card);
     }
 
     // 6. Full-width Separator + Footer:

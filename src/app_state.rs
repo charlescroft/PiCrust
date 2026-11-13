@@ -177,7 +177,6 @@ pub struct AppState {
     /// Items the user dismissed from the rpiv-todos panel.
     pub dismissed_todo_ids: std::collections::HashSet<String>,
     /// Files changed in the project working tree, refreshed when a run settles.
-    pub changed_files: Vec<ChangedFile>,
     /// Set once the panel is dismissed: the todo panel stays hidden for the rest
     /// of this session no matter how often the extension re-emits its widget.
     /// Only switching/starting a session clears it.
@@ -443,7 +442,6 @@ impl AppState {
             todos,
             todos_expanded: false,
             dismissed_todo_ids: std::collections::HashSet::new(),
-            changed_files: Vec::new(),
             todos_hidden: false,
             todos_hidden_session: None,
             retry_status: None,
@@ -453,7 +451,6 @@ impl AppState {
         };
 
         // Kick off initial sidecar probe & refresh + lightweight external session watcher
-        state.refresh_changed_files(cx);
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
             smol::Timer::after(std::time::Duration::from_millis(250)).await;
@@ -650,27 +647,6 @@ impl AppState {
         })
         .detach();
         cx.notify();
-    }
-
-    /// Reads the project's working-tree changes (git status + numstat) in the
-    /// background and keeps them for the turn summary card. Covers every way a
-    /// file can change, including shell commands and scripts.
-    pub fn refresh_changed_files(&mut self, cx: &mut Context<Self>) {
-        let cwd = self.active_cwd.clone();
-        let (tx, rx) = smol::channel::unbounded();
-        std::thread::spawn(move || {
-            let _ = tx.send_blocking(collect_git_changes(&cwd));
-        });
-        let entity = cx.entity().clone();
-        cx.spawn(async move |_, cx| {
-            if let Ok(files) = rx.recv().await {
-                let _ = entity.update(cx, |s, cx| {
-                    s.changed_files = files;
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
     }
 
     /// Dismiss the rpiv-todos panel: remember every current item so replays of the
@@ -2842,8 +2818,7 @@ impl AppState {
                         }
                     }
                 }
-                self.refresh_changed_files(cx);
-                if was_running {
+                        if was_running {
                     let title = crate::i18n::tr(self.locale, "notify.taskCompleteTitle");
                     let body = crate::i18n::tr(self.locale, "notify.taskCompleteBody");
                     self.trigger_desktop_notification(title, body);
@@ -4689,110 +4664,5 @@ mod thinking_enrichment_tests {
         // explicitly disabled reasoning stays hidden
         assert!(!should_offer_thinking_ladder(&declared(false, true)));
     }
-}
-
-/// Collects `git status --porcelain` plus `git diff --numstat` (staged and
-/// unstaged) for a project directory. Missing git or a non-repo yields nothing.
-fn collect_git_changes(cwd: &std::path::Path) -> Vec<ChangedFile> {
-    use std::process::Command;
-
-    let run_git = |repo: &std::path::Path, args: &[&str]| -> Option<String> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        Some(String::from_utf8_lossy(&out.stdout).into_owned())
-    };
-
-    // Repos to probe: project root, and any immediate subdirectories containing a .git folder
-    let mut repos = vec![cwd.to_path_buf()];
-    if let Ok(entries) = std::fs::read_dir(cwd) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() && p.join(".git").exists() {
-                repos.push(p);
-            }
-        }
-    }
-
-    let mut result_files = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
-
-    for repo in &repos {
-        let mut diff_out = run_git(repo, &["diff", "HEAD", "--numstat"]).unwrap_or_default();
-        if diff_out.trim().is_empty() {
-            // Also check staged changes
-            diff_out = run_git(repo, &["diff", "--cached", "--numstat"]).unwrap_or_default();
-        }
-        if diff_out.trim().is_empty() {
-            // If working tree is clean, show the most recent commit's changed files
-            diff_out = run_git(repo, &["show", "HEAD", "--numstat", "--oneline"]).unwrap_or_default();
-        }
-
-        let mut counts: std::collections::HashMap<String, (u64, u64)> = Default::default();
-        for line in diff_out.lines() {
-            let mut parts = line.split('\t');
-            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
-                continue;
-            };
-            if let (Ok(a), Ok(d)) = (a.parse::<u64>(), d.parse::<u64>()) {
-                let entry = counts.entry(path.to_string()).or_insert((0, 0));
-                entry.0 += a;
-                entry.1 += d;
-            }
-        }
-
-        let rel_prefix = if repo == cwd {
-            String::new()
-        } else if let Ok(rel) = repo.strip_prefix(cwd) {
-            let s = rel.to_string_lossy().into_owned();
-            if s.is_empty() { String::new() } else { format!("{s}/") }
-        } else {
-            String::new()
-        };
-
-        // If we have diff counts, add those files
-        for (rel_path, (a, d)) in counts {
-            let display_path = format!("{rel_prefix}{rel_path}");
-            if seen_paths.insert(display_path.clone()) {
-                result_files.push(ChangedFile {
-                    path: display_path,
-                    added: Some(a),
-                    removed: Some(d),
-                });
-            }
-        }
-
-        // Also check for untracked files
-        if let Some(status) = run_git(repo, &["status", "--porcelain"]) {
-            for line in status.lines() {
-                if line.len() < 4 {
-                    continue;
-                }
-                let raw = line[3..].trim();
-                let path = raw.rsplit(" -> ").next().unwrap_or(raw).trim_matches('"');
-                if path.is_empty() || path.ends_with('/') {
-                    continue;
-                }
-                let display_path = format!("{rel_prefix}{path}");
-                if seen_paths.insert(display_path.clone()) {
-                    result_files.push(ChangedFile {
-                        path: display_path,
-                        added: None,
-                        removed: None,
-                    });
-                }
-            }
-        }
-    }
-
-    result_files.sort_by(|a, b| a.path.cmp(&b.path));
-    result_files.truncate(100);
-    result_files
 }
 
