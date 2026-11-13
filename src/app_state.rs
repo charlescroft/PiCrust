@@ -176,6 +176,8 @@ pub struct AppState {
     pub todos_expanded: bool,
     /// Items the user dismissed from the rpiv-todos panel.
     pub dismissed_todo_ids: std::collections::HashSet<String>,
+    /// Files changed in the project working tree, refreshed when a run settles.
+    pub changed_files: Vec<ChangedFile>,
     /// Set once the panel is dismissed: the todo panel stays hidden for the rest
     /// of this session no matter how often the extension re-emits its widget.
     /// Only switching/starting a session clears it.
@@ -441,6 +443,7 @@ impl AppState {
             todos,
             todos_expanded: false,
             dismissed_todo_ids: std::collections::HashSet::new(),
+            changed_files: Vec::new(),
             todos_hidden: false,
             todos_hidden_session: None,
             retry_status: None,
@@ -646,6 +649,27 @@ impl AppState {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Reads the project's working-tree changes (git status + numstat) in the
+    /// background and keeps them for the turn summary card. Covers every way a
+    /// file can change, including shell commands and scripts.
+    pub fn refresh_changed_files(&mut self, cx: &mut Context<Self>) {
+        let cwd = self.active_cwd.clone();
+        let (tx, rx) = smol::channel::unbounded();
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(collect_git_changes(&cwd));
+        });
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            if let Ok(files) = rx.recv().await {
+                let _ = entity.update(cx, |s, cx| {
+                    s.changed_files = files;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// Dismiss the rpiv-todos panel: remember every current item so replays of the
@@ -2796,6 +2820,7 @@ impl AppState {
                         }
                     }
                 }
+                self.refresh_changed_files(cx);
                 if was_running {
                     let title = crate::i18n::tr(self.locale, "notify.taskCompleteTitle");
                     let body = crate::i18n::tr(self.locale, "notify.taskCompleteBody");
@@ -4642,4 +4667,70 @@ mod thinking_enrichment_tests {
         // explicitly disabled reasoning stays hidden
         assert!(!should_offer_thinking_ladder(&declared(false, true)));
     }
+}
+
+/// Collects `git status --porcelain` plus `git diff --numstat` (staged and
+/// unstaged) for a project directory. Missing git or a non-repo yields nothing.
+fn collect_git_changes(cwd: &std::path::Path) -> Vec<ChangedFile> {
+    use std::process::Command;
+
+    let run = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+
+    let Some(status) = run(&["status", "--porcelain"]) else {
+        return Vec::new();
+    };
+
+    let mut counts: std::collections::HashMap<String, (u64, u64)> = Default::default();
+    for args in [
+        vec!["diff", "--numstat"],
+        vec!["diff", "--numstat", "--cached"],
+    ] {
+        if let Some(out) = run(&args) {
+            for line in out.lines() {
+                let mut parts = line.split('\t');
+                let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+                    continue;
+                };
+                let (Ok(a), Ok(d)) = (a.parse::<u64>(), d.parse::<u64>()) else {
+                    continue;
+                };
+                let entry = counts.entry(path.to_string()).or_insert((0, 0));
+                entry.0 += a;
+                entry.1 += d;
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    for line in status.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let raw = line[3..].trim();
+        // Renames read "old -> new"; show the destination.
+        let path = raw.rsplit(" -> ").next().unwrap_or(raw).trim_matches('"');
+        if path.is_empty() {
+            continue;
+        }
+        let (added, removed) = counts.get(path).copied().map(|(a, d)| (Some(a), Some(d))).unwrap_or((None, None));
+        files.push(ChangedFile {
+            path: path.to_string(),
+            added,
+            removed,
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.truncate(100);
+    files
 }
