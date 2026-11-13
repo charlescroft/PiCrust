@@ -149,7 +149,15 @@ pub fn render_sidebar(
         // Top-level Views aligned uniformly at px_2p5
         .child(build_nav_row(
             "nav-tasks",
-            IconName::LayoutDashboard,
+            if tasks_count > 0 {
+                Spinner::new()
+                    .icon(Icon::new(crate::icons::LoaderCircleIcon))
+                    .small()
+                    .color(cx.theme().primary)
+                    .into_any_element()
+            } else {
+                Icon::new(IconName::CircleCheck).small().into_any_element()
+            },
             format!("{} ({})", tr(locale, "sidebar.tasks"), format_commas(tasks_count)),
             active_page == WorkspacePage::Tasks,
             cx,
@@ -654,7 +662,7 @@ pub fn render_sidebar(
 
 fn build_nav_row(
     id: &'static str,
-    icon: IconName,
+    leading: impl IntoElement,
     label: String,
     active: bool,
     cx: &gpui_kit::App,
@@ -676,7 +684,7 @@ fn build_nav_row(
         })
         .hover(|s| s.bg(cx.theme().sidebar_accent.opacity(0.75)))
         .on_click(on_click)
-        .child(Icon::new(icon).small())
+        .child(leading)
         .child(
             div()
                 .flex_1()
@@ -957,7 +965,7 @@ impl<E: ParentElement + Styled> SidebarActivityExt for E {
             self.child(
                 div()
                     .flex_shrink_0()
-                    .child(Icon::new(crate::icons::LoaderCircleIcon).xsmall().text_color(cx.theme().primary)),
+                    .child(Spinner::new().icon(Icon::new(crate::icons::LoaderCircleIcon)).xsmall().color(cx.theme().primary)),
             )
         } else if unread {
             self.child(
@@ -991,7 +999,7 @@ impl<E: ParentElement + Styled> SidebarActivityExt for E {
                     .gap_0p5()
                     .text_xs()
                     .text_color(cx.theme().primary)
-                    .child(Icon::new(crate::icons::LoaderCircleIcon).xsmall().text_color(cx.theme().primary))
+                    .child(Spinner::new().icon(Icon::new(crate::icons::LoaderCircleIcon)).xsmall().color(cx.theme().primary))
                     .child(running_count.to_string()),
             );
         }
