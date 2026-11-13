@@ -559,12 +559,19 @@ fn render_assistant_row(
 ) -> AnyElement {
     let mut stack = v_flex().gap_3().w_full().min_w_0();
     let has_answer_text = !row_cache.last_text_snapshot.trim().is_empty();
-    let (active_cwd, thinking_expanded_default, is_last_message, changed_files) = {
+    let (active_cwd, thinking_expanded_default, is_last_assistant_message, changed_files) = {
         let s = app_state.read(cx);
+        let is_last_asst = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Assistant)
+            .map(|m| m.id)
+            == Some(msg.id);
         (
             s.active_cwd.clone(),
             s.thinking_expanded_default,
-            s.messages.last().map(|m| m.id) == Some(msg.id),
+            is_last_asst,
             s.changed_files.clone(),
         )
     };
@@ -1320,7 +1327,7 @@ fn render_assistant_row(
 
     // 5b. Working-tree changes after the run settles: catches edits made through
     //     shell commands or scripts, which the per-turn tool summary cannot see.
-    if is_last_message && !msg.is_streaming && !changed_files.is_empty() {
+    if is_last_assistant_message && !msg.is_streaming && !changed_files.is_empty() {
         let app_open = app_state.clone();
         let count = changed_files.len();
         let mut card = v_flex()

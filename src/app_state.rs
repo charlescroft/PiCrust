@@ -453,6 +453,7 @@ impl AppState {
         };
 
         // Kick off initial sidecar probe & refresh + lightweight external session watcher
+        state.refresh_changed_files(cx);
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
             smol::Timer::after(std::time::Duration::from_millis(250)).await;
@@ -4695,10 +4696,10 @@ mod thinking_enrichment_tests {
 fn collect_git_changes(cwd: &std::path::Path) -> Vec<ChangedFile> {
     use std::process::Command;
 
-    let run = |args: &[&str]| -> Option<String> {
+    let run_git = |repo: &std::path::Path, args: &[&str]| -> Option<String> {
         let out = Command::new("git")
             .arg("-C")
-            .arg(cwd)
+            .arg(repo)
             .args(args)
             .output()
             .ok()?;
@@ -4708,50 +4709,90 @@ fn collect_git_changes(cwd: &std::path::Path) -> Vec<ChangedFile> {
         Some(String::from_utf8_lossy(&out.stdout).into_owned())
     };
 
-    let Some(status) = run(&["status", "--porcelain"]) else {
-        return Vec::new();
-    };
+    // Repos to probe: project root, and any immediate subdirectories containing a .git folder
+    let mut repos = vec![cwd.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(cwd) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join(".git").exists() {
+                repos.push(p);
+            }
+        }
+    }
 
-    let mut counts: std::collections::HashMap<String, (u64, u64)> = Default::default();
-    for args in [
-        vec!["diff", "--numstat"],
-        vec!["diff", "--numstat", "--cached"],
-    ] {
-        if let Some(out) = run(&args) {
-            for line in out.lines() {
-                let mut parts = line.split('\t');
-                let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
-                    continue;
-                };
-                let (Ok(a), Ok(d)) = (a.parse::<u64>(), d.parse::<u64>()) else {
-                    continue;
-                };
+    let mut result_files = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    for repo in &repos {
+        let mut diff_out = run_git(repo, &["diff", "HEAD", "--numstat"]).unwrap_or_default();
+        if diff_out.trim().is_empty() {
+            // Also check staged changes
+            diff_out = run_git(repo, &["diff", "--cached", "--numstat"]).unwrap_or_default();
+        }
+        if diff_out.trim().is_empty() {
+            // If working tree is clean, show the most recent commit's changed files
+            diff_out = run_git(repo, &["show", "HEAD", "--numstat", "--oneline"]).unwrap_or_default();
+        }
+
+        let mut counts: std::collections::HashMap<String, (u64, u64)> = Default::default();
+        for line in diff_out.lines() {
+            let mut parts = line.split('\t');
+            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+                continue;
+            };
+            if let (Ok(a), Ok(d)) = (a.parse::<u64>(), d.parse::<u64>()) {
                 let entry = counts.entry(path.to_string()).or_insert((0, 0));
                 entry.0 += a;
                 entry.1 += d;
             }
         }
+
+        let rel_prefix = if repo == cwd {
+            String::new()
+        } else if let Ok(rel) = repo.strip_prefix(cwd) {
+            let s = rel.to_string_lossy().into_owned();
+            if s.is_empty() { String::new() } else { format!("{s}/") }
+        } else {
+            String::new()
+        };
+
+        // If we have diff counts, add those files
+        for (rel_path, (a, d)) in counts {
+            let display_path = format!("{rel_prefix}{rel_path}");
+            if seen_paths.insert(display_path.clone()) {
+                result_files.push(ChangedFile {
+                    path: display_path,
+                    added: Some(a),
+                    removed: Some(d),
+                });
+            }
+        }
+
+        // Also check for untracked files
+        if let Some(status) = run_git(repo, &["status", "--porcelain"]) {
+            for line in status.lines() {
+                if line.len() < 4 {
+                    continue;
+                }
+                let raw = line[3..].trim();
+                let path = raw.rsplit(" -> ").next().unwrap_or(raw).trim_matches('"');
+                if path.is_empty() || path.ends_with('/') {
+                    continue;
+                }
+                let display_path = format!("{rel_prefix}{path}");
+                if seen_paths.insert(display_path.clone()) {
+                    result_files.push(ChangedFile {
+                        path: display_path,
+                        added: None,
+                        removed: None,
+                    });
+                }
+            }
+        }
     }
 
-    let mut files = Vec::new();
-    for line in status.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let raw = line[3..].trim();
-        // Renames read "old -> new"; show the destination.
-        let path = raw.rsplit(" -> ").next().unwrap_or(raw).trim_matches('"');
-        if path.is_empty() {
-            continue;
-        }
-        let (added, removed) = counts.get(path).copied().map(|(a, d)| (Some(a), Some(d))).unwrap_or((None, None));
-        files.push(ChangedFile {
-            path: path.to_string(),
-            added,
-            removed,
-        });
-    }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    files.truncate(100);
-    files
+    result_files.sort_by(|a, b| a.path.cmp(&b.path));
+    result_files.truncate(100);
+    result_files
 }
+
