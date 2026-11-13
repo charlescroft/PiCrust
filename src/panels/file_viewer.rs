@@ -153,17 +153,6 @@ impl FileViewerView {
                     })),
             );
         }
-        if is_md {
-            mode_tabs = mode_tabs.child(
-                Tab::new()
-                    .label(tr(locale, "chat.preview"))
-                    .selected(self.mode == FilePreviewMode::Rendered)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.mode = FilePreviewMode::Rendered;
-                        cx.notify();
-                    })),
-            );
-        }
         mode_tabs = mode_tabs.child(
             Tab::new()
                 .label(tr(locale, "chat.source"))
@@ -308,8 +297,8 @@ impl<E: ParentElement> OpenExt for E {
         };
         self.child(
             Button::new("reveal-file")
-                .ghost()
-                .xsmall()
+                .outline()
+                .small()
                 .h(px(24.))
                 .icon(IconName::ExternalLink)
                 .label(tr(locale, "panel.openFile"))

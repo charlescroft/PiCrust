@@ -5,7 +5,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::{App, Entity, ParentElement as _, SharedString, Styled as _, div, px};
 use serde_json::json;
 
@@ -389,32 +389,28 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                         }),
                                 ),
                         )
-                        .child(
+                        .child({
+                            let src_for_del = src_w.clone();
+                            let sc_for_del = sc_w.clone();
+                            let app_del = app_w.clone();
+                            let source_tag = if src_w.starts_with("npm:") {
+                                "npm".to_string()
+                            } else {
+                                src_w.clone()
+                            };
+
                             h_flex()
                                 .flex_wrap()
                                 .justify_end()
                                 .gap_2()
                                 .items_center()
-                                .child(Tag::secondary().small().child(SharedString::from(ver.clone())))
-                                .child(Tag::secondary().small().child(SharedString::from(scope.clone())))
+                                .child(Tag::secondary().small().child(SharedString::from(source_tag)))
+                                .child(Tag::secondary().small().child(SharedString::from(format!("v{}", ver))))
                                 .child(
-                                    Button::new(("toggle-plugin", idx))
-                                        .outline()
-                                        .small()
-                                        .h(px(28.))
-                                        .w(SETTINGS_BTN_W)
-                                        .icon(if enabled_now {
-                                            IconName::Close
-                                        } else {
-                                            IconName::Check
-                                        })
-                                        .label(if enabled_now {
-                                            tr(locale, "settings.disable")
-                                        } else {
-                                            tr(locale, "settings.enable")
-                                        })
-                                        .on_click(move |_, _, cx| {
-                                            let next = !enabled_now;
+                                    Switch::new(SharedString::from(format!("plugin-sw-{}", idx)))
+                                        .checked(enabled_now)
+                                        .on_click(move |checked: &bool, _, cx| {
+                                            let next = *checked;
                                             let src = src_w.clone();
                                             let sc = sc_w.clone();
                                             app_w.update(cx, |s, cx| {
@@ -455,8 +451,46 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                                 cx.notify();
                                             });
                                         }),
-                                ),
-                        )
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("del-plugin-{}", idx)))
+                                        .ghost()
+                                        .xsmall()
+                                        .h(px(24.))
+                                        .w(px(24.))
+                                        .icon(Icon::new(crate::icons::TrashIcon))
+                                        .text_color(cx.theme().danger)
+                                        .tooltip(tr(locale, "settings.deleteGroup"))
+                                        .on_click(move |_, _, cx| {
+                                            let src = src_for_del.clone();
+                                            let sc = sc_for_del.clone();
+                                            app_del.update(cx, |s, cx| {
+                                                if s.sidecar_connected {
+                                                    let client = s.client.clone();
+                                                    let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                                    let entity = cx.entity().clone();
+                                                    cx.spawn(async move |_, cx| {
+                                                        if let Ok(res) = client
+                                                            .plugin_action(json!({
+                                                                "cwd": cwd,
+                                                                "action": "remove",
+                                                                "source": src,
+                                                                "scope": sc,
+                                                            }))
+                                                            .await
+                                                        {
+                                                            let _ = entity.update(cx, |s, cx| {
+                                                                s.apply_plugins_response(&res);
+                                                                cx.notify();
+                                                            });
+                                                        }
+                                                    })
+                                                    .detach();
+                                                }
+                                            });
+                                        }),
+                                )
+                        })
                 })
                 .keywords([desc_parts.join(" · ")]),
             );

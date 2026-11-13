@@ -1502,19 +1502,7 @@ impl SettingsAddDialogView {
                             .text_color(cx.theme().danger)
                             .child(SharedString::from(err.clone()))
                     }))
-                    .children((!is_provider_picker).then(|| {
-                        if is_info_card {
-                            h_flex()
-                                .justify_end()
-                                .child(
-                                    Button::new("settings-info-close")
-                                        .primary()
-                                        .small()
-                                        .h(px(28.))
-                                        .label(tr(locale, "scheduled.cancel"))
-                                        .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
-                                )
-                        } else {
+                    .children((!is_provider_picker && !is_info_card).then(|| {
                             h_flex()
                                 .justify_end()
                                 .gap_2()
@@ -1539,7 +1527,6 @@ impl SettingsAddDialogView {
                                             this.submit(kind_for_submit.clone(), cx);
                                         })),
                                 )
-                        }
                     })),
             )
             .into_any_element()
