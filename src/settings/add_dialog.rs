@@ -6,6 +6,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, Textar
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, IndexPath, Selectable as _, Sizable as _,
@@ -671,27 +672,22 @@ impl SettingsAddDialogView {
                             .child(tr(locale, "settings.scope")),
                     )
                     .child(
-                        h_flex()
-                            .gap_1p5()
+                        TabBar::new("add-dlg-scope-tabs")
+                            .segmented()
+                            .small()
                             .child(
-                                Button::new("add-dlg-scope-global")
-                                    .outline()
-                                    .small()
-                                    .h(px(28.))
-                                    .selected(self.scope == "global")
+                                Tab::new()
                                     .label(tr(locale, "settings.scopeGlobal"))
+                                    .selected(self.scope == "global")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.scope = "global".to_string();
                                         cx.notify();
                                     })),
                             )
                             .child(
-                                Button::new("add-dlg-scope-proj")
-                                    .outline()
-                                    .small()
-                                    .h(px(28.))
-                                    .selected(self.scope == "project")
+                                Tab::new()
                                     .label(tr(locale, "settings.scopeProject"))
+                                    .selected(self.scope == "project")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.scope = "project".to_string();
                                         cx.notify();

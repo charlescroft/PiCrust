@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::client::types::{ArtifactKind, ArtifactRecord};
 use crate::i18n::{format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::input::{Editor, EditorState};
@@ -161,28 +162,22 @@ impl ArtifactPanelView {
                     ),
             )
             .child(
-                h_flex()
-                    .flex_shrink_0()
-                    .gap_1()
+                TabBar::new("art-mode-tabs")
+                    .segmented()
+                    .small()
                     .child(
-                        Button::new("art-source-tab")
-                            .ghost()
-                            .small()
-                            .h(px(24.))
-                            .selected(self.mode == ArtifactViewMode::Source)
+                        Tab::new()
                             .label(tr(locale, "panel.artifactSource"))
+                            .selected(self.mode == ArtifactViewMode::Source)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.mode = ArtifactViewMode::Source;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        Button::new("art-diff-tab")
-                            .ghost()
-                            .small()
-                            .h(px(24.))
-                            .selected(self.mode == ArtifactViewMode::Diff)
+                        Tab::new()
                             .label(tr(locale, "panel.artifactDiff"))
+                            .selected(self.mode == ArtifactViewMode::Diff)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.mode = ArtifactViewMode::Diff;
                                 cx.notify();

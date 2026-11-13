@@ -5,6 +5,7 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::text::{TextView, TextViewState};
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement, ParentElement, SharedString, Styled as _, Window,
@@ -140,14 +141,12 @@ impl FileViewerView {
         let rel_for_mention = rel_path.clone();
 
         let mut header_actions = h_flex().items_center().gap_1p5();
+        let mut mode_tabs = TabBar::new("fv-mode-tabs").segmented().small();
         if has_diff {
-            header_actions = header_actions.child(
-                Button::new("fv-diff")
-                    .ghost()
-                    .xsmall()
-                    .h(px(24.))
-                    .selected(self.mode == FilePreviewMode::Diff)
+            mode_tabs = mode_tabs.child(
+                Tab::new()
                     .label(tr(locale, "chat.diff"))
+                    .selected(self.mode == FilePreviewMode::Diff)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.mode = FilePreviewMode::Diff;
                         cx.notify();
@@ -155,38 +154,31 @@ impl FileViewerView {
             );
         }
         if is_md {
-            header_actions = header_actions.child(
-                Button::new("fv-rendered")
-                    .ghost()
-                    .xsmall()
-                    .h(px(24.))
-                    .selected(self.mode == FilePreviewMode::Rendered)
+            mode_tabs = mode_tabs.child(
+                Tab::new()
                     .label(tr(locale, "chat.preview"))
+                    .selected(self.mode == FilePreviewMode::Rendered)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.mode = FilePreviewMode::Rendered;
                         cx.notify();
                     })),
             );
         }
-        header_actions = header_actions
-            .child(
-                Button::new("fv-source")
-                    .ghost()
-                    .xsmall()
-                    .h(px(24.))
-                    .selected(self.mode == FilePreviewMode::Source)
-                    .label(tr(locale, "chat.source"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.mode = FilePreviewMode::Source;
-                        cx.notify();
-                    })),
-            )
+        mode_tabs = mode_tabs.child(
+            Tab::new()
+                .label(tr(locale, "chat.source"))
+                .selected(self.mode == FilePreviewMode::Source)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.mode = FilePreviewMode::Source;
+                    cx.notify();
+                })),
+        );
+        header_actions = header_actions.child(mode_tabs)
             .child(
                 Button::new("fv-mention")
-                    .ghost()
+                    .outline()
                     .xsmall()
                     .h(px(24.))
-                    .icon(Icon::new(crate::icons::AtSignIcon))
                     .label(tr(locale, "panel.mention"))
                     .tooltip(tr(locale, "panel.mentionTooltip"))
                     .on_click(move |_, _, cx| {
