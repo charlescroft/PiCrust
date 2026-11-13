@@ -801,6 +801,9 @@ pub struct ConfiguredModelInfo {
     pub max_tokens: Option<u64>,
     pub input: Vec<String>,
     pub reasoning: bool,
+    /// `thinkingLevelMap` from models.json — a `null` value marks a level the
+    /// model does not offer, so the composer can list the real strengths.
+    pub thinking_level_map: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]

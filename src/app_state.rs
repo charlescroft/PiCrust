@@ -871,6 +871,7 @@ impl AppState {
                 }
                 if let Some(val) = models_config_val {
                     this.apply_models_config_response(&val);
+                    this.enrich_thinking_levels_from_config();
                 }
                 if let Some(val) = artifacts_settings_val {
                     if let Some(en) = val.get("enabled").and_then(Value::as_bool) {
@@ -1055,6 +1056,69 @@ impl AppState {
             }
         }
         self.clamp_thinking_level_to_model();
+    }
+
+    /// pi only advertises the levels of models in its own capability catalog, so a
+    /// custom provider configured with `reasoning: true` (or a `thinkingLevelMap`)
+    /// still reports just `["off"]`. Fill those in from the model's own
+    /// configuration so the composer shows the strengths the user set up.
+    pub fn enrich_thinking_levels_from_config(&mut self) {
+        if self.configured_providers.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for model in &mut self.models {
+            let declared = self
+                .configured_providers
+                .iter()
+                .find(|p| p.id == model.provider)
+                .and_then(|p| p.models.iter().find(|m| m.id == model.id));
+            let Some(declared) = declared else { continue };
+            let wants_reasoning = declared.reasoning
+                || !declared.thinking_level_map.is_empty();
+            if !wants_reasoning {
+                continue;
+            }
+            let only_off = model.thinking_levels.is_empty()
+                || (model.thinking_levels.len() == 1 && model.thinking_levels[0] == "off");
+            if !only_off {
+                continue;
+            }
+            let mut levels: Vec<String> = vec!["off".to_string()];
+            for level in ["minimal", "low", "medium", "high", "xhigh"] {
+                if let Some(mapped) = declared.thinking_level_map.get(level) {
+                    if mapped.is_null() {
+                        continue;
+                    }
+                    levels.push(level.to_string());
+                    if let Some(label) = mapped.as_str() {
+                        if !label.is_empty() {
+                            model
+                                .thinking_level_map
+                                .insert(level.to_string(), label.to_string());
+                        }
+                    }
+                } else if declared.thinking_level_map.is_empty() {
+                    levels.push(level.to_string());
+                }
+            }
+            if levels.len() > 1 {
+                model.thinking_levels = levels;
+                changed = true;
+            }
+        }
+        if changed {
+            if let Some(sel) = &self.selected_model {
+                if let Some(fresh) = self
+                    .models
+                    .iter()
+                    .find(|m| m.provider == sel.provider && m.id == sel.id)
+                {
+                    self.selected_model = Some(fresh.clone());
+                }
+            }
+            self.clamp_thinking_level_to_model();
+        }
     }
 
     pub fn clamp_thinking_level_to_model(&mut self) {
@@ -1307,6 +1371,11 @@ impl AppState {
                             })
                             .unwrap_or_else(|| vec!["text".to_string()]);
                         let reasoning = m.get("reasoning").and_then(Value::as_bool).unwrap_or(false);
+                        let thinking_level_map = m
+                            .get("thinkingLevelMap")
+                            .and_then(Value::as_object)
+                            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                            .unwrap_or_default();
                         models.push(ConfiguredModelInfo {
                             id,
                             name,
@@ -1314,6 +1383,7 @@ impl AppState {
                             max_tokens,
                             input,
                             reasoning,
+                            thinking_level_map,
                         });
                     }
                 }

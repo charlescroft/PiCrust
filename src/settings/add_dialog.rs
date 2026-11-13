@@ -332,6 +332,7 @@ impl SettingsAddDialogView {
                 max_tokens: mt,
                 input: input_types,
                 reasoning: self.model_reasoning,
+                thinking_level_map: Default::default(),
             };
             self.app_state.update(cx, |s, cx| {
                 s.update_configured_model(provider_id, model_id, model, cx);
@@ -366,6 +367,7 @@ impl SettingsAddDialogView {
                 max_tokens: mt,
                 input: input_types,
                 reasoning: self.model_reasoning,
+                thinking_level_map: Default::default(),
             };
             self.app_state.update(cx, |s, cx| {
                 s.add_model_to_configured_provider(provider_id, model, cx);
