@@ -5,8 +5,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{IconName, Sizable as _, h_flex};
-use gpui_kit::{App, Entity, ParentElement as _, SharedString, Styled as _, px};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::{App, Entity, ParentElement as _, SharedString, Styled as _, div, px};
 use serde_json::json;
 
 pub fn subagents_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App) -> SettingPage {
@@ -196,56 +196,86 @@ pub fn skills_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
             let file_path_view = s.file_path.clone();
             let source_for_search = s.source.clone();
 
-            // The switch and a compact source tag share the field column: a long
-            // description under the title would wrap inside a narrow 35% column.
+            let skill_info_item = s.clone();
+            let app_info = app_state.clone();
             group = group.item(
-                SettingItem::new(
-                    SharedString::from(name.clone()),
-                    SettingField::render(move |_, _, cx| {
-                        let enabled = app_read
-                            .read(cx)
-                            .skills
-                            .iter()
-                            .find(|x| x.name == name_read)
-                            .map(|x| x.enabled)
-                            .unwrap_or(true);
-                        let app_w = app_write.clone();
-                        let n = name.clone();
-                        let fp_for_switch = file_path_view.clone();
-                        h_flex()
-                            .items_center()
-                            .justify_end()
-                            .gap_2()
-                            .child(Tag::secondary().small().child(SharedString::from(
-                                source.clone(),
-                            )))
-                            .child(
-                                Switch::new(SharedString::from(format!("skill-switch-{}", n)))
-                                    .checked(enabled)
-                                    .on_click(move |checked: &bool, _, cx| {
-                                        let val = *checked;
-                                        let n = n.clone();
-                                        let fp = fp_for_switch.clone();
-                                        app_w.update(cx, |st, cx| {
-                                            if let Some(target) =
-                                                st.skills.iter_mut().find(|x| x.name == n)
-                                            {
-                                                target.enabled = val;
-                                                target.disable_model_invocation = !val;
-                                            }
-                                            if st.sidecar_connected && !fp.is_empty() {
-                                                let client = st.client.clone();
-                                                cx.spawn(async move |_, _| {
-                                                    let _ = client.toggle_skill(&fp, !val).await;
-                                                })
-                                                .detach();
-                                            }
-                                            cx.notify();
-                                        });
-                                    }),
-                            )
-                    }),
-                )
+                SettingItem::render(move |_, _, cx| {
+                    let enabled = app_read
+                        .read(cx)
+                        .skills
+                        .iter()
+                        .find(|x| x.name == name_read)
+                        .map(|x| x.enabled)
+                        .unwrap_or(true);
+                    let app_w = app_write.clone();
+                    let n = name.clone();
+                    let fp_for_switch = file_path_view.clone();
+                    let app_info_click = app_info.clone();
+                    let skill_for_click = skill_info_item.clone();
+                    let n_title = n.clone();
+
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_medium()
+                                        .text_color(cx.theme().foreground)
+                                        .child(SharedString::from(n_title)),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("skill-info-{}", n)))
+                                        .ghost()
+                                        .xsmall()
+                                        .h(px(22.))
+                                        .w(px(22.))
+                                        .icon(IconName::Info)
+                                        .tooltip(tr(locale, "settings.details"))
+                                        .on_click(move |_, _, cx| {
+                                            app_info_click.update(cx, |st, cx| {
+                                                st.settings_add_kind = Some(SettingsAddKind::SkillInfo(skill_for_click.clone()));
+                                                cx.notify();
+                                            });
+                                        }),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_2()
+                                .child(Tag::secondary().small().child(SharedString::from(source.clone())))
+                                .child(
+                                    Switch::new(SharedString::from(format!("skill-switch-{}", n)))
+                                        .checked(enabled)
+                                        .on_click(move |checked: &bool, _, cx| {
+                                            let val = *checked;
+                                            let n = n.clone();
+                                            let fp = fp_for_switch.clone();
+                                            app_w.update(cx, |st, cx| {
+                                                if let Some(target) = st.skills.iter_mut().find(|x| x.name == n) {
+                                                    target.enabled = val;
+                                                    target.disable_model_invocation = !val;
+                                                }
+                                                if st.sidecar_connected && !fp.is_empty() {
+                                                    let client = st.client.clone();
+                                                    cx.spawn(async move |_, _| {
+                                                        let _ = client.toggle_skill(&fp, !val).await;
+                                                    })
+                                                    .detach();
+                                                }
+                                                cx.notify();
+                                            });
+                                        }),
+                                ),
+                        )
+                })
                 .keywords([desc, source_for_search.clone()]),
             );
         }
@@ -309,89 +339,125 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
             let src_read = source.clone();
             let sc_read = scope.clone();
 
+            let plugin_info_item = p.clone();
+            let app_info = app_state.clone();
             group = group.item(
-                SettingItem::new(
-                    SharedString::from(name),
-                    SettingField::render(move |_, _, cx| {
-                        let enabled_now = app_read
-                            .read(cx)
-                            .plugins
-                            .iter()
-                            .find(|x| x.source == src_read && x.scope == sc_read)
-                            .map(|x| x.enabled)
-                            .unwrap_or(true);
-                        let app_w = app_write.clone();
-                        let src_w = source.clone();
-                        let sc_w = scope.clone();
+                SettingItem::render(move |_, _, cx| {
+                    let enabled_now = app_read
+                        .read(cx)
+                        .plugins
+                        .iter()
+                        .find(|x| x.source == src_read && x.scope == sc_read)
+                        .map(|x| x.enabled)
+                        .unwrap_or(true);
+                    let app_w = app_write.clone();
+                    let src_w = source.clone();
+                    let sc_w = scope.clone();
+                    let app_info_click = app_info.clone();
+                    let plugin_for_click = plugin_info_item.clone();
+                    let name_title = name.clone();
 
-                        h_flex()
-                            .flex_wrap()
-                            .justify_end()
-                            .gap_2()
-                            .items_center()
-                            .child(Tag::secondary().small().child(SharedString::from(ver.clone())))
-                            .child(Tag::secondary().small().child(SharedString::from(scope.clone())))
-                            .child(
-                                Button::new(("toggle-plugin", idx))
-                                    .outline()
-                                    .small()
-                                    .h(px(28.))
-                                    .w(SETTINGS_BTN_W)
-                                    .icon(if enabled_now {
-                                        IconName::Close
-                                    } else {
-                                        IconName::Check
-                                    })
-                                    .label(if enabled_now {
-                                        tr(locale, "settings.disable")
-                                    } else {
-                                        tr(locale, "settings.enable")
-                                    })
-                                    .on_click(move |_, _, cx| {
-                                        let next = !enabled_now;
-                                        let src = src_w.clone();
-                                        let sc = sc_w.clone();
-                                        app_w.update(cx, |s, cx| {
-                                            if let Some(target) = s
-                                                .plugins
-                                                .iter_mut()
-                                                .find(|x| x.source == src && x.scope == sc)
-                                            {
-                                                target.enabled = next;
-                                                target.status = if next {
-                                                    "loaded".to_string()
-                                                } else {
-                                                    "disabled".to_string()
-                                                };
-                                            }
-                                            if s.sidecar_connected {
-                                                let client = s.client.clone();
-                                                let cwd = s.active_cwd.to_string_lossy().into_owned();
-                                                let entity = cx.entity().clone();
-                                                cx.spawn(async move |_, cx| {
-                                                    if let Ok(res) = client
-                                                        .plugin_action(json!({
-                                                            "cwd": cwd,
-                                                            "action": if next { "enable" } else { "disable" },
-                                                            "source": src,
-                                                            "scope": sc,
-                                                        }))
-                                                        .await
-                                                    {
-                                                        let _ = entity.update(cx, |s, cx| {
-                                                            s.apply_plugins_response(&res);
-                                                            cx.notify();
-                                                        });
-                                                    }
-                                                })
-                                                .detach();
-                                            }
-                                            cx.notify();
-                                        });
-                                    }),
-                            )
-                    }),
-                )
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_medium()
+                                        .text_color(cx.theme().foreground)
+                                        .child(SharedString::from(name_title)),
+                                )
+                                .child(
+                                    Button::new(("plugin-info-btn", idx))
+                                        .ghost()
+                                        .xsmall()
+                                        .h(px(22.))
+                                        .w(px(22.))
+                                        .icon(IconName::Info)
+                                        .tooltip(tr(locale, "settings.details"))
+                                        .on_click(move |_, _, cx| {
+                                            app_info_click.update(cx, |st, cx| {
+                                                st.settings_add_kind = Some(SettingsAddKind::PluginInfo(plugin_for_click.clone()));
+                                                cx.notify();
+                                            });
+                                        }),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_wrap()
+                                .justify_end()
+                                .gap_2()
+                                .items_center()
+                                .child(Tag::secondary().small().child(SharedString::from(ver.clone())))
+                                .child(Tag::secondary().small().child(SharedString::from(scope.clone())))
+                                .child(
+                                    Button::new(("toggle-plugin", idx))
+                                        .outline()
+                                        .small()
+                                        .h(px(28.))
+                                        .w(SETTINGS_BTN_W)
+                                        .icon(if enabled_now {
+                                            IconName::Close
+                                        } else {
+                                            IconName::Check
+                                        })
+                                        .label(if enabled_now {
+                                            tr(locale, "settings.disable")
+                                        } else {
+                                            tr(locale, "settings.enable")
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            let next = !enabled_now;
+                                            let src = src_w.clone();
+                                            let sc = sc_w.clone();
+                                            app_w.update(cx, |s, cx| {
+                                                if let Some(target) = s
+                                                    .plugins
+                                                    .iter_mut()
+                                                    .find(|x| x.source == src && x.scope == sc)
+                                                {
+                                                    target.enabled = next;
+                                                    target.status = if next {
+                                                        "loaded".to_string()
+                                                    } else {
+                                                        "disabled".to_string()
+                                                    };
+                                                }
+                                                if s.sidecar_connected {
+                                                    let client = s.client.clone();
+                                                    let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                                    let entity = cx.entity().clone();
+                                                    cx.spawn(async move |_, cx| {
+                                                        if let Ok(res) = client
+                                                            .plugin_action(json!({
+                                                                "cwd": cwd,
+                                                                "action": if next { "enable" } else { "disable" },
+                                                                "source": src,
+                                                                "scope": sc,
+                                                            }))
+                                                            .await
+                                                        {
+                                                            let _ = entity.update(cx, |s, cx| {
+                                                                s.apply_plugins_response(&res);
+                                                                cx.notify();
+                                                            });
+                                                        }
+                                                    })
+                                                    .detach();
+                                                }
+                                                cx.notify();
+                                            });
+                                        }),
+                                ),
+                        )
+                })
                 .keywords([desc_parts.join(" · ")]),
             );
         }

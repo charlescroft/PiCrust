@@ -429,6 +429,8 @@ impl SettingsAddDialogView {
                 SettingsAddKind::AddProviderPicker
                 | SettingsAddKind::AddModelToProvider { .. }
                 | SettingsAddKind::DiscoveredModelsPicker { .. }
+                | SettingsAddKind::PluginInfo(_)
+                | SettingsAddKind::SkillInfo(_)
                 | SettingsAddKind::EditProvider { .. }
                 | SettingsAddKind::EditModel { .. } => Ok(()),
                 SettingsAddKind::ProviderModel => {
@@ -681,6 +683,8 @@ impl SettingsAddDialogView {
             SettingsAddKind::SubagentProfile => tr(locale, "settings.addSubagent").to_string(),
             SettingsAddKind::Skill => tr(locale, "settings.installSkill").to_string(),
             SettingsAddKind::Plugin => tr(locale, "settings.installPlugin").to_string(),
+            SettingsAddKind::PluginInfo(p) => format!("{} — {}", tr(locale, "settings.pluginInfo"), p.name),
+            SettingsAddKind::SkillInfo(s) => format!("{} — {}", tr(locale, "settings.skillInfo"), s.name),
         };
 
         let mut body = v_flex().gap_2p5();
@@ -730,6 +734,7 @@ impl SettingsAddDialogView {
 
         let is_provider_picker = matches!(kind, SettingsAddKind::AddProviderPicker);
         let is_model_picker = matches!(kind, SettingsAddKind::DiscoveredModelsPicker { .. });
+        let is_info_card = matches!(kind, SettingsAddKind::PluginInfo(_) | SettingsAddKind::SkillInfo(_));
 
         match &kind {
             SettingsAddKind::AddProviderPicker => {
@@ -1284,6 +1289,55 @@ impl SettingsAddDialogView {
                     cx,
                 ));
             }
+            SettingsAddKind::PluginInfo(p) => {
+                let desc = p.description.clone().unwrap_or_else(|| "No description provided.".to_string());
+                body = body
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Tag::secondary().small().child(SharedString::from(format!("v{}", p.version))))
+                            .child(Tag::secondary().small().child(SharedString::from(p.scope.clone())))
+                            .child(Tag::secondary().small().child(SharedString::from(p.status.clone()))),
+                    )
+                    .child(field_box(
+                        tr(locale, "settings.pluginSource"),
+                        div().text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(cx.theme().muted_foreground).child(SharedString::from(p.source.clone())),
+                        cx,
+                    ))
+                    .child(field_box(
+                        "Description",
+                        div().p_2p5().rounded_md().border_1().border_color(cx.theme().border).bg(cx.theme().secondary).text_xs().line_height(px(18.)).child(SharedString::from(desc)),
+                        cx,
+                    ))
+                    .children((!p.resource_summary.is_empty()).then(|| {
+                        field_box(
+                            "Resources",
+                            div().text_xs().text_color(cx.theme().muted_foreground).child(SharedString::from(p.resource_summary.clone())),
+                            cx,
+                        )
+                    }));
+            }
+            SettingsAddKind::SkillInfo(s) => {
+                body = body
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Tag::secondary().small().child(SharedString::from(s.source.clone())))
+                            .child(Tag::secondary().small().child(SharedString::from(if s.enabled { "Enabled" } else { "Disabled" }))),
+                    )
+                    .child(field_box(
+                        "File Path",
+                        div().text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(cx.theme().muted_foreground).child(SharedString::from(s.file_path.clone())),
+                        cx,
+                    ))
+                    .child(field_box(
+                        "Description",
+                        div().p_2p5().rounded_md().border_1().border_color(cx.theme().border).bg(cx.theme().secondary).text_xs().line_height(px(18.)).child(SharedString::from(s.description.clone())),
+                        cx,
+                    ));
+            }
             SettingsAddKind::DiscoveredModelsPicker { .. } => {
                 let q = self.provider_search_input.read(cx).value().trim().to_lowercase();
                 let filtered: Vec<_> = self
@@ -1418,7 +1472,7 @@ impl SettingsAddDialogView {
                 v_flex()
                     .id("settings-add-card")
                     .occlude()
-                    .w(if is_provider_picker { px(680.) } else if is_model_picker { px(380.) } else { px(560.) })
+                    .w(if is_provider_picker { px(680.) } else if is_model_picker { px(380.) } else if is_info_card { px(460.) } else { px(560.) })
                     .max_w_full()
                     .p_4()
                     .gap_3()
@@ -1449,30 +1503,43 @@ impl SettingsAddDialogView {
                             .child(SharedString::from(err.clone()))
                     }))
                     .children((!is_provider_picker).then(|| {
-                        h_flex()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("settings-add-cancel")
-                                    .ghost()
-                                    .small()
-                                    .h(px(28.))
-                                    .icon(IconName::Close)
-                                    .label(tr(locale, "scheduled.cancel"))
-                                    .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
-                            )
-                            .child(
-                                Button::new("settings-add-submit")
-                                    .primary()
-                                    .small()
-                                    .h(px(28.))
-                                    .icon(IconName::Check)
-                                    .disabled(self.busy)
-                                    .label(submit_label)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.submit(kind_for_submit.clone(), cx);
-                                    })),
-                            )
+                        if is_info_card {
+                            h_flex()
+                                .justify_end()
+                                .child(
+                                    Button::new("settings-info-close")
+                                        .primary()
+                                        .small()
+                                        .h(px(28.))
+                                        .label(tr(locale, "scheduled.cancel"))
+                                        .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                                )
+                        } else {
+                            h_flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("settings-add-cancel")
+                                        .ghost()
+                                        .small()
+                                        .h(px(28.))
+                                        .icon(IconName::Close)
+                                        .label(tr(locale, "scheduled.cancel"))
+                                        .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                                )
+                                .child(
+                                    Button::new("settings-add-submit")
+                                        .primary()
+                                        .small()
+                                        .h(px(28.))
+                                        .icon(IconName::Check)
+                                        .disabled(self.busy)
+                                        .label(submit_label)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.submit(kind_for_submit.clone(), cx);
+                                        })),
+                                )
+                        }
                     })),
             )
             .into_any_element()

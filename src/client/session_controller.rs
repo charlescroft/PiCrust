@@ -1400,6 +1400,53 @@ pub fn apply_todo_tool_output_text(todos: &mut Vec<TodoWidgetItem>, output: &str
     }
 }
 
+pub fn extract_model_and_thinking_from_jsonl(
+    path: &Path,
+) -> (Option<(String, String)>, Option<ThinkingLevel>) {
+    let Ok(file) = File::open(path) else {
+        return (None, None);
+    };
+    let reader = BufReader::new(file);
+    let mut model: Option<(String, String)> = None;
+    let mut thinking: Option<ThinkingLevel> = None;
+    for line in reader.lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(val) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let etype = val.get("type").and_then(Value::as_str).unwrap_or("");
+        if etype == "model_change" {
+            let prov = val.get("provider").and_then(Value::as_str);
+            let mid = val.get("modelId").or_else(|| val.get("model")).and_then(Value::as_str);
+            if let (Some(p), Some(m)) = (prov, mid) {
+                model = Some((p.to_string(), m.to_string()));
+            }
+            if let Some(tl) = val.get("thinkingLevel").and_then(Value::as_str) {
+                thinking = ThinkingLevel::parse(tl);
+            }
+        } else if etype == "message" {
+            if let Some(msg) = val.get("message") {
+                if msg.get("role").and_then(Value::as_str) == Some("assistant") {
+                    let prov = msg.get("provider").and_then(Value::as_str);
+                    let mid = msg.get("model").or_else(|| msg.get("modelId")).and_then(Value::as_str);
+                    if let (Some(p), Some(m)) = (prov, mid) {
+                        model = Some((p.to_string(), m.to_string()));
+                    }
+                    if let Some(tl) = msg.get("thinkingLevel").and_then(Value::as_str) {
+                        if let Some(parsed) = ThinkingLevel::parse(tl) {
+                            thinking = Some(parsed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (model, thinking)
+}
+
 pub fn extract_todos_from_jsonl(path: &Path) -> Vec<TodoWidgetItem> {
     let Ok(file) = File::open(path) else {
         return Vec::new();

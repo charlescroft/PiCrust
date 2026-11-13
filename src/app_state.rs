@@ -5,7 +5,7 @@ use crate::client::native_index::{
 use crate::client::session_controller::{
     SessionController, apply_optimistic_todo_args, apply_todo_tool_output_text,
     build_diff_from_tool, compute_context_tokens_from_payload, compute_stats_from_jsonl,
-    current_local_hhmm, extract_artifacts_from_markdown, extract_todos_from_jsonl,
+    current_local_hhmm, extract_artifacts_from_markdown, extract_model_and_thinking_from_jsonl, extract_todos_from_jsonl,
     extract_todos_from_payload, extract_turn_usage, flatten_content_text, flatten_tool_args,
     merge_turn_usage, parse_compaction_summary, parse_message_content, parse_session_jsonl_file,
     parse_session_messages, parse_subagent_async_json_widget, parse_todo_tool_details,
@@ -39,6 +39,8 @@ pub enum SettingsAddKind {
         provider_id: String,
         model_id: String,
     },
+    PluginInfo(PluginRow),
+    SkillInfo(SkillRow),
     ProviderApiKey {
         provider_id: String,
         provider_name: String,
@@ -2710,6 +2712,7 @@ impl AppState {
         self.pending_ui_request = None;
         self.dialog_queue.clear();
         self.questionnaire_request_id = None;
+        self.is_agent_running = self.running_session_ids.contains(&session_id);
         self.is_compacting = false;
         self.retry_status = None;
         self.subagent_runs.clear();
@@ -2751,6 +2754,17 @@ impl AppState {
             }
             self.stats = compute_stats_from_jsonl(p, ctx_win);
             self.set_todos(extract_todos_from_jsonl(p));
+
+            let (extracted_model, extracted_thinking) = extract_model_and_thinking_from_jsonl(p);
+            if let Some((prov, mid)) = extracted_model {
+                if let Some(found) = self.models.iter().find(|m| m.provider == prov && m.id == mid).cloned() {
+                    self.selected_model = Some(found);
+                }
+            }
+            if let Some(tl) = extracted_thinking {
+                self.thinking_level = tl;
+            }
+            self.clamp_thinking_level_to_model();
         }
 
         if self.sidecar_connected {

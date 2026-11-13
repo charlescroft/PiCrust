@@ -38,6 +38,18 @@ impl ThinkingLevel {
         }
     }
 
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "max" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Off => "Off",
@@ -594,7 +606,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRow {
     pub name: String,
@@ -608,7 +620,7 @@ pub struct SkillRow {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginRow {
     pub name: String,

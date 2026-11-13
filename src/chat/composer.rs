@@ -245,6 +245,8 @@ pub struct ComposerView {
     at_query: Option<String>,
     file_picker_open: bool,
     slash_query: Option<String>,
+    session_drafts: HashMap<Option<String>, String>,
+    last_rendered_session_id: Option<String>,
 }
 
 impl gpui_kit::Render for ComposerView {
@@ -398,6 +400,8 @@ impl ComposerView {
             at_query: None,
             file_picker_open: false,
             slash_query: None,
+            session_drafts: HashMap::new(),
+            last_rendered_session_id: None,
         }
     }
 
@@ -422,6 +426,27 @@ impl ComposerView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // Isolate composer draft & state per session: switching sessions immediately restores
+        // that session's draft (or blank) so text and states are never shared across conversations.
+        let active_sid = self.app_state.read(cx).active_session_id.clone();
+        if active_sid != self.last_rendered_session_id {
+            let current_text = self.textarea.read(cx).value().to_string();
+            if !current_text.trim().is_empty() {
+                self.session_drafts.insert(self.last_rendered_session_id.clone(), current_text);
+            } else {
+                self.session_drafts.remove(&self.last_rendered_session_id);
+            }
+            self.last_rendered_session_id = active_sid.clone();
+            let saved_draft = self.session_drafts.get(&active_sid).cloned().unwrap_or_default();
+            self.textarea.update(cx, |st, cx| {
+                st.set_value(&saved_draft, window, cx);
+            });
+            self.is_promoted = false;
+            self.at_query = None;
+            self.file_picker_open = false;
+            self.slash_query = None;
+        }
+
         let restore = self
             .app_state
             .update(cx, |s, _| s.draft_restore_text.take());
