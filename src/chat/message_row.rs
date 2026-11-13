@@ -715,15 +715,7 @@ fn render_assistant_row(
                             .expanded_thinking_steps
                             .get(&step_idx)
                             .copied()
-                            .unwrap_or(false);
-                        let preview_line = think_text
-                            .lines()
-                            .map(str::trim)
-                            .find(|l| !l.is_empty())
-                            .unwrap_or("...")
-                            .chars()
-                            .take(110)
-                            .collect::<String>();
+                            .unwrap_or(thinking_expanded_default);
 
                         let think_el = if step_open {
                             h_flex()
@@ -761,6 +753,11 @@ fn render_assistant_row(
                                         .text_color(cx.theme().muted_foreground)
                                         .child(think_text),
                                 )
+                                .child(
+                                    Icon::new(IconName::ChevronDown)
+                                        .xsmall()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
                         } else {
                             h_flex()
                                 .id(("think-step", msg_id * 1000 + step_idx as u64))
@@ -796,8 +793,12 @@ fn render_assistant_row(
                                         .text_xs()
                                         .line_height(px(16.))
                                         .text_color(cx.theme().muted_foreground)
-                                        .truncate()
-                                        .child(preview_line),
+                                        .child(tr(locale, "chat.thinkingLabel")),
+                                )
+                                .child(
+                                    Icon::new(IconName::ChevronRight)
+                                        .xsmall()
+                                        .text_color(cx.theme().muted_foreground),
                                 )
                         };
                         steps_stack = steps_stack.child(if is_pre_compaction {
