@@ -8,6 +8,7 @@ use gpui_kit::component::attachment::{Attachment, AttachmentContent, AttachmentT
 use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message::{Message, MessageAlignment, MessageContent, MessageFooter};
@@ -38,6 +39,7 @@ pub struct CachedRowEntities {
     pub expanded_tools: HashMap<SharedString, bool>,
     pub modified_files_open: bool,
     pub error_expanded: bool,
+    pub error_dismissed: bool,
     pub user_expanded: bool,
 }
 
@@ -74,6 +76,7 @@ pub fn render_message_row(
             expanded_tools: HashMap::new(),
             modified_files_open: true,
             error_expanded: false,
+            error_dismissed: false,
             user_expanded: false,
         }
     });
@@ -898,7 +901,7 @@ fn render_assistant_row(
             None
         }
     });
-    if let Some(err) = err_text {
+    if let Some(err) = err_text.filter(|_| !row_cache.error_dismissed) {
         let (code_opt, clean_summary) = parse_error_summary(err.as_ref());
         let err_copy = clean_summary.clone();
         let msg_id = msg.id;
@@ -975,6 +978,18 @@ fn render_assistant_row(
                                             err_copy.clone(),
                                         ));
                                     }),
+                            )
+                            .child(
+                                Button::new(("dismiss-err", msg.id))
+                                    .ghost()
+                                    .xsmall()
+                                    .h(px(24.))
+                                    .icon(IconName::Close)
+                                    .tooltip(tr(locale, "chat.dismissError"))
+                                    .on_click(cx.listener(move |panel, _, _, cx| {
+                                        cx.stop_propagation();
+                                        panel.dismiss_error(msg_id, cx);
+                                    })),
                             )
                             .child(
                                 Icon::new(if is_err_open {
@@ -1540,22 +1555,7 @@ fn render_tool_call_card(
                 ),
         );
 
-    if let Some(ref cmd) = bash_cmd {
-        let cmd_copy = cmd.to_string();
-        header_row = header_row.child(
-            div().pr_2().flex_shrink_0().child(
-                Button::new(("copy-bash", msg_id * 1000 + idx as u64))
-                    .outline()
-                    .xsmall()
-                    .icon(IconName::Copy)
-                    .label(tr(locale, "chat.copy"))
-                    .tooltip(tr(locale, "chat.copyBashTooltip"))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(cmd_copy.clone()));
-                    }),
-            ),
-        );
-    }
+
 
     let mut card = v_flex()
         .w_full()
@@ -1588,24 +1588,32 @@ fn render_tool_call_card(
                     .rounded_sm()
                     .bg(cx.theme().background)
                     .justify_between()
-                    .items_center()
+                    .items_start()
                     .gap_2()
                     .child(
                         div()
+                            .id(("bash-cmd-text", msg_id * 1000 + idx as u64))
                             .flex_1()
                             .min_w_0()
+                            .max_h(px(160.))
+                            .overflow_y_scroll()
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .child(SharedString::from(format!("$ {cmd}"))),
                     )
                     .child(
-                        Button::new(("copy-bash-body", msg_id * 1000 + idx as u64))
-                            .outline()
-                            .xsmall()
-                            .icon(IconName::Copy)
-                            .label(tr(locale, "chat.copy"))
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(cmd_copy.clone()));
-                            }),
+                        div()
+                            .flex_shrink_0()
+                            .child(
+                                Button::new(("copy-bash-body", msg_id * 1000 + idx as u64))
+                                    .outline()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .label(tr(locale, "chat.copy"))
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(cmd_copy.clone()));
+                                    }),
+                            ),
                     ),
             );
         } else {

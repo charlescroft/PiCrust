@@ -252,6 +252,13 @@ impl ChatPanel {
         self.scroller.update(cx, |s, cx| s.remeasure(cx));
     }
 
+    pub fn dismiss_error(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            entry.error_dismissed = true;
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
     pub fn toggle_user_expanded(&mut self, msg_id: u64, cx: &mut Context<Self>) {
         if let Some(entry) = self.row_cache.get_mut(&msg_id) {
             entry.user_expanded = !entry.user_expanded;
