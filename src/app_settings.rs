@@ -54,11 +54,17 @@ fn default_probe_interval() -> u64 {
 }
 
 /// Theme and typography block.
+fn default_theme_mode() -> String {
+    "dark".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppearanceSettings {
     #[serde(default = "default_true")]
     pub dark_mode: bool,
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
     #[serde(default = "default_light_theme")]
     pub light_theme: String,
     #[serde(default = "default_dark_theme")]
@@ -75,6 +81,7 @@ impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
             dark_mode: true,
+            theme_mode: default_theme_mode(),
             light_theme: default_light_theme(),
             dark_theme: default_dark_theme(),
             chat_font_size: default_chat_font_size(),

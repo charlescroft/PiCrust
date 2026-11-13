@@ -149,31 +149,26 @@ pub fn render_sidebar(
         // Top-level Views aligned uniformly at px_2p5
         .child(build_nav_row(
             "nav-tasks",
-            if tasks_count > 0 {
-                Spinner::new()
-                    .icon(Icon::new(crate::icons::LoaderCircleIcon))
-                    .small()
-                    .color(cx.theme().primary)
-                    .into_any_element()
-            } else {
-                Icon::new(IconName::CircleCheck).small().into_any_element()
-            },
+            Icon::new(IconName::CircleCheck).small(),
             format!("{} ({})", tr(locale, "sidebar.tasks"), format_commas(tasks_count)),
             active_page == WorkspacePage::Tasks,
             cx,
+            state.has_unread_completed_tasks,
             move |_, _, cx| {
                 app_tasks.update(cx, |s, cx| {
                     s.active_page = WorkspacePage::Tasks;
+                    s.mark_tasks_read(cx);
                     s.refresh_tasks_from_sidecar(cx);
                 });
             },
         ))
         .child(build_nav_row(
             "nav-scheduled",
-            IconName::Calendar,
+            Icon::new(IconName::Calendar).small(),
             format!("{} ({})", tr(locale, "sidebar.scheduled"), format_commas(sched_count)),
             active_page == WorkspacePage::Scheduled,
             cx,
+            false,
             move |_, _, cx| {
                 app_sched.update(cx, |s, cx| {
                     s.active_page = WorkspacePage::Scheduled;
@@ -184,10 +179,11 @@ pub fn render_sidebar(
         ))
         .child(build_nav_row(
             "nav-artifacts",
-            IconName::Frame,
+            Icon::new(IconName::Frame).small(),
             format!("{} ({})", tr(locale, "sidebar.artifacts"), format_commas(arts_count)),
             active_page == WorkspacePage::Artifacts,
             cx,
+            false,
             move |_, _, cx| {
                 app_arts.update(cx, |s, cx| {
                     s.active_page = WorkspacePage::Artifacts;
@@ -666,6 +662,7 @@ fn build_nav_row(
     label: String,
     active: bool,
     cx: &gpui_kit::App,
+    has_unread: bool,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
 ) -> AnyElement {
     h_flex()
@@ -698,6 +695,14 @@ fn build_nav_row(
                 })
                 .child(SharedString::from(label)),
         )
+        .children(has_unread.then(|| {
+            div()
+                .w(px(6.))
+                .h(px(6.))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(cx.theme().success)
+        }))
         .into_any_element()
 }
 

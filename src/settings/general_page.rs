@@ -8,8 +8,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
     App, Axis, Entity, ParentElement as _, SharedString, Styled as _, div, px,
@@ -144,12 +145,43 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
         ))
         .item(SettingItem::new(
             tr(locale, "settings.darkMode"),
-            SettingField::switch(
-                move |cx: &App| app_theme_read.read(cx).dark_mode,
-                move |val: bool, cx: &mut App| {
-                    app_theme_write.update(cx, |s, cx| s.set_dark_mode(val, cx));
-                },
-            ),
+            SettingField::render(move |_, _, cx| {
+                let current_mode = app_theme_read.read(cx).theme_mode.clone();
+                let app_t1 = app_theme_write.clone();
+                let app_t2 = app_theme_write.clone();
+                let app_t3 = app_theme_write.clone();
+                div()
+                    .w(SETTINGS_DROPDOWN_W)
+                    .child(
+                        TabBar::new("theme-mode-tabs")
+                            .segmented()
+                            .small()
+                            .child(
+                                Tab::new()
+                                    .label(tr(locale, "settings.themeDark"))
+                                    .selected(current_mode == "dark")
+                                    .on_click(move |_, _, cx| {
+                                        app_t1.update(cx, |s, cx| s.set_theme_mode("dark".to_string(), cx));
+                                    }),
+                            )
+                            .child(
+                                Tab::new()
+                                    .label(tr(locale, "settings.themeLight"))
+                                    .selected(current_mode == "light")
+                                    .on_click(move |_, _, cx| {
+                                        app_t2.update(cx, |s, cx| s.set_theme_mode("light".to_string(), cx));
+                                    }),
+                            )
+                            .child(
+                                Tab::new()
+                                    .label(tr(locale, "settings.themeSystem"))
+                                    .selected(current_mode == "system")
+                                    .on_click(move |_, _, cx| {
+                                        app_t3.update(cx, |s, cx| s.set_theme_mode("system".to_string(), cx));
+                                    }),
+                            ),
+                    )
+            }),
         ))
         .item(SettingItem::new(
             tr(locale, "settings.lightTheme"),

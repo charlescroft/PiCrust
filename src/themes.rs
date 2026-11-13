@@ -94,6 +94,7 @@ pub fn dark_theme_names() -> Vec<SharedString> {
 #[derive(Debug, Clone)]
 pub struct AppearancePrefs {
     pub dark_mode: bool,
+    pub theme_mode: String,
     pub light_theme: String,
     pub dark_theme: String,
     pub chat_font_size: f32,
@@ -115,6 +116,7 @@ impl AppearancePrefs {
     fn from_settings(s: &crate::app_settings::AppSettings) -> Self {
         Self {
             dark_mode: s.appearance.dark_mode,
+            theme_mode: s.appearance.theme_mode.clone(),
             light_theme: s.appearance.light_theme.clone(),
             dark_theme: s.appearance.dark_theme.clone(),
             chat_font_size: s.appearance.chat_font_size,
@@ -135,6 +137,7 @@ impl AppearancePrefs {
 
     fn apply_to(&self, s: &mut crate::app_settings::AppSettings) {
         s.appearance.dark_mode = self.dark_mode;
+        s.appearance.theme_mode = self.theme_mode.clone();
         s.appearance.light_theme = self.light_theme.clone();
         s.appearance.dark_theme = self.dark_theme.clone();
         s.appearance.chat_font_size = self.chat_font_size;

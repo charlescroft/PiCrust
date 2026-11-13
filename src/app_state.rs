@@ -89,6 +89,8 @@ pub struct AppState {
     pub find_query: SharedString,
 
     pub dark_mode: bool,
+    pub theme_mode: String,
+    pub has_unread_completed_tasks: bool,
     pub light_theme_name: SharedString,
     pub dark_theme_name: SharedString,
     pub chat_font_size: f32,
@@ -419,6 +421,8 @@ impl AppState {
             find_open: false,
             find_query: SharedString::default(),
             dark_mode: appearance.dark_mode,
+            theme_mode: appearance.theme_mode,
+            has_unread_completed_tasks: false,
             light_theme_name: SharedString::from(appearance.light_theme),
             dark_theme_name: SharedString::from(appearance.dark_theme),
             chat_font_size: initial_chat_font_size,
@@ -636,6 +640,7 @@ impl AppState {
     fn persist_appearance_only(&self) {
         crate::themes::save_appearance_prefs(&crate::themes::AppearancePrefs {
             dark_mode: self.dark_mode,
+            theme_mode: self.theme_mode.clone(),
             light_theme: self.light_theme_name.to_string(),
             dark_theme: self.dark_theme_name.to_string(),
             chat_font_size: self.chat_font_size,
@@ -821,6 +826,22 @@ impl AppState {
     pub fn set_chat_content_width(&mut self, width: f32, cx: &mut Context<Self>) {
         self.chat_content_width = width.clamp(756.0, 1512.0);
         self.persist_appearance_only();
+        cx.notify();
+    }
+
+    pub fn set_theme_mode(&mut self, mode: String, cx: &mut Context<Self>) {
+        self.theme_mode = mode.clone();
+        if mode == "dark" {
+            self.dark_mode = true;
+        } else if mode == "light" {
+            self.dark_mode = false;
+        }
+        self.persist_and_apply_appearance(cx);
+        cx.notify();
+    }
+
+    pub fn mark_tasks_read(&mut self, cx: &mut Context<Self>) {
+        self.has_unread_completed_tasks = false;
         cx.notify();
     }
 
@@ -1020,15 +1041,7 @@ impl AppState {
                     this.apply_network_proxy_response(&val);
                 }
                 if let Some(val) = artifacts_val {
-                    if let Some(arr) = val.get("artifacts").and_then(Value::as_array) {
-                        let parsed: Vec<ArtifactRecord> = arr
-                            .iter()
-                            .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                            .collect();
-                        if !parsed.is_empty() {
-                            this.artifacts = parsed;
-                        }
-                    }
+                    this.apply_artifacts_response(&val);
                 }
                 if let Some(val) = worktrees_val {
                     if let Some(arr) = val.get("worktrees").and_then(Value::as_array) {
@@ -1448,6 +1461,64 @@ impl AppState {
                 }
                 self.auth_providers = out;
             }
+        }
+    }
+
+    pub fn apply_artifacts_response(&mut self, val: &Value) {
+        let Some(arr) = val.get("artifacts").and_then(Value::as_array) else {
+            return;
+        };
+        let mut parsed = Vec::new();
+        for v in arr {
+            let path_opt = v.get("path").or_else(|| v.get("displayPath")).and_then(Value::as_str);
+            let id = v.get("identifier")
+                .and_then(Value::as_str)
+                .or(path_opt)
+                .unwrap_or("")
+                .to_string();
+            if id.is_empty() {
+                continue;
+            }
+            let title = v.get("title")
+                .or_else(|| v.get("displayPath"))
+                .and_then(Value::as_str)
+                .unwrap_or(&id)
+                .to_string();
+            let session_id = v.get("sessionId").and_then(Value::as_str).map(String::from);
+            let updated_at = v.get("updated").and_then(Value::as_str).map(String::from);
+            let version = v.get("versionCount").and_then(Value::as_u64).unwrap_or(1) as usize;
+            let favorite = v.get("favorite").and_then(Value::as_bool).unwrap_or(false);
+
+            let ext = path_opt.and_then(|p| p.rsplit('.').next()).unwrap_or("");
+            let kind = match ext.to_lowercase().as_str() {
+                "html" | "htm" => ArtifactKind::Html,
+                "svg" => ArtifactKind::Svg,
+                "tsx" | "jsx" => ArtifactKind::React,
+                "md" | "markdown" => ArtifactKind::Markdown,
+                "mermaid" => ArtifactKind::Mermaid,
+                _ => ArtifactKind::Code,
+            };
+
+            let content = path_opt
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .or_else(|| v.get("content").and_then(Value::as_str).map(String::from))
+                .unwrap_or_default();
+
+            parsed.push(ArtifactRecord {
+                identifier: id,
+                title,
+                kind,
+                language: Some(ext.to_string()),
+                content,
+                previous_content: None,
+                version,
+                session_id,
+                updated_at,
+                favorite,
+            });
+        }
+        if !parsed.is_empty() {
+            self.artifacts = parsed;
         }
     }
 
@@ -2212,6 +2283,10 @@ impl AppState {
             );
         }
 
+        let has_done = by_sid.values().any(|t| t.status == "recent");
+        if has_done && self.active_page != WorkspacePage::Tasks {
+            self.has_unread_completed_tasks = true;
+        }
         self.tasks = by_sid.into_values().collect();
     }
 
