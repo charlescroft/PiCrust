@@ -54,3 +54,12 @@ impl IconNamed for AtSignIcon {
         gpui_kit::assets::IconName::AtSign.path()
     }
 }
+
+#[derive(Clone, Copy)]
+pub struct LoaderCircleIcon;
+
+impl IconNamed for LoaderCircleIcon {
+    fn path(self) -> SharedString {
+        gpui_kit::assets::IconName::LoaderCircle.path()
+    }
+}

@@ -25,7 +25,7 @@ use std::borrow::Cow;
 
 // Icons this client uses that are absent from the component's default set:
 // the asset source only serves what these lists embed.
-icon_assets!(ExtraIcons, [Zap, Shield, Database, Pencil, Trash, AtSign]);
+icon_assets!(ExtraIcons, [Zap, Shield, Database, Pencil, Trash, AtSign, LoaderCircle]);
 
 struct PiAssets;
 

@@ -957,7 +957,7 @@ impl<E: ParentElement + Styled> SidebarActivityExt for E {
             self.child(
                 div()
                     .flex_shrink_0()
-                    .child(Spinner::new().xsmall().color(cx.theme().primary)),
+                    .child(Icon::new(crate::icons::LoaderCircleIcon).xsmall().text_color(cx.theme().primary)),
             )
         } else if unread {
             self.child(
@@ -991,7 +991,7 @@ impl<E: ParentElement + Styled> SidebarActivityExt for E {
                     .gap_0p5()
                     .text_xs()
                     .text_color(cx.theme().primary)
-                    .child(Spinner::new().xsmall().color(cx.theme().primary))
+                    .child(Icon::new(crate::icons::LoaderCircleIcon).xsmall().text_color(cx.theme().primary))
                     .child(running_count.to_string()),
             );
         }
