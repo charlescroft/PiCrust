@@ -180,6 +180,9 @@ pub struct AppState {
     /// of this session no matter how often the extension re-emits its widget.
     /// Only switching/starting a session clears it.
     pub todos_hidden: bool,
+    /// Session whose todo panel the user dismissed, so re-selecting the same
+    /// session (or a refresh that re-runs select_session) keeps it hidden.
+    pub todos_hidden_session: Option<String>,
     pub retry_status: Option<SharedString>,
     pub draft_restore_text: Option<String>,
     pub pending_composer_mention: Option<String>,
@@ -439,6 +442,7 @@ impl AppState {
             todos_expanded: false,
             dismissed_todo_ids: std::collections::HashSet::new(),
             todos_hidden: false,
+            todos_hidden_session: None,
             retry_status: None,
             draft_restore_text: None,
             pending_composer_mention: None,
@@ -653,6 +657,7 @@ impl AppState {
         self.todos.clear();
         self.todos_expanded = false;
         self.todos_hidden = true;
+        self.todos_hidden_session = self.active_session_id.clone();
         cx.notify();
     }
 
@@ -2543,6 +2548,7 @@ impl AppState {
         self.todos_expanded = false;
         self.dismissed_todo_ids.clear();
         self.todos_hidden = false;
+        self.todos_hidden_session = None;
         self.stats = SessionStats::default();
         self.subagent_runs.clear();
         self.tool_subagent_runs.clear();
