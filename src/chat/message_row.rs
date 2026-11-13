@@ -41,7 +41,7 @@ pub struct CachedRowEntities {
     pub user_expanded: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ModifiedFileSummary {
     path: String,
     added: usize,
@@ -1132,9 +1132,10 @@ fn render_assistant_row(
         );
     }
 
-    // 5. Modified files summary card shown ONLY after the entire turn settles (!is_turn_live)
+    // 5. Modified files summary card: shown as soon as this turn stopped streaming,
+    //    independent of any app-wide running flag.
     let modified_files = collect_modified_files(&msg.tool_calls);
-    if !is_turn_live && !modified_files.is_empty() {
+    if !msg.is_streaming && !modified_files.is_empty() {
         let mf_open = row_cache.modified_files_open;
         let msg_id = msg.id;
         let count = modified_files.len();
@@ -1314,7 +1315,7 @@ fn render_assistant_row(
     // 6. Full-width Separator + Footer:
     //    - Shown ONLY when the entire turn has settled (!is_turn_live) AND has answer text
     //    - Timestamp shows the real parsed/recorded time without hardcoded "Just now"
-    if !is_turn_live && has_answer_text {
+    if !msg.is_streaming && has_answer_text {
         let mut left_actions = h_flex().items_center().gap_2p5();
         let copy_md = msg.content.clone();
         left_actions = left_actions.child(
@@ -2022,5 +2023,54 @@ impl<T: ParentElement> EntryExt for T {
                 .text_color(cx.theme().muted_foreground)
                 .child(timestamp.clone()),
         )
+    }
+}
+
+#[cfg(test)]
+mod modified_files_tests {
+    use super::collect_modified_files;
+    use crate::client::session_controller::parse_session_messages;
+
+    #[test]
+    fn write_and_edit_calls_become_modified_file_rows() {
+        let payload = serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "change files" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "text", "text": "done" },
+                        {
+                            "type": "toolCall",
+                            "id": "c1",
+                            "name": "write",
+                            "arguments": { "path": "src/a.rs", "content": "fn a() {}\n" }
+                        },
+                        {
+                            "type": "toolCall",
+                            "id": "c2",
+                            "name": "edit",
+                            "arguments": {
+                                "path": "src/b.rs",
+                                "oldText": "let x = 1;",
+                                "newText": "let x = 2;"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+        let mut next_id = 1u64;
+        let messages = parse_session_messages(&payload, &mut next_id);
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == crate::client::types::MessageRole::Assistant)
+            .expect("assistant message parsed");
+        assert_eq!(assistant.tool_calls.len(), 2, "both tool calls carried arguments");
+
+        let files = collect_modified_files(&assistant.tool_calls);
+        assert_eq!(files.len(), 2, "two files summarised: {files:?}");
+        assert!(files.iter().any(|f| f.path.ends_with("a.rs") && f.added > 0));
+        assert!(files.iter().any(|f| f.path.ends_with("b.rs")));
     }
 }
