@@ -146,7 +146,7 @@ pub struct ChatPanel {
     row_cache: HashMap<u64, CachedRowEntities>,
     last_message_count: usize,
     last_session_id: Option<String>,
-    last_font_size: ChatFontSize,
+    last_font_size: f32,
     last_tail_sig: Option<(u64, usize, usize, usize, bool)>,
     hovered_turn_idx: Option<usize>,
     nav_window_start: usize,
@@ -407,7 +407,8 @@ impl Render for ChatPanel {
         };
         let chat_col_w = window.viewport_size().width - sidebar_w - right_w;
         // Centered 840px content leaves ((chat_col_w - 840) / 2) on the left; rail takes ~44px.
-        let has_gutter_space = chat_col_w >= px(840. + 88.);
+        let chat_width = state_snap.chat_content_width;
+        let has_gutter_space = chat_col_w >= px(chat_width + 88.);
 
         let turns = collect_turn_locations(&messages);
         let top_item_ix = self.scroller.read(cx).logical_scroll_top().item_ix;

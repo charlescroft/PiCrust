@@ -124,7 +124,7 @@ pub fn render_message_row(
         let is_last = state.messages.last().map(|m| m.id) == Some(msg.id);
         (
             msg.is_streaming || (is_last && (state.is_agent_running || state.is_compacting)),
-            state.chat_font_size.px_value(),
+            state.chat_font_size,
             state.locale,
             state.user_collapse_chars,
         )
@@ -154,7 +154,7 @@ pub fn render_message_row(
         .px_6()
         .py_1p5()
         .font_family(cx.theme().font_family.clone())
-        .child(div().w_full().max_w(px(840.)).mx_auto().child(inner))
+        .child(div().w_full().max_w(px(app_state.read(cx).chat_content_width)).mx_auto().child(inner))
         .into_any_element()
 }
 

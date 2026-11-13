@@ -96,7 +96,9 @@ pub struct AppearancePrefs {
     pub dark_mode: bool,
     pub light_theme: String,
     pub dark_theme: String,
-    pub chat_font_size: String,
+    pub chat_font_size: f32,
+    pub ui_font_size: f32,
+    pub chat_content_width: f32,
     pub locale: String,
     pub send_shortcut: String,
     pub user_collapse_chars: usize,
@@ -114,7 +116,9 @@ impl AppearancePrefs {
             dark_mode: s.appearance.dark_mode,
             light_theme: s.appearance.light_theme.clone(),
             dark_theme: s.appearance.dark_theme.clone(),
-            chat_font_size: s.appearance.chat_font_size.clone(),
+            chat_font_size: s.appearance.chat_font_size,
+            ui_font_size: s.appearance.ui_font_size,
+            chat_content_width: s.chat.chat_content_width,
             locale: s.appearance.locale.clone(),
             send_shortcut: s.chat.send_shortcut.clone(),
             user_collapse_chars: s.chat.user_collapse_chars,
@@ -131,7 +135,9 @@ impl AppearancePrefs {
         s.appearance.dark_mode = self.dark_mode;
         s.appearance.light_theme = self.light_theme.clone();
         s.appearance.dark_theme = self.dark_theme.clone();
-        s.appearance.chat_font_size = self.chat_font_size.clone();
+        s.appearance.chat_font_size = self.chat_font_size;
+        s.appearance.ui_font_size = self.ui_font_size;
+        s.chat.chat_content_width = self.chat_content_width;
         s.appearance.locale = self.locale.clone();
         s.chat.send_shortcut = self.send_shortcut.clone();
         s.chat.user_collapse_chars = self.user_collapse_chars;

@@ -1,14 +1,15 @@
 use crate::app_state::AppState;
 use crate::client::native_index::user_home;
-use crate::client::types::{ChatFontSize, SendShortcut};
+use crate::client::types::SendShortcut;
 use crate::i18n::{AppLocale, tr};
 use crate::settings::{SETTINGS_BTN_W, SETTINGS_DROPDOWN_W, config_path_field};
-use crate::themes::{dark_theme_names, font_size_from_str, font_size_to_str, light_theme_names};
-use gpui_kit::component::button::Button;
+use crate::themes::{dark_theme_names, light_theme_names};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
     App, Axis, Entity, ParentElement as _, SharedString, Styled as _, div, px,
@@ -38,8 +39,9 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
     let app_light_write = app_state.clone();
     let app_dark_read = app_state.clone();
     let app_dark_write = app_state.clone();
-    let app_font_read = app_state.clone();
-    let app_font_write = app_state.clone();
+    let app_chat_font = app_state.clone();
+    let app_ui_font = app_state.clone();
+    let app_chat_width = app_state.clone();
     // Chat & display
     let app_sc_read = app_state.clone();
     let app_sc_write = app_state.clone();
@@ -78,17 +80,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
         .map(|&loc| (SharedString::from(loc.code()), SharedString::from(loc.label())))
         .collect();
 
-    let font_options: Vec<(SharedString, SharedString)> = ChatFontSize::all()
-        .iter()
-        .map(|&sz| {
-            let label = match sz {
-                ChatFontSize::Small => tr(locale, "settings.fontSmall"),
-                ChatFontSize::Medium => tr(locale, "settings.fontMedium"),
-                ChatFontSize::Large => tr(locale, "settings.fontLarge"),
-            };
-            (SharedString::from(font_size_to_str(sz)), SharedString::from(label))
-        })
-        .collect();
+
 
     let send_options: Vec<(SharedString, SharedString)> = SendShortcut::all()
         .iter()
@@ -182,22 +174,122 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
             .w(SETTINGS_DROPDOWN_W),
         ))
         .item(SettingItem::new(
-            tr(locale, "settings.fontSize"),
-            SettingField::dropdown(
-                font_options,
-                move |cx: &App| {
-                    SharedString::from(font_size_to_str(app_font_read.read(cx).chat_font_size))
-                },
-                move |val: SharedString, cx: &mut App| {
-                    let next = font_size_from_str(val.as_ref());
-                    app_font_write.update(cx, |s, cx| s.set_chat_font_size(next, cx));
-                },
-            )
-            .w(SETTINGS_DROPDOWN_W),
+            tr(locale, "settings.uiFontSize"),
+            SettingField::render(move |_, _, cx| {
+                let s = app_ui_font.read(cx);
+                let val = s.ui_font_size;
+                let slider = s.ui_font_slider.clone();
+                let app_reset = app_ui_font.clone();
+                h_flex()
+                    .w(SETTINGS_DROPDOWN_W)
+                    .items_center()
+                    .gap_2p5()
+                    .child(
+                        div()
+                            .w(px(48.))
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().foreground)
+                            .child(format!("{val:.0}px")),
+                    )
+                    .child(div().flex_1().child(Slider::new(&slider)))
+                    .child(
+                        Button::new("reset-ui-font")
+                            .ghost()
+                            .small()
+                            .h(px(26.))
+                            .w(px(26.))
+                            .icon(IconName::RotateCw)
+                            .disabled(val == 13.0)
+                            .tooltip(tr(locale, "settings.reset"))
+                            .on_click(move |_, window, cx| {
+                                app_reset.update(cx, |s, cx| {
+                                    s.set_ui_font_size(13.0, cx);
+                                    s.ui_font_slider.update(cx, |st, cx| st.set_value(13.0, window, cx));
+                                });
+                            }),
+                    )
+            }),
+        ))
+        .item(SettingItem::new(
+            tr(locale, "settings.chatFontSize"),
+            SettingField::render(move |_, _, cx| {
+                let s = app_chat_font.read(cx);
+                let val = s.chat_font_size;
+                let slider = s.chat_font_slider.clone();
+                let app_reset = app_chat_font.clone();
+                h_flex()
+                    .w(SETTINGS_DROPDOWN_W)
+                    .items_center()
+                    .gap_2p5()
+                    .child(
+                        div()
+                            .w(px(48.))
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().foreground)
+                            .child(format!("{val:.0}px")),
+                    )
+                    .child(div().flex_1().child(Slider::new(&slider)))
+                    .child(
+                        Button::new("reset-chat-font")
+                            .ghost()
+                            .small()
+                            .h(px(26.))
+                            .w(px(26.))
+                            .icon(IconName::RotateCw)
+                            .disabled(val == 13.0)
+                            .tooltip(tr(locale, "settings.reset"))
+                            .on_click(move |_, window, cx| {
+                                app_reset.update(cx, |s, cx| {
+                                    s.set_chat_font_size(13.0, cx);
+                                    s.chat_font_slider.update(cx, |st, cx| st.set_value(13.0, window, cx));
+                                });
+                            }),
+                    )
+            }),
         ));
 
     let chat_group = SettingGroup::new()
         .title(tr(locale, "settings.chatPrefs"))
+        .item(SettingItem::new(
+            tr(locale, "settings.chatContentWidth"),
+            SettingField::render(move |_, _, cx| {
+                let s = app_chat_width.read(cx);
+                let val = s.chat_content_width;
+                let slider = s.chat_width_slider.clone();
+                let app_reset = app_chat_width.clone();
+                h_flex()
+                    .w(SETTINGS_DROPDOWN_W)
+                    .items_center()
+                    .gap_2p5()
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().foreground)
+                            .child(format!("{val:.0}px")),
+                    )
+                    .child(div().flex_1().child(Slider::new(&slider)))
+                    .child(
+                        Button::new("reset-chat-width")
+                            .ghost()
+                            .small()
+                            .h(px(26.))
+                            .w(px(26.))
+                            .icon(IconName::RotateCw)
+                            .disabled(val == 840.0)
+                            .tooltip(tr(locale, "settings.reset"))
+                            .on_click(move |_, window, cx| {
+                                app_reset.update(cx, |s, cx| {
+                                    s.set_chat_content_width(840.0, cx);
+                                    s.chat_width_slider.update(cx, |st, cx| st.set_value(840.0, window, cx));
+                                });
+                            }),
+                    )
+            }),
+        ))
         .item(SettingItem::new(
             tr(locale, "settings.sendShortcut"),
             SettingField::dropdown(

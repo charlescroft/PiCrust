@@ -140,6 +140,8 @@ impl Render for WorkspaceView {
             None
         };
 
+        let ui_sz = self.app_state.read(cx).ui_font_size;
+        window.set_rem_size(px(ui_sz));
         let win_w = window.viewport_size().width;
 
         div()

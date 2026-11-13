@@ -13,9 +13,10 @@ use crate::client::session_controller::{
 };
 use crate::client::sidecar::SidecarProcess;
 use crate::client::sse::{AgentSseEvent, consume_agent_sse};
+use gpui_kit::component::slider::{SliderEvent, SliderState};
 use crate::client::types::*;
 use crate::i18n::AppLocale;
-use gpui_kit::{Context, Pixels, SharedString, Window, px};
+use gpui_kit::{AppContext as _, Context, Entity, Pixels, SharedString, Window, px};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -88,7 +89,12 @@ pub struct AppState {
     pub dark_mode: bool,
     pub light_theme_name: SharedString,
     pub dark_theme_name: SharedString,
-    pub chat_font_size: ChatFontSize,
+    pub chat_font_size: f32,
+    pub ui_font_size: f32,
+    pub chat_content_width: f32,
+    pub chat_font_slider: Entity<SliderState>,
+    pub ui_font_slider: Entity<SliderState>,
+    pub chat_width_slider: Entity<SliderState>,
     pub send_shortcut: SendShortcut,
     pub locale: AppLocale,
     pub user_collapse_chars: usize,
@@ -343,9 +349,54 @@ impl AppState {
         let active_artifact_id = artifacts.first().map(|a| a.identifier.clone());
 
         let appearance = crate::themes::load_appearance_prefs();
-        let initial_font_size = crate::themes::font_size_from_str(&appearance.chat_font_size);
+        let initial_chat_font_size = appearance.chat_font_size.clamp(9.0, 22.0);
+        let initial_ui_font_size = appearance.ui_font_size.clamp(5.0, 21.0);
+        let initial_chat_width = appearance.chat_content_width.clamp(756.0, 1512.0);
         let initial_locale = crate::themes::locale_from_prefs(&appearance.locale);
         let initial_send_shortcut = crate::themes::send_shortcut_from_prefs(&appearance.send_shortcut);
+
+        let chat_font_slider = cx.new(|_| {
+            SliderState::new()
+                .min(9.0)
+                .max(22.0)
+                .step(1.0)
+                .default_value(initial_chat_font_size)
+        });
+        let ui_font_slider = cx.new(|_| {
+            SliderState::new()
+                .min(5.0)
+                .max(21.0)
+                .step(1.0)
+                .default_value(initial_ui_font_size)
+        });
+        let chat_width_slider = cx.new(|_| {
+            SliderState::new()
+                .min(756.0)
+                .max(1512.0)
+                .step(10.0)
+                .default_value(initial_chat_width)
+        });
+
+        let app_cfs = cx.entity().clone();
+        cx.subscribe(&chat_font_slider, move |this, _, ev: &SliderEvent, cx| {
+            if let SliderEvent::Change(val) | SliderEvent::Release(val) = ev {
+                this.set_chat_font_size(val.start(), cx);
+            }
+        }).detach();
+
+        let app_ufs = cx.entity().clone();
+        cx.subscribe(&ui_font_slider, move |this, _, ev: &SliderEvent, cx| {
+            if let SliderEvent::Change(val) | SliderEvent::Release(val) = ev {
+                this.set_ui_font_size(val.start(), cx);
+            }
+        }).detach();
+
+        let app_cws = cx.entity().clone();
+        cx.subscribe(&chat_width_slider, move |this, _, ev: &SliderEvent, cx| {
+            if let SliderEvent::Change(val) | SliderEvent::Release(val) = ev {
+                this.set_chat_content_width(val.start(), cx);
+            }
+        }).detach();
 
         let mut state = Self {
             client,
@@ -367,7 +418,12 @@ impl AppState {
             dark_mode: appearance.dark_mode,
             light_theme_name: SharedString::from(appearance.light_theme),
             dark_theme_name: SharedString::from(appearance.dark_theme),
-            chat_font_size: initial_font_size,
+            chat_font_size: initial_chat_font_size,
+            ui_font_size: initial_ui_font_size,
+            chat_content_width: initial_chat_width,
+            chat_font_slider,
+            ui_font_slider,
+            chat_width_slider,
             send_shortcut: initial_send_shortcut,
             locale: initial_locale,
             user_collapse_chars: appearance.user_collapse_chars,
@@ -578,7 +634,9 @@ impl AppState {
             dark_mode: self.dark_mode,
             light_theme: self.light_theme_name.to_string(),
             dark_theme: self.dark_theme_name.to_string(),
-            chat_font_size: crate::themes::font_size_to_str(self.chat_font_size).to_string(),
+            chat_font_size: self.chat_font_size,
+            ui_font_size: self.ui_font_size,
+            chat_content_width: self.chat_content_width,
             locale: self.locale.code().to_string(),
             send_shortcut: self.send_shortcut.as_str().to_string(),
             user_collapse_chars: self.user_collapse_chars,
@@ -743,8 +801,20 @@ impl AppState {
         cx.notify();
     }
 
-    pub fn set_chat_font_size(&mut self, size: ChatFontSize, cx: &mut Context<Self>) {
-        self.chat_font_size = size;
+    pub fn set_chat_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        self.chat_font_size = size.clamp(9.0, 22.0);
+        self.persist_appearance_only();
+        cx.notify();
+    }
+
+    pub fn set_ui_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        self.ui_font_size = size.clamp(5.0, 21.0);
+        self.persist_appearance_only();
+        cx.notify();
+    }
+
+    pub fn set_chat_content_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.chat_content_width = width.clamp(756.0, 1512.0);
         self.persist_appearance_only();
         cx.notify();
     }

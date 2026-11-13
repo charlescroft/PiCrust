@@ -592,7 +592,7 @@ impl ComposerView {
 
         let mut wrapper = v_flex()
             .w_full()
-            .max_w(px(840.))
+            .max_w(px(state.chat_content_width))
             .mx_auto()
             .gap_2();
 

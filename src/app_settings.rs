@@ -31,8 +31,14 @@ fn default_diff_view_mode() -> String {
 fn default_core_mode() -> String {
     "auto".to_string()
 }
-fn default_font_size() -> String {
-    "medium".to_string()
+fn default_chat_font_size() -> f32 {
+    13.0
+}
+fn default_ui_font_size() -> f32 {
+    13.0
+}
+fn default_chat_content_width() -> f32 {
+    840.0
 }
 fn default_locale() -> String {
     "en".to_string()
@@ -57,8 +63,10 @@ pub struct AppearanceSettings {
     pub light_theme: String,
     #[serde(default = "default_dark_theme")]
     pub dark_theme: String,
-    #[serde(default = "default_font_size")]
-    pub chat_font_size: String,
+    #[serde(default = "default_chat_font_size")]
+    pub chat_font_size: f32,
+    #[serde(default = "default_ui_font_size")]
+    pub ui_font_size: f32,
     #[serde(default = "default_locale")]
     pub locale: String,
 }
@@ -69,7 +77,8 @@ impl Default for AppearanceSettings {
             dark_mode: true,
             light_theme: default_light_theme(),
             dark_theme: default_dark_theme(),
-            chat_font_size: default_font_size(),
+            chat_font_size: default_chat_font_size(),
+            ui_font_size: default_ui_font_size(),
             locale: default_locale(),
         }
     }
@@ -88,6 +97,8 @@ pub struct ChatSettings {
     pub thinking_expanded_default: bool,
     #[serde(default = "default_diff_view_mode")]
     pub diff_view_mode: String,
+    #[serde(default = "default_chat_content_width")]
+    pub chat_content_width: f32,
 }
 
 impl Default for ChatSettings {
@@ -97,6 +108,7 @@ impl Default for ChatSettings {
             user_collapse_chars: default_user_collapse_chars(),
             thinking_expanded_default: false,
             diff_view_mode: default_diff_view_mode(),
+            chat_content_width: default_chat_content_width(),
         }
     }
 }
@@ -235,7 +247,15 @@ fn import_legacy(path: &Path) -> AppSettings {
         settings.appearance.dark_theme = v;
     }
     if let Some(v) = legacy.chat_font_size {
-        settings.appearance.chat_font_size = v;
+        if let Ok(f) = v.parse::<f32>() {
+            settings.appearance.chat_font_size = f;
+        } else {
+            settings.appearance.chat_font_size = match v.as_str() {
+                "small" => 12.0,
+                "large" => 14.0,
+                _ => 13.0,
+            };
+        }
     }
     if let Some(v) = legacy.locale {
         settings.appearance.locale = v;
