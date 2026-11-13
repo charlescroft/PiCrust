@@ -264,6 +264,8 @@ fn en_text(key: &'static str) -> &'static str {
         "settings.mcpTrust" => "Project Trust",
         "settings.mcpServers" => "Configured MCP Servers",
         "settings.skillsTitle" => "Loaded Skills",
+        "settings.pluginManagement" => "Plugin Management",
+        "settings.updateAll" => "Update All",
         "settings.pluginsTitle" => "Installed Package Plugins",
         "settings.emptySidecar" => "No items reported by sidecar",
 
@@ -740,6 +742,8 @@ fn zh_text(key: &'static str) -> &'static str {
         "settings.mcpTrust" => "项目信任",
         "settings.mcpServers" => "已配置的 MCP 服务",
         "settings.skillsTitle" => "已加载技能",
+        "settings.pluginManagement" => "插件管理",
+        "settings.updateAll" => "更新全部",
         "settings.pluginsTitle" => "已安装插件包",
         "settings.emptySidecar" => "当前无条目",
 

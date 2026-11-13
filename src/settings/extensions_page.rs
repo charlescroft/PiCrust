@@ -289,27 +289,68 @@ pub fn skills_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
 pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App) -> SettingPage {
     let plugins = app_state.read(cx).plugins.clone();
     let app_add_plugin = app_state.clone();
+    let app_upd_all = app_state.clone();
 
     let mut group = SettingGroup::new()
         .title(tr(locale, "settings.pluginsTitle"))
         .item(
             SettingItem::new(
-                tr(locale, "settings.installPlugin"),
+                tr(locale, "settings.pluginManagement"),
                 SettingField::render(move |_, _, _| {
                     let app_btn = app_add_plugin.clone();
-                    Button::new("add-plugin-btn")
-                        .primary()
-                        .small()
-                        .h(px(28.))
-                        .w(SETTINGS_BTN_W)
-                        .icon(IconName::Plus)
-                        .label(tr(locale, "settings.add"))
-                        .on_click(move |_, _, cx| {
-                            app_btn.update(cx, |s, cx| {
-                                s.settings_add_kind = Some(SettingsAddKind::Plugin);
-                                cx.notify();
-                            });
-                        })
+                    let app_upd = app_upd_all.clone();
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("add-plugin-btn")
+                                .primary()
+                                .small()
+                                .h(px(28.))
+                                .w(SETTINGS_BTN_W)
+                                .icon(IconName::Plus)
+                                .label(tr(locale, "settings.add"))
+                                .on_click(move |_, _, cx| {
+                                    app_btn.update(cx, |s, cx| {
+                                        s.settings_add_kind = Some(SettingsAddKind::Plugin);
+                                        cx.notify();
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("update-all-plugins-btn")
+                                .outline()
+                                .small()
+                                .h(px(28.))
+                                .w(SETTINGS_BTN_W)
+                                .icon(IconName::RefreshCw)
+                                .label(tr(locale, "settings.updateAll"))
+                                .on_click(move |_, _, cx| {
+                                    app_upd.update(cx, |s, cx| {
+                                        if s.sidecar_connected {
+                                            let client = s.client.clone();
+                                            let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                            let entity = cx.entity().clone();
+                                            cx.spawn(async move |_, cx| {
+                                                if let Ok(res) = client
+                                                    .plugin_action(json!({
+                                                        "cwd": cwd,
+                                                        "action": "update",
+                                                    }))
+                                                    .await
+                                                {
+                                                    let _ = entity.update(cx, |s, cx| {
+                                                        s.apply_plugins_response(&res);
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            })
+                                            .detach();
+                                        }
+                                    });
+                                }),
+                        )
                 }),
             ),
         );
@@ -404,7 +445,15 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                 .justify_end()
                                 .gap_2()
                                 .items_center()
-                                .child(Tag::secondary().small().child(SharedString::from(source_tag)))
+                                .child(Tag::secondary().small().child(SharedString::from(
+                                    if src_w.starts_with("npm:") {
+                                        "npm".to_string()
+                                    } else if src_w.starts_with("git:") || src_w.starts_with("http") || src_w.ends_with(".git") {
+                                        "git".to_string()
+                                    } else {
+                                        "local".to_string()
+                                    }
+                                )))
                                 .child(Tag::secondary().small().child(SharedString::from(format!("v{}", ver))))
                                 .child(
                                     Switch::new(SharedString::from(format!("plugin-sw-{}", idx)))
