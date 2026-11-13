@@ -174,10 +174,12 @@ pub struct AppState {
     pub file_search_results: Vec<FileMatch>,
     pub todos: Vec<TodoWidgetItem>,
     pub todos_expanded: bool,
-    /// Items the user dismissed from the rpiv-todos panel. They stay hidden even
-    /// when the extension replays the same widget, and only a todo list made of
-    /// unseen ids (a fresh plan) shows the panel again.
+    /// Items the user dismissed from the rpiv-todos panel.
     pub dismissed_todo_ids: std::collections::HashSet<String>,
+    /// Set once the panel is dismissed: the todo panel stays hidden for the rest
+    /// of this session no matter how often the extension re-emits its widget.
+    /// Only switching/starting a session clears it.
+    pub todos_hidden: bool,
     pub retry_status: Option<SharedString>,
     pub draft_restore_text: Option<String>,
     pub pending_composer_mention: Option<String>,
@@ -436,6 +438,7 @@ impl AppState {
             todos,
             todos_expanded: false,
             dismissed_todo_ids: std::collections::HashSet::new(),
+            todos_hidden: false,
             retry_status: None,
             draft_restore_text: None,
             pending_composer_mention: None,
@@ -649,11 +652,16 @@ impl AppState {
         }
         self.todos.clear();
         self.todos_expanded = false;
+        self.todos_hidden = true;
         cx.notify();
     }
 
     /// Drops any dismissed item that a replay or an optimistic update re-added.
     fn prune_dismissed_todos(&mut self) {
+        if self.todos_hidden {
+            self.todos.clear();
+            return;
+        }
         if self.dismissed_todo_ids.is_empty() {
             return;
         }
@@ -663,6 +671,10 @@ impl AppState {
 
     /// Applies a todo list while keeping dismissed items hidden.
     pub fn set_todos(&mut self, items: Vec<TodoWidgetItem>) {
+        if self.todos_hidden {
+            self.todos.clear();
+            return;
+        }
         if self.dismissed_todo_ids.is_empty() {
             self.todos = items;
         } else {
@@ -2524,6 +2536,7 @@ impl AppState {
         self.todos.clear();
         self.todos_expanded = false;
         self.dismissed_todo_ids.clear();
+        self.todos_hidden = false;
         self.stats = SessionStats::default();
         self.subagent_runs.clear();
         self.tool_subagent_runs.clear();
@@ -3265,8 +3278,6 @@ impl AppState {
                 args,
             } => {
                 if tool_name == "todo" {
-                    // A new todo call starts a new plan: stop hiding the old one.
-                    self.dismissed_todo_ids.clear();
                     if let Some(ref a) = args {
                         apply_optimistic_todo_args(&mut self.todos, a);
                         self.prune_dismissed_todos();
