@@ -1175,12 +1175,33 @@ impl AppState {
             self.thinking_level = ThinkingLevel::Off;
             return;
         }
-        let cur = self.thinking_level.as_str();
-        if !supported.iter().any(|s| s == cur) {
-            self.thinking_level = supported
-                .first()
-                .and_then(|s| parse_thinking_level_str(s))
+        let cur = self.thinking_level;
+        // Check if current level is supported (accounting for "max" == "xhigh")
+        let is_supported = supported
+            .iter()
+            .any(|s| parse_thinking_level_str(s) == Some(cur));
+        if !is_supported {
+            // Pick the model's preferred reasoning level (medium, or first non-off), fallback to off
+            let preferred = supported
+                .iter()
+                .filter(|s| s.as_str() != "off")
+                .find_map(|s| {
+                    let lvl = parse_thinking_level_str(s)?;
+                    if lvl == ThinkingLevel::Medium {
+                        Some(lvl)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    supported
+                        .iter()
+                        .filter(|s| s.as_str() != "off")
+                        .find_map(|s| parse_thinking_level_str(s))
+                })
+                .or_else(|| supported.first().and_then(|s| parse_thinking_level_str(s)))
                 .unwrap_or(ThinkingLevel::Off);
+            self.thinking_level = preferred;
         }
     }
 

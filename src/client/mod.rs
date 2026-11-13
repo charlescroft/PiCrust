@@ -734,6 +734,40 @@ pub fn parse_models_list(payload: &Value) -> Vec<Value> {
         if let Some(name) = name {
             obj.insert("name".to_string(), json!(name));
         }
+
+        // Capabilities: reasoning/thinking, context window, max tokens, images
+        if let Value::Object(o) = item {
+            let is_reasoning = o.get("supports_thinking").and_then(Value::as_bool)
+                .or_else(|| o.get("supports_reasoning").and_then(Value::as_bool))
+                .or_else(|| o.get("reasoning").and_then(Value::as_bool))
+                .or_else(|| o.get("thinking").and_then(Value::as_bool))
+                .unwrap_or(false);
+            if is_reasoning {
+                obj.insert("reasoning".to_string(), json!(true));
+            }
+
+            let ctx = ["context_length", "max_context_length", "context_window", "contextWindow", "max_model_len"]
+                .iter()
+                .find_map(|k| o.get(*k))
+                .and_then(Value::as_u64);
+            if let Some(cw) = ctx {
+                obj.insert("contextWindow".to_string(), json!(cw));
+            }
+
+            let max_out = ["max_output_tokens", "max_completion_tokens", "maxTokens", "outputTokenLimit"]
+                .iter()
+                .find_map(|k| o.get(*k))
+                .and_then(Value::as_u64);
+            if let Some(mt) = max_out {
+                obj.insert("maxTokens".to_string(), json!(mt));
+            }
+
+            let has_image = o.get("supports_images").and_then(Value::as_bool).unwrap_or(false);
+            if has_image {
+                obj.insert("input".to_string(), json!(["text", "image"]));
+            }
+        }
+
         out.push(Value::Object(obj));
     }
     out.sort_by(|a, b| {
@@ -798,6 +832,29 @@ mod discovery_tests {
     }
 
     #[test]
+    fn parses_capabilities_from_model_list() {
+        let payload = serde_json::json!({
+            "data": [{
+                "id": "claude-opus-4-6",
+                "display_name": "Claude Opus 4.6",
+                "supports_thinking": true,
+                "context_length": 250000,
+                "max_output_tokens": 64000,
+                "supports_images": true
+            }]
+        });
+        let parsed = parse_models_list(&payload);
+        assert_eq!(parsed.len(), 1);
+        let m = &parsed[0];
+        assert_eq!(m["id"], "claude-opus-4-6");
+        assert_eq!(m["name"], "Claude Opus 4.6");
+        assert_eq!(m["reasoning"], true);
+        assert_eq!(m["contextWindow"], 250000);
+        assert_eq!(m["maxTokens"], 64000);
+        assert_eq!(m["input"], serde_json::json!(["text", "image"]));
+    }
+
+    #[test]
     fn parses_openai_anthropic_and_google_lists() {
         let openai = serde_json::json!({ "data": [{ "id": "m-2" }, { "id": "m-1" }] });
         let parsed = parse_models_list(&openai);
@@ -849,20 +906,42 @@ pub fn resolve_provider_key(provider: &Value, provider_name: &str) -> Option<Str
 
 /// Reads a provider credential from pi's credential store.
 fn stored_credential_key(provider_name: &str) -> Option<String> {
-    let path = crate::client::native_index::user_home()
-        .join(".pi")
-        .join("agent")
-        .join("auth.json");
-    let raw = std::fs::read_to_string(path).ok()?;
-    let parsed: Value = serde_json::from_str(&raw).ok()?;
-    let entry = parsed.get(provider_name)?;
-    let key = entry
-        .get("key")
-        .or_else(|| entry.get("apiKey"))
-        .or_else(|| entry.get("access"))
-        .or_else(|| entry.get("accessToken"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|k| !k.is_empty())?;
-    Some(key.to_string())
+    let home = crate::client::native_index::user_home();
+    // 1. Check ~/.pi/agent/models.json directly for unredacted provider apiKey!
+    let models_path = home.join(".pi").join("agent").join("models.json");
+    if let Ok(raw) = std::fs::read_to_string(&models_path) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+            if let Some(key) = parsed
+                .get("providers")
+                .and_then(|p| p.get(provider_name))
+                .and_then(|p| p.get("apiKey"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|k| !k.is_empty() && !k.starts_with('$') && !k.starts_with('!'))
+            {
+                return Some(key.to_string());
+            }
+        }
+    }
+
+    // 2. Check ~/.pi/agent/auth.json for OAuth or CLI-stored API keys!
+    let auth_path = home.join(".pi").join("agent").join("auth.json");
+    if let Ok(raw) = std::fs::read_to_string(&auth_path) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+            if let Some(entry) = parsed.get(provider_name) {
+                if let Some(key) = entry
+                    .get("key")
+                    .or_else(|| entry.get("apiKey"))
+                    .or_else(|| entry.get("access"))
+                    .or_else(|| entry.get("accessToken"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                {
+                    return Some(key.to_string());
+                }
+            }
+        }
+    }
+    None
 }

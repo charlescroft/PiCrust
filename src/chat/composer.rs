@@ -1351,14 +1351,16 @@ impl ComposerView {
                         // came from another model.
                         let effective_level = levels
                             .iter()
-                            .find(|l| l.as_str() == thinking.as_str())
+                            .find(|l| parse_thinking_level_str_local(l) == Some(thinking))
                             .cloned()
                             .unwrap_or_else(|| {
-                                if levels.iter().any(|l| l == "off") {
-                                    "off".to_string()
-                                } else {
-                                    levels[0].clone()
-                                }
+                                levels
+                                    .iter()
+                                    .filter(|l| l.as_str() != "off")
+                                    .find(|l| parse_thinking_level_str_local(l) == Some(ThinkingLevel::Medium))
+                                    .cloned()
+                                    .or_else(|| levels.iter().find(|l| l.as_str() != "off").cloned())
+                                    .unwrap_or_else(|| "off".to_string())
                             });
                         let active_think_label: String = thinking_map
                             .get(&effective_level)
@@ -1392,7 +1394,7 @@ impl ComposerView {
                                         continue;
                                     };
                                     let app_t = app_think.clone();
-                                    let is_active = lvl_str == &effective_level;
+                                    let is_active = parse_thinking_level_str_local(lvl_str) == Some(thinking);
                                     let display_name = map_for_menu
                                         .get(lvl_str.as_str())
                                         .cloned()
