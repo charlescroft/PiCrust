@@ -564,6 +564,7 @@ impl ComposerView {
         let skills = state.skills.clone();
         let todos = state.todos.clone();
         let todos_expanded = state.todos_expanded;
+        let todos_hidden = state.todos_hidden;
         let has_ctx = state.stats.has_context_usage;
         let ctx_tokens = state.stats.context_tokens;
         let ctx_window = state.stats.context_window;
@@ -619,7 +620,7 @@ impl ComposerView {
         }
 
         // 0. rpiv-todos collapsible rounded progress panel above the composer
-        if !todos.is_empty() {
+        if !todos.is_empty() && !todos_hidden {
             let done_count = todos.iter().filter(|t| t.done).count();
             let total_count = todos.len();
             let pct = (done_count as f32 / total_count as f32) * 100.0;
@@ -686,18 +687,19 @@ impl ComposerView {
                                 div()
                                     .id("rpiv-todos-dismiss")
                                     .flex_shrink_0()
-                                    .on_click(move |_, _, cx| {
-                                        cx.stop_propagation();
-                                        app_dismiss_todos.update(cx, |s, cx| {
-                                            s.dismiss_todos(cx);
-                                        });
-                                    })
+                                    .on_click(|_, _, cx| cx.stop_propagation())
                                     .child(
                                         Button::new("rpiv-todos-dismiss-btn")
                                             .ghost()
                                             .xsmall()
                                             .icon(IconName::Close)
-                                            .tooltip(tr(locale, "chat.dismissTodos")),
+                                            .tooltip(tr(locale, "chat.dismissTodos"))
+                                            .on_click(move |_, _, cx| {
+                                                cx.stop_propagation();
+                                                app_dismiss_todos.update(cx, |s, cx| {
+                                                    s.dismiss_todos(cx);
+                                                });
+                                            }),
                                     ),
                             )
                         }),
