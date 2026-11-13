@@ -300,6 +300,15 @@ pub fn render_settings_overlay(
                                         s.settings_saved_flash = true;
                                         cx.notify();
                                     });
+                                    let app_timer = app_footer_save.clone();
+                                    cx.spawn(async move |cx| {
+                                        smol::Timer::after(std::time::Duration::from_millis(2000)).await;
+                                        let _ = app_timer.update(cx, |s, cx| {
+                                            s.settings_saved_flash = false;
+                                            cx.notify();
+                                        });
+                                    })
+                                    .detach();
                                 }),
                         ),
                 )
