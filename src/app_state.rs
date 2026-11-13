@@ -504,7 +504,7 @@ impl AppState {
             todos,
             todos_expanded: false,
             dismissed_todo_ids: std::collections::HashSet::new(),
-            todos_hidden: false,
+            todos_hidden: appearance.todos_hidden,
             todos_hidden_session: None,
             retry_status: None,
             draft_restore_text: None,
@@ -648,6 +648,7 @@ impl AppState {
             diff_view_mode: self.diff_view_mode.clone(),
             core_mode: self.core_mode.clone(),
             core_url: self.core_url.clone(),
+            todos_hidden: self.todos_hidden,
         });
     }
 
@@ -722,7 +723,7 @@ impl AppState {
         self.todos.clear();
         self.todos_expanded = false;
         self.todos_hidden = true;
-        self.todos_hidden_session = self.active_session_id.clone();
+        self.persist_appearance_only();
         cx.notify();
     }
 
@@ -2693,8 +2694,8 @@ impl AppState {
         self.todos.clear();
         self.todos_expanded = false;
         self.dismissed_todo_ids.clear();
-        self.todos_hidden = false;
-        self.todos_hidden_session = None;
+        
+        
         self.stats = SessionStats::default();
         self.subagent_runs.clear();
         self.tool_subagent_runs.clear();

@@ -18,7 +18,7 @@ use gpui_kit::component::{
     StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, Focusable as _, Font,
+    Anchor, MouseButton, AnyElement, App, AppContext as _, Context, Entity, Focusable as _, Font,
     InteractiveElement as _, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement as _, Styled as _, Task, TextRun, Window, div, px,
 };
@@ -712,6 +712,7 @@ impl ComposerView {
                                 div()
                                     .id("rpiv-todos-dismiss")
                                     .flex_shrink_0()
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                     .on_click(|_, _, cx| cx.stop_propagation())
                                     .child(
                                         Button::new("rpiv-todos-dismiss-btn")

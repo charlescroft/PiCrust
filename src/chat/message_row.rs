@@ -237,68 +237,73 @@ fn render_user_row(
     let entry_id_fork = msg.entry_id.clone();
     let app_edit = app_state.clone();
     let app_fork = app_state.clone();
-    let mut footer = MessageFooter::new().content_inset(false).child(
-        h_flex()
-            .items_center()
-            .gap_2p5()
-            .child(
-                Button::new(("copy-user", msg.id))
-                    .ghost()
-                    .small()
-                    .h(px(28.))
-                    .icon(IconName::Copy)
-                    .label(tr(locale, "chat.copy"))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                    }),
-            )
-            .child(
-                Button::new(("edit-user", msg.id))
-                    .ghost()
-                    .small()
-                    .h(px(28.))
-                    .icon(IconName::Undo2)
-                    .label(tr(locale, "chat.edit"))
-                    .tooltip(tr(locale, "chat.editResendTooltip"))
-                    .on_click(move |_, _, cx| {
-                        let txt = edit_text.clone();
-                        let eid = entry_id_edit.clone();
-                        app_edit.update(cx, |s, cx| {
-                            s.edit_user_message(txt, eid, cx);
-                        });
-                    }),
-            )
-            .child(
-                Button::new(("fork-user", msg.id))
-                    .ghost()
-                    .small()
-                    .h(px(28.))
-                    .icon(IconName::Redo2)
-                    .label(tr(locale, "chat.fork"))
-                    .tooltip(tr(locale, "chat.forkFromHereTooltip"))
-                    .on_click(move |_, _, cx| {
-                        let eid = entry_id_fork.clone();
-                        app_fork.update(cx, |s, cx| {
-                            if let Some(sid) = s.active_session_id.clone() {
-                                if let Some(target_eid) = eid {
-                                    let client = s.client.clone();
-                                    let target = target_eid.to_string();
-                                    cx.spawn(async move |_, _| {
-                                        let _ = client.fork_session(&sid, &target).await;
-                                    })
-                                    .detach();
-                                } else {
-                                    s.fork_session_by_id(sid, cx);
-                                }
+    let mut footer_row = h_flex()
+        .items_center()
+        .gap_1p5()
+        .child(
+            Button::new(("copy-user", msg.id))
+                .ghost()
+                .small()
+                .h(px(24.))
+                .icon(IconName::Copy)
+                .label(tr(locale, "chat.copy"))
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                }),
+        )
+        .child(
+            Button::new(("edit-user", msg.id))
+                .ghost()
+                .small()
+                .h(px(24.))
+                .icon(IconName::Undo2)
+                .label(tr(locale, "chat.edit"))
+                .tooltip(tr(locale, "chat.editResendTooltip"))
+                .on_click(move |_, _, cx| {
+                    let txt = edit_text.clone();
+                    let eid = entry_id_edit.clone();
+                    app_edit.update(cx, |s, cx| {
+                        s.edit_user_message(txt, eid, cx);
+                    });
+                }),
+        )
+        .child(
+            Button::new(("fork-user", msg.id))
+                .ghost()
+                .small()
+                .h(px(24.))
+                .icon(IconName::Redo2)
+                .label(tr(locale, "chat.fork"))
+                .tooltip(tr(locale, "chat.forkFromHereTooltip"))
+                .on_click(move |_, _, cx| {
+                    let eid = entry_id_fork.clone();
+                    app_fork.update(cx, |s, cx| {
+                        if let Some(sid) = s.active_session_id.clone() {
+                            if let Some(target_eid) = eid {
+                                let client = s.client.clone();
+                                let target = target_eid.to_string();
+                                cx.spawn(async move |_, _| {
+                                    let _ = client.fork_session(&sid, &target).await;
+                                })
+                                .detach();
+                            } else {
+                                s.fork_session_by_id(sid, cx);
                             }
-                        });
-                    }),
-            ),
-    );
+                        }
+                    });
+                }),
+        );
 
     if !msg.timestamp.is_empty() {
-        footer = footer.child(msg.timestamp.clone());
+        footer_row = footer_row.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(msg.timestamp.clone()),
+        );
     }
+
+    let footer = MessageFooter::new().content_inset(false).child(footer_row);
 
     // Item 2: No user avatar and no user name header
     Message::new()
@@ -673,8 +678,10 @@ fn render_assistant_row(
                 if is_turn_live {
                     ShimmerText::new(process_label)
                         .id(("proc-shimmer", msg_id))
+                        .text_color(cx.theme().muted_foreground)
+                        .highlight_color(cx.theme().primary)
                         .duration(Duration::from_millis(1400))
-                        .highlight_color(cx.theme().foreground)
+                        .spread(0.4)
                         .text_xs()
                         .into_any_element()
                 } else {

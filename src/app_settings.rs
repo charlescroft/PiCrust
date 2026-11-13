@@ -99,6 +99,8 @@ pub struct ChatSettings {
     pub diff_view_mode: String,
     #[serde(default = "default_chat_content_width")]
     pub chat_content_width: f32,
+    #[serde(default)]
+    pub todos_hidden: bool,
 }
 
 impl Default for ChatSettings {
@@ -109,6 +111,7 @@ impl Default for ChatSettings {
             thinking_expanded_default: false,
             diff_view_mode: default_diff_view_mode(),
             chat_content_width: default_chat_content_width(),
+            todos_hidden: false,
         }
     }
 }

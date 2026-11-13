@@ -108,6 +108,7 @@ pub struct AppearancePrefs {
     pub diff_view_mode: String,
     pub core_mode: String,
     pub core_url: String,
+    pub todos_hidden: bool,
 }
 
 impl AppearancePrefs {
@@ -128,6 +129,7 @@ impl AppearancePrefs {
             diff_view_mode: s.chat.diff_view_mode.clone(),
             core_mode: s.core.mode.clone(),
             core_url: s.core.url.clone(),
+            todos_hidden: s.chat.todos_hidden,
         }
     }
 
@@ -147,6 +149,7 @@ impl AppearancePrefs {
         s.notifications.sound = self.notify_sound;
         s.core.mode = self.core_mode.clone();
         s.core.url = self.core_url.clone();
+        s.chat.todos_hidden = self.todos_hidden;
     }
 }
 
