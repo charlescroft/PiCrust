@@ -2370,14 +2370,20 @@ impl AppState {
                                     .iter()
                                     .any(|rid| !this.sessions.iter().any(|s| &s.id == rid));
                                 this.apply_running_ids(running_set);
+                                // The running list is the server's truth for the active
+                                // session: it both starts and *ends* a run. Only setting
+                                // it here left `is_agent_running` pinned true, which hid a
+                                // settled turn's footer and modified-files summary.
                                 if let Some(sid) = this.active_session_id.clone() {
-                                    if this.running_session_ids.contains(&sid) {
-                                        if !this.is_agent_running {
-                                            this.is_agent_running = true;
-                                        }
+                                    let running = this.running_session_ids.contains(&sid);
+                                    this.is_agent_running = running;
+                                    if running {
                                         if this.controller.sse_task.is_none() {
                                             this.connect_session_sse(sid.clone(), cx);
                                         }
+                                    } else {
+                                        this.is_compacting = false;
+                                        this.retry_status = None;
                                     }
                                 }
                                 if unknown_running {
