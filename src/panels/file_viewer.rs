@@ -186,7 +186,7 @@ impl FileViewerView {
                     .ghost()
                     .xsmall()
                     .h(px(24.))
-                    .icon(IconName::Plus)
+                    .icon(Icon::new(crate::icons::AtSignIcon))
                     .label(tr(locale, "panel.mention"))
                     .tooltip(tr(locale, "panel.mentionTooltip"))
                     .on_click(move |_, _, cx| {
@@ -203,6 +203,9 @@ impl FileViewerView {
                     .flex_1()
                     .min_h_0()
                     .size_full()
+                    // The Source tab is an Editor whose gutter starts at its 6px
+                    // content padding; match it so numbers share one column.
+                    .pl(px(6.))
                     .child(
                         Diff::new(ds)
                             .header_visible(false)

@@ -1685,6 +1685,7 @@ fn render_tool_call_card(
                     .h(px(220.))
                     .border_t_1()
                     .border_color(cx.theme().border)
+                    .pl(px(6.))
                     .child(
                         Diff::new(diff_state)
                             .header_visible(false)

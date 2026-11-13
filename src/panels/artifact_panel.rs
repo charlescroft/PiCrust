@@ -203,7 +203,9 @@ impl ArtifactPanelView {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    // No extra padding: the gutter hugs the panel edge.
+                    // Match the Editor's 6px content padding so the Source and Diff
+                    // tabs put their line numbers in the same column.
+                    .pl(px(6.))
                     .child(
                         Diff::new(diff_state)
                             .header_visible(false)
