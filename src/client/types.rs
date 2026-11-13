@@ -801,6 +801,9 @@ pub struct ConfiguredModelInfo {
     pub max_tokens: Option<u64>,
     pub input: Vec<String>,
     pub reasoning: bool,
+    /// Whether models.json states `reasoning` at all. Absent means "inherit",
+    /// so the composer still offers the strength ladder (e.g. deepseek).
+    pub reasoning_declared: bool,
     /// `thinkingLevelMap` from models.json — a `null` value marks a level the
     /// model does not offer, so the composer can list the real strengths.
     pub thinking_level_map: std::collections::HashMap<String, serde_json::Value>,

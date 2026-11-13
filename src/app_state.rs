@@ -1088,8 +1088,9 @@ impl AppState {
                 .find(|p| p.id == model.provider)
                 .and_then(|p| p.models.iter().find(|m| m.id == model.id));
             let Some(declared) = declared else { continue };
-            let wants_reasoning = declared.reasoning
-                || !declared.thinking_level_map.is_empty();
+            // Hide only when the model is explicitly declared non-reasoning; a
+            // missing flag (deepseek's entries) keeps the ladder visible.
+            let wants_reasoning = should_offer_thinking_ladder(declared);
             if !wants_reasoning {
                 continue;
             }
@@ -1384,6 +1385,7 @@ impl AppState {
                                     .collect()
                             })
                             .unwrap_or_else(|| vec!["text".to_string()]);
+                        let reasoning_declared = m.get("reasoning").is_some();
                         let reasoning = m.get("reasoning").and_then(Value::as_bool).unwrap_or(false);
                         let thinking_level_map = m
                             .get("thinkingLevelMap")
@@ -1397,6 +1399,7 @@ impl AppState {
                             max_tokens,
                             input,
                             reasoning,
+                            reasoning_declared,
                             thinking_level_map,
                         });
                     }
@@ -4597,4 +4600,39 @@ flowchart LR
             error_message: None,
         },
     ]
+}
+
+
+/// Whether a configured model should offer the strength ladder when pi reports
+/// only `["off"]`: hidden only when models.json explicitly says non-reasoning.
+fn should_offer_thinking_ladder(declared: &ConfiguredModelInfo) -> bool {
+    declared.reasoning || !declared.thinking_level_map.is_empty() || !declared.reasoning_declared
+}
+
+#[cfg(test)]
+mod thinking_enrichment_tests {
+    use super::*;
+
+    fn declared(reasoning: bool, reasoning_declared: bool) -> ConfiguredModelInfo {
+        ConfiguredModelInfo {
+            id: "m".into(),
+            name: None,
+            context_window: None,
+            max_tokens: None,
+            input: vec![],
+            reasoning,
+            reasoning_declared,
+            thinking_level_map: Default::default(),
+        }
+    }
+
+    #[test]
+    fn absent_flag_offers_the_ladder() {
+        // deepseek declares neither reasoning nor a map.
+        assert!(should_offer_thinking_ladder(&declared(false, false)));
+        // explicitly enabled reasoning
+        assert!(should_offer_thinking_ladder(&declared(true, true)));
+        // explicitly disabled reasoning stays hidden
+        assert!(!should_offer_thinking_ladder(&declared(false, true)));
+    }
 }

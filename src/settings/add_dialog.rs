@@ -332,6 +332,7 @@ impl SettingsAddDialogView {
                 max_tokens: mt,
                 input: input_types,
                 reasoning: self.model_reasoning,
+                reasoning_declared: true,
                 thinking_level_map: Default::default(),
             };
             self.app_state.update(cx, |s, cx| {
@@ -367,6 +368,7 @@ impl SettingsAddDialogView {
                 max_tokens: mt,
                 input: input_types,
                 reasoning: self.model_reasoning,
+                reasoning_declared: true,
                 thinking_level_map: Default::default(),
             };
             self.app_state.update(cx, |s, cx| {
