@@ -835,6 +835,47 @@ fn render_assistant_row(
                 }
             }
 
+            if let Some(err) = &msg.error_message {
+                let (_, clean_summary) = parse_error_summary(err.as_ref());
+                let err_copy = clean_summary.clone();
+                steps_stack = steps_stack.child(
+                    h_flex()
+                        .w_full()
+                        .px_2p5()
+                        .py_1p5()
+                        .gap_2()
+                        .items_center()
+                        .justify_between()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().danger.opacity(0.45))
+                        .bg(cx.theme().danger.opacity(0.12))
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .child(Icon::new(IconName::TriangleAlert).xsmall().text_color(cx.theme().danger))
+                                .child(div().flex_1().min_w_0().child(SharedString::from(clean_summary))),
+                        )
+                        .child(
+                            Button::new(("copy-proc-err", msg_id))
+                                .ghost()
+                                .xsmall()
+                                .h(px(22.))
+                                .icon(IconName::Copy)
+                                .label(tr(locale, "chat.copy"))
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.write_to_clipboard(ClipboardItem::new_string(err_copy.clone()));
+                                }),
+                        ),
+                );
+            }
+
             process_container = process_container.child(steps_stack);
         }
 
@@ -893,14 +934,19 @@ fn render_assistant_row(
         );
     }
 
-    // 2b. Provider / API / 429 error alert (collapsible: default shows error code only) or truncation notice
-    let err_text = msg.error_message.clone().or_else(|| {
-        if msg.stop_reason.as_deref() == Some("error") {
-            Some(SharedString::from("Model request failed"))
-        } else {
-            None
-        }
-    });
+    // 2b. Standalone provider error alert: ONLY if there was no process group to house it!
+    let err_text = (!has_process).then(|| {
+        msg.error_message.clone().or_else(|| {
+            if msg.stop_reason.as_deref() == Some("error") {
+                Some(SharedString::from("Model request failed"))
+            } else {
+                None
+            }
+        })
+    }).flatten();
+    let _old_err_text = {
+        None::<SharedString>
+    };
     if let Some(err) = err_text.filter(|_| !row_cache.error_dismissed) {
         let (code_opt, clean_summary) = parse_error_summary(err.as_ref());
         let err_copy = clean_summary.clone();
