@@ -35,6 +35,7 @@ uuid = { version = "1", features = ["v4"] }
 wry = { version = "0.53.3", package = "lb-wry" }
 
 [patch.crates-io]
+gpui-component = { path = "patches/gpui-component" }
 gpui-fast-macos = { path = "patches/gpui-fast-macos" }
 gpui-pre-macos = { path = "patches/gpui-pre-macos" }
 

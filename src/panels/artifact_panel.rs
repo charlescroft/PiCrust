@@ -205,7 +205,6 @@ impl ArtifactPanelView {
                     .w_full()
                     // Match the Editor's 6px content padding so the Source and Diff
                     // tabs put their line numbers in the same column.
-                    .pl(px(6.))
                     .child(
                         Diff::new(diff_state)
                             .header_visible(false)
