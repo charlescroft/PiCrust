@@ -47,8 +47,6 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
     let app_collapse_write = app_state.clone();
     let app_think_def_read = app_state.clone();
     let app_think_def_write = app_state.clone();
-    let app_diff_read = app_state.clone();
-    let app_diff_write = app_state.clone();
     let app_art_read = app_state.clone();
     let app_art_write = app_state.clone();
     let app_title_read = app_state.clone();
@@ -122,17 +120,6 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
         (SharedString::from("300"), SharedString::from("300")),
         (SharedString::from("500"), SharedString::from("500")),
         (SharedString::from("1000"), SharedString::from("1000")),
-    ];
-
-    let diff_options: Vec<(SharedString, SharedString)> = vec![
-        (
-            SharedString::from("unified"),
-            SharedString::from(tr(locale, "settings.diffUnified")),
-        ),
-        (
-            SharedString::from("split"),
-            SharedString::from(tr(locale, "settings.diffSplit")),
-        ),
     ];
 
     let core_options: Vec<(SharedString, SharedString)> = vec![
@@ -245,17 +232,6 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                     app_think_def_write.update(cx, |s, cx| s.set_thinking_expanded_default(val, cx));
                 },
             ),
-        ))
-        .item(SettingItem::new(
-            tr(locale, "settings.diffViewMode"),
-            SettingField::dropdown(
-                diff_options,
-                move |cx: &App| SharedString::from(app_diff_read.read(cx).diff_view_mode.clone()),
-                move |val: SharedString, cx: &mut App| {
-                    app_diff_write.update(cx, |s, cx| s.set_diff_view_mode(val.to_string(), cx));
-                },
-            )
-            .w(SETTINGS_DROPDOWN_W),
         ))
         .item(SettingItem::new(
             tr(locale, "settings.artifactsInPanel"),

@@ -709,6 +709,8 @@ impl AppState {
         cx.notify();
     }
 
+    /// Kept for config compatibility: diffs are always unified now.
+    #[allow(dead_code)]
     pub fn set_diff_view_mode(&mut self, mode: String, cx: &mut Context<Self>) {
         self.diff_view_mode = mode;
         self.persist_appearance_only();

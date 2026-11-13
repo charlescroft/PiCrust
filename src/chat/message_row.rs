@@ -559,13 +559,9 @@ fn render_assistant_row(
 ) -> AnyElement {
     let mut stack = v_flex().gap_3().w_full().min_w_0();
     let has_answer_text = !row_cache.last_text_snapshot.trim().is_empty();
-    let (active_cwd, thinking_expanded_default, diff_view_mode) = {
+    let (active_cwd, thinking_expanded_default) = {
         let s = app_state.read(cx);
-        (
-            s.active_cwd.clone(),
-            s.thinking_expanded_default,
-            s.diff_view_mode.clone(),
-        )
+        (s.active_cwd.clone(), s.thinking_expanded_default)
     };
 
     // Model name displayed ONCE at the top of the assistant turn
@@ -824,16 +820,8 @@ fn render_assistant_row(
                         steps_stack = steps_stack.child(card);
                     }
                     ProcessStep::ToolCall(tc) => {
-                        let card = render_tool_call_card(
-                            msg.id,
-                            step_idx,
-                            &tc,
-                            row_cache,
-                            locale,
-                            &diff_view_mode,
-                            window,
-                            cx,
-                        );
+                        let card =
+                            render_tool_call_card(msg.id, step_idx, &tc, row_cache, locale, window, cx);
                         steps_stack = steps_stack.child(if is_pre_compaction {
                             div().w_full().opacity(0.75).child(card).into_any_element()
                         } else {
@@ -1449,7 +1437,6 @@ fn render_tool_call_card(
     tc: &ToolCallItem,
     row_cache: &mut CachedRowEntities,
     locale: AppLocale,
-    default_diff_mode: &str,
     window: &mut Window,
     cx: &mut Context<crate::chat::ChatPanel>,
 ) -> AnyElement {
@@ -1651,14 +1638,8 @@ fn render_tool_call_card(
             if !row_cache.diff_states.contains_key(&tc.id) {
                 if let Some(patch) = &tc.diff_patch {
                     if let Ok(files) = DiffFile::parse(patch.as_ref()) {
-                        let want_split = default_diff_mode == "split";
-                        let ds = cx.new(|cx| {
-                            let mut s = DiffState::new(files, cx);
-                            if want_split {
-                                s.set_mode(DiffMode::Split, cx);
-                            }
-                            s
-                        });
+                        // Always unified: the app no longer offers a split view.
+                        let ds = cx.new(|cx| DiffState::new(files, cx));
                         cx.observe(&ds, |_, _, cx| cx.notify()).detach();
                         row_cache.diff_states.insert(tc.id.clone(), ds);
                     }
