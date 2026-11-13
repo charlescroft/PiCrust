@@ -1,0 +1,932 @@
+pub mod branch_nav;
+pub mod composer;
+pub mod find_bar;
+pub mod message_row;
+pub mod questionnaire;
+
+use crate::actions::{SendPrompt, StopAgent};
+use crate::app_state::AppState;
+use crate::chat::branch_nav::render_branch_nav;
+use crate::chat::composer::ComposerView;
+use crate::chat::find_bar::ConversationCommandPalette;
+use crate::chat::message_row::{CachedRowEntities, render_message_row};
+use crate::chat::questionnaire::QuestionnaireView;
+use crate::client::types::{ChatFontSize, ChatMessage, MessageRole};
+use crate::i18n::{format_commas, tr};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::{
+    Anchor, AppContext as _, Context, Entity, FocusHandle, Focusable, FollowMode,
+    InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState, ParentElement,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, list, px,
+    rems,
+};
+use std::collections::HashMap;
+use std::ops::Range;
+use std::rc::Rc;
+
+const UNIFORM_ROW_HEIGHT_HINT: gpui_kit::Pixels = px(140.);
+const LIST_OVERDRAW: gpui_kit::Pixels = px(400.);
+
+pub struct ConversationScrollerState {
+    list_state: ListState,
+}
+
+impl ConversationScrollerState {
+    pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
+        let list_state = ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW)
+            .with_uniform_item_height(UNIFORM_ROW_HEIGHT_HINT);
+        list_state.set_follow_mode(FollowMode::Tail);
+
+        let weak_state = cx.weak_entity();
+        list_state.set_scroll_handler(move |_, _, cx| {
+            let weak_state = weak_state.clone();
+            cx.defer(move |cx| {
+                let _ = weak_state.update(cx, |_, cx| cx.notify());
+            });
+        });
+
+        Self { list_state }
+    }
+
+    pub fn is_scrolled_up(&self) -> bool {
+        self.list_state.max_offset_for_scrollbar().y > px(0.)
+            && !self.list_state.is_following_tail()
+            && !self.list_state.is_scrolled_to_end().unwrap_or(false)
+    }
+
+    pub fn is_following_tail(&self) -> bool {
+        self.list_state.is_following_tail()
+    }
+
+    pub fn logical_scroll_top(&self) -> ListOffset {
+        self.list_state.logical_scroll_top()
+    }
+
+    pub fn reset(&mut self, item_count: usize, cx: &mut Context<Self>) {
+        self.list_state
+            .reset_with_uniform_height(item_count, UNIFORM_ROW_HEIGHT_HINT);
+        self.list_state.set_follow_mode(FollowMode::Tail);
+        cx.notify();
+    }
+
+    pub fn splice(
+        &mut self,
+        old_range: Range<usize>,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let item_count = self.list_state.item_count();
+        if old_range.start > old_range.end || old_range.end > item_count {
+            return false;
+        }
+        self.list_state.splice(old_range, count);
+        cx.notify();
+        true
+    }
+
+    pub fn append(&mut self, count: usize, cx: &mut Context<Self>) -> bool {
+        let item_count = self.list_state.item_count();
+        self.splice(item_count..item_count, count, cx)
+    }
+
+    pub fn remeasure(&mut self, cx: &mut Context<Self>) {
+        self.list_state.remeasure();
+        cx.notify();
+    }
+
+    pub fn remeasure_items(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> bool {
+        let item_count = self.list_state.item_count();
+        if range.start > range.end || range.end > item_count {
+            return false;
+        }
+        self.list_state.remeasure_items(range);
+        cx.notify();
+        true
+    }
+
+    pub fn scroll_to_item(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        if index >= self.list_state.item_count() {
+            return false;
+        }
+        self.list_state.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+        true
+    }
+
+    /// Restores an exact reading position without re-entering tail follow.
+    pub fn scroll_to_offset(&mut self, offset: ListOffset, cx: &mut Context<Self>) {
+        self.list_state.set_follow_mode(FollowMode::Normal);
+        self.list_state.scroll_to(offset);
+        cx.notify();
+    }
+
+    pub fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
+        self.list_state.set_follow_mode(FollowMode::Tail);
+        self.list_state.scroll_to_end();
+        cx.notify();
+    }
+}
+
+pub struct ChatPanel {
+    focus_handle: FocusHandle,
+    app_state: Entity<AppState>,
+    scroller: Entity<ConversationScrollerState>,
+    composer: Entity<ComposerView>,
+    palette: Entity<ConversationCommandPalette>,
+    questionnaire: Option<Entity<QuestionnaireView>>,
+    row_cache: HashMap<u64, CachedRowEntities>,
+    last_message_count: usize,
+    last_session_id: Option<String>,
+    last_font_size: ChatFontSize,
+    last_tail_sig: Option<(u64, usize, usize, usize, bool)>,
+    hovered_turn_idx: Option<usize>,
+    nav_window_start: usize,
+}
+
+impl Focusable for ChatPanel {
+    fn focus_handle(&self, _cx: &gpui_kit::App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl ChatPanel {
+    pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let count = app_state.read(cx).messages.len();
+        let last_font_size = app_state.read(cx).chat_font_size;
+        let scroller = cx.new(|cx| ConversationScrollerState::new(count, cx));
+        cx.observe(&scroller, |_, _, cx| cx.notify()).detach();
+        cx.observe(&app_state, |this, app, cx| {
+            this.sync_scroller_with_messages(&app, cx);
+            cx.notify();
+        })
+        .detach();
+
+        let composer = cx.new(|cx| ComposerView::new(app_state.clone(), window, cx));
+        let scroller_for_find = scroller.clone();
+        let palette =
+            cx.new(|cx| ConversationCommandPalette::new(app_state.clone(), scroller_for_find, window, cx));
+
+        Self {
+            focus_handle: cx.focus_handle(),
+            app_state,
+            scroller,
+            composer,
+            palette,
+            questionnaire: None,
+            row_cache: HashMap::new(),
+            last_message_count: count,
+            last_session_id: None,
+            last_font_size,
+            last_tail_sig: None,
+            hovered_turn_idx: None,
+            nav_window_start: 0,
+        }
+    }
+
+    pub fn toggle_process_group(&mut self, msg_id: u64, default_open: bool, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            let cur = entry.process_group_open.unwrap_or(default_open);
+            entry.process_group_open = Some(!cur);
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    pub fn toggle_thinking_step(&mut self, msg_id: u64, step_idx: usize, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            let cur = entry
+                .expanded_thinking_steps
+                .get(&step_idx)
+                .copied()
+                .unwrap_or(false);
+            entry.expanded_thinking_steps.insert(step_idx, !cur);
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    pub fn toggle_compaction_step(
+        &mut self,
+        msg_id: u64,
+        step_idx: usize,
+        default_open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            let cur = entry
+                .expanded_compactions
+                .get(&step_idx)
+                .copied()
+                .unwrap_or(default_open);
+            entry.expanded_compactions.insert(step_idx, !cur);
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    pub fn toggle_tool(&mut self, msg_id: u64, tool_id: SharedString, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            let cur = entry.expanded_tools.get(&tool_id).copied().unwrap_or(false);
+            entry.expanded_tools.insert(tool_id, !cur);
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    pub fn toggle_modified_files(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            entry.modified_files_open = !entry.modified_files_open;
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    pub fn toggle_error_expanded(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            entry.error_expanded = !entry.error_expanded;
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    pub fn toggle_user_expanded(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            entry.user_expanded = !entry.user_expanded;
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    fn sync_scroller_with_messages(&mut self, app: &Entity<AppState>, cx: &mut Context<Self>) {
+        let state = app.read(cx);
+        let new_count = state.messages.len();
+        let sid = state.active_session_id.clone();
+        let font_sz = state.chat_font_size;
+        let tail_sig = state.messages.last().map(|m| {
+            (
+                m.id,
+                m.content.len(),
+                m.process_steps.len(),
+                m.thinking.len(),
+                m.is_streaming || state.is_agent_running || state.is_compacting,
+            )
+        });
+
+        let top_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
+        let keep_ids: Option<std::collections::HashSet<u64>> = (self.row_cache.len() > 120).then(|| {
+            let mut ids = std::collections::HashSet::new();
+            let tail_from = state.messages.len().saturating_sub(30);
+            for m in &state.messages[tail_from..] {
+                ids.insert(m.id);
+            }
+            let win_from = top_ix.saturating_sub(25);
+            let win_to = (top_ix + 35).min(state.messages.len());
+            for m in &state.messages[win_from..win_to] {
+                ids.insert(m.id);
+            }
+            ids
+        });
+
+        // A review position must survive tail updates: remember the exact top offset
+        // and restore it after any mutation, otherwise a growing thinking block or a
+        // new tool step below drags the viewport along with it.
+        let pinned_offset = self
+            .scroller
+            .read(cx)
+            .is_scrolled_up()
+            .then(|| self.scroller.read(cx).logical_scroll_top());
+
+        if font_sz != self.last_font_size {
+            self.last_font_size = font_sz;
+            self.scroller.update(cx, |s, cx| s.remeasure(cx));
+        }
+
+        if sid != self.last_session_id {
+            self.last_session_id = sid;
+            self.row_cache.clear();
+            self.last_message_count = new_count;
+            self.last_tail_sig = tail_sig;
+            self.nav_window_start = usize::MAX;
+            self.scroller.update(cx, |s, cx| {
+                s.reset(new_count, cx);
+            });
+            return;
+        }
+
+        if new_count > self.last_message_count {
+            let added = new_count - self.last_message_count;
+            self.last_message_count = new_count;
+            self.last_tail_sig = tail_sig;
+            self.scroller.update(cx, |s, cx| {
+                let _ = s.append(added, cx);
+            });
+        } else if new_count < self.last_message_count {
+            let old_count = self.last_message_count;
+            self.last_message_count = new_count;
+            self.last_tail_sig = tail_sig;
+            self.scroller.update(cx, |s, cx| {
+                if s.is_scrolled_up() {
+                    let _ = s.splice(new_count..old_count, 0, cx);
+                } else {
+                    s.reset(new_count, cx);
+                }
+            });
+        } else if new_count > 0 && tail_sig != self.last_tail_sig {
+            self.last_tail_sig = tail_sig;
+            let idx = new_count - 1;
+            self.scroller.update(cx, |s, cx| {
+                let _ = s.remeasure_items(idx..idx + 1, cx);
+            });
+        }
+
+        // Bound row_cache memory on long sessions by keeping recent/visible message caches
+        if let Some(ids) = keep_ids {
+            self.row_cache.retain(|id, _| ids.contains(id));
+        }
+
+        if let Some(offset) = pinned_offset {
+            let moved = {
+                let s = self.scroller.read(cx);
+                s.logical_scroll_top() != offset || s.is_following_tail()
+            };
+            if moved {
+                self.scroller.update(cx, |s, cx| s.scroll_to_offset(offset, cx));
+            }
+        }
+    }
+}
+
+impl Render for ChatPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Sync pending ExtensionUiRequest -> QuestionnaireView
+        let pending_req = self.app_state.read(cx).pending_ui_request.clone();
+        match (pending_req, &self.questionnaire) {
+            (Some(req), Some(existing)) if existing.read(cx).request_id() == req.request_id => {}
+            (Some(req), _) => {
+                let app = self.app_state.clone();
+                self.questionnaire =
+                    Some(cx.new(|cx| QuestionnaireView::new(app, req, window, cx)));
+            }
+            (None, Some(_)) => {
+                self.questionnaire = None;
+            }
+            (None, None) => {}
+        }
+
+        let messages = Rc::new(self.app_state.read(cx).messages.clone());
+        let find_query = self.app_state.read(cx).find_query.clone();
+
+        let panel_entity = cx.entity().clone();
+        let app_state = self.app_state.clone();
+        let msgs_for_list = messages.clone();
+        let q_for_list = find_query.clone();
+
+        // Items 1, 2, 3, 6: ConversationNavigator ticks on far left, vertically centered.
+        // Hidden ONLY when center chat column is too narrow and ticks would overlap the 840px text body.
+        let state_snap = self.app_state.read(cx);
+        let locale = state_snap.locale;
+        let right_open = state_snap.right_panel_open;
+        let right_w = if right_open {
+            state_snap.right_panel_width
+        } else {
+            px(0.)
+        };
+        let sidebar_w = if state_snap.sidebar_collapsed {
+            px(0.)
+        } else {
+            px(268.)
+        };
+        let chat_col_w = window.viewport_size().width - sidebar_w - right_w;
+        // Centered 840px content leaves ((chat_col_w - 840) / 2) on the left; rail takes ~44px.
+        let has_gutter_space = chat_col_w >= px(840. + 88.);
+
+        let turns = collect_turn_locations(&messages);
+        let top_item_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
+        let active_turn = if self.scroller.read(cx).is_following_tail() && !turns.is_empty() {
+            turns.len() - 1
+        } else {
+            turns
+                .iter()
+                .rposition(|t| t.msg_index <= top_item_ix)
+                .unwrap_or(0)
+        };
+
+        let (nav_start, nav_end) = compute_nav_window(turns.len(), active_turn, self.nav_window_start);
+        self.nav_window_start = nav_start;
+
+        let hovered_turn = self
+            .hovered_turn_idx
+            .filter(|&ix| ix >= nav_start && ix < nav_end);
+
+        let navigator_gutter = if has_gutter_space && turns.len() >= 2 {
+            let mut ticks = v_flex()
+                .w(px(32.))
+                .gap(px(8.))
+                .py_2()
+                .items_start();
+
+            for (t_idx, turn) in turns.iter().enumerate().skip(nav_start).take(nav_end - nav_start) {
+                let is_active = t_idx == active_turn;
+                let is_hovered = hovered_turn == Some(t_idx);
+                let msg_idx = turn.msg_index;
+                let scroller_ref = self.scroller.clone();
+
+                ticks = ticks.child(
+                    div()
+                        .id(("turn-tick", t_idx))
+                        .w(px(30.))
+                        .h(px(10.))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .on_hover(cx.listener(move |panel, &hovered, _, cx| {
+                            if hovered {
+                                panel.hovered_turn_idx = Some(t_idx);
+                            } else if panel.hovered_turn_idx == Some(t_idx) {
+                                panel.hovered_turn_idx = None;
+                            }
+                            cx.notify();
+                        }))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            scroller_ref.update(cx, |s, cx| {
+                                let _ = s.scroll_to_item(msg_idx, cx);
+                            });
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .h(if is_active || is_hovered { px(3.5) } else { px(2.5) })
+                                .w(if is_active {
+                                    px(24.)
+                                } else if is_hovered {
+                                    px(18.)
+                                } else {
+                                    px(12.)
+                                })
+                                .rounded_full()
+                                .bg(if is_active || is_hovered {
+                                    cx.theme().foreground
+                                } else {
+                                    cx.theme().foreground.opacity(0.28)
+                                }),
+                        ),
+                );
+            }
+
+            let preview_card = hovered_turn.and_then(|t_idx| turns.get(t_idx).map(|t| (t_idx, t))).map(|(t_idx, turn)| {
+                v_flex()
+                    .w(px(340.))
+                    .p_3()
+                    .gap_1p5()
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .shadow_lg()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().foreground)
+                            .child(SharedString::from(turn.question.clone())),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(
+                                turn.answer
+                                    .clone()
+                                    .unwrap_or_else(|| "…".to_string()),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground.opacity(0.75))
+                            .child(format!(
+                                "{} {} {}",
+                                tr(locale, "chat.clickJumpTurn"),
+                                format_commas(t_idx + 1),
+                                tr(locale, "chat.turn")
+                            )),
+                    )
+            });
+
+            Some(
+                h_flex()
+                    .absolute()
+                    .left(px(10.))
+                    .top_0()
+                    .bottom_0()
+                    .items_center()
+                    .gap_3()
+                    .child(ticks)
+                    .children(preview_card),
+            )
+        } else {
+            None
+        };
+
+        let body_area = if messages.is_empty() {
+            v_flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .p_6()
+                .child(
+                    Empty::new().header(
+                        EmptyHeader::new()
+                            .media(EmptyMedia::new().child(Icon::new(IconName::Bot)))
+                            .title(EmptyTitle::new().child(tr(locale, "chat.emptyTitle")))
+                            .description(EmptyDescription::new().child(tr(locale, "chat.emptyDesc"))),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            let (list_state, scrolled_up) = {
+                let s = self.scroller.read(cx);
+                (s.list_state.clone(), s.is_scrolled_up())
+            };
+            let item_count = list_state.item_count();
+            let list_el = list(list_state.clone(), move |index, window, cx| {
+                let Some(msg) = msgs_for_list.get(index) else {
+                    return div().into_any_element();
+                };
+                let msg_clone = msg.clone();
+                let q_str = q_for_list.to_string();
+                let app = app_state.clone();
+                let row = panel_entity.update(cx, |this, cx| {
+                    render_message_row(
+                        &msg_clone,
+                        &mut this.row_cache,
+                        &q_str,
+                        &app,
+                        window,
+                        cx,
+                    )
+                });
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .pt(if index == 0 { px(12.) } else { px(0.) })
+                    .pb(if index + 1 == item_count { px(12.) } else { px(16.) })
+                    .child(row)
+                    .into_any_element()
+            })
+            .size_full()
+            .min_h_0();
+
+            let scroller_for_jump = self.scroller.clone();
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .id("conversation-viewport")
+                        .size_full()
+                        .min_h_0()
+                        .child(list_el)
+                        .vertical_scrollbar(&list_state),
+                )
+                .children(scrolled_up.then(|| {
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(rems(0.75))
+                        .flex()
+                        .justify_center()
+                        .child(
+                            Button::new("conv-jump-latest")
+                                .secondary()
+                                .icon(IconName::ArrowDown)
+                                .tooltip(tr(locale, "chat.jumpLatest"))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().background)
+                                .on_click(move |_, _, cx| {
+                                    scroller_for_jump.update(cx, |s, cx| s.scroll_to_end(cx));
+                                }),
+                        )
+                }))
+                .children(navigator_gutter)
+                .into_any_element()
+        };
+
+        let q_overlay = self
+            .questionnaire
+            .as_ref()
+            .map(|view| div().px_4().pb_2().child(view.clone()));
+
+        let session_title = {
+            let state = self.app_state.read(cx);
+            state
+                .active_session_id
+                .as_ref()
+                .and_then(|sid| state.sessions.iter().find(|s| &s.id == sid))
+                .map(|s| s.display_title())
+                .unwrap_or_else(|| SharedString::from(tr(locale, "chat.newSession")))
+        };
+
+        let full_session_title = session_title.clone();
+
+        // Subagents dropdown placed to the left of the conversation title
+        let subagent_runs = state_snap.active_subagent_runs();
+        let active_subagents = subagent_runs.iter().filter(|r| r.is_active()).count();
+        let subagent_status_text = state_snap.subagent_status_text.clone();
+        let app_for_subagents = self.app_state.clone();
+
+        let subagent_btn_label = if active_subagents > 0 {
+            format!(
+                "{} · {} {}",
+                tr(locale, "subagents.label"),
+                format_commas(active_subagents),
+                tr(locale, "subagents.running")
+            )
+        } else if !subagent_runs.is_empty() {
+            format!(
+                "{} ({})",
+                tr(locale, "subagents.label"),
+                format_commas(subagent_runs.len())
+            )
+        } else {
+            format!("{} (0)", tr(locale, "subagents.label"))
+        };
+
+        let mut subagent_btn = Button::new("conv-subagents-btn")
+            .ghost()
+            .small()
+            .h(px(26.))
+            .label(subagent_btn_label)
+            .tooltip(tr(locale, "subagents.label"));
+        if active_subagents > 0 {
+            subagent_btn = subagent_btn.child(Spinner::new().xsmall().color(cx.theme().primary));
+        } else {
+            subagent_btn = subagent_btn.icon(IconName::Bot);
+        }
+
+        let subagent_dropdown = subagent_btn.dropdown_menu_with_anchor(
+            Anchor::BottomLeft,
+            move |mut menu, _, _| {
+                let header = if active_subagents > 0 {
+                    format!(
+                        "{} · {} {}",
+                        tr(locale, "subagents.label"),
+                        format_commas(active_subagents),
+                        tr(locale, "subagents.running")
+                    )
+                } else {
+                    format!(
+                        "{} · {}",
+                        tr(locale, "subagents.label"),
+                        tr(locale, "subagents.idle")
+                    )
+                };
+                menu = menu.label(header);
+                if let Some(ref status_line) = subagent_status_text {
+                    if !status_line.trim().is_empty() {
+                        menu = menu.item(PopupMenuItem::new(status_line.clone()).disabled(true));
+                    }
+                }
+                if subagent_runs.is_empty() {
+                    menu = menu.item(
+                        PopupMenuItem::new(tr(locale, "subagents.noneRunning")).disabled(true),
+                    );
+                } else {
+                    for run in &subagent_runs {
+                        let glyph = match run.state.as_str() {
+                            "running" => "●",
+                            "queued" | "pending" => "◦",
+                            "complete" | "completed" => "✓",
+                            "failed" | "rejected" => "✗",
+                            _ => "■",
+                        };
+                        let mut details = Vec::new();
+                        if let Some(ref m) = run.model {
+                            if let Some(ref th) = run.thinking {
+                                details.push(format!("{m} ({th})"));
+                            } else {
+                                details.push(m.clone());
+                            }
+                        }
+                        if let Some(ref t) = run.current_tool {
+                            details.push(format!("tool: {t}"));
+                        }
+                        if let Some(tc) = run.tool_count {
+                            details.push(format!("{} tools", format_commas(tc)));
+                        }
+                        if let Some(turns) = run.turn_count {
+                            details.push(format!("{} turns", format_commas(turns)));
+                        }
+                        if details.is_empty() {
+                            if let Some(ref p) = run.progress_text {
+                                details.push(p.clone());
+                            } else {
+                                details.push(run.state.clone());
+                            }
+                        }
+                        let line = format!(
+                            "{glyph} {} [{}] — {}",
+                            run.label,
+                            run.kind,
+                            details.join(" · ")
+                        );
+                        menu = menu.item(PopupMenuItem::new(line).disabled(true));
+                        for child in &run.children {
+                            let c_glyph = match child.state.as_str() {
+                                "running" => "●",
+                                "queued" | "pending" => "◦",
+                                "complete" | "completed" => "✓",
+                                "failed" | "rejected" => "✗",
+                                _ => "■",
+                            };
+                            let c_name = child.agent.as_deref().unwrap_or(&child.label);
+                            let c_extra = child
+                                .current_tool
+                                .as_ref()
+                                .map(|t| format!(" · tool: {t}"))
+                                .or_else(|| child.progress_text.as_ref().map(|p| format!(" · {p}")))
+                                .unwrap_or_else(|| format!(" · {}", child.state));
+                            menu = menu.item(
+                                PopupMenuItem::new(format!("   {c_glyph} {c_name}{c_extra}"))
+                                    .disabled(true),
+                            );
+                        }
+                    }
+                }
+                let app_settings = app_for_subagents.clone();
+                menu.separator().item(
+                    PopupMenuItem::new(tr(locale, "subagents.manageProfiles"))
+                        .icon(IconName::Settings)
+                        .on_click(move |_, _, cx| {
+                            app_settings.update(cx, |s, cx| {
+                                s.open_settings(cx);
+                            });
+                        }),
+                )
+            },
+        );
+
+        let conversation_header = h_flex()
+            .w_full()
+            .h(px(36.))
+            .px_4()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(div().flex_shrink_0().child(subagent_dropdown))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("conv-header-title")
+                            .max_w(px(580.))
+                            .truncate()
+                            .text_xs()
+                            .font_medium()
+                            .text_color(cx.theme().muted_foreground)
+                            .tooltip(move |w, cx| {
+                                Tooltip::new(full_session_title.clone())
+                                    .max_w(px(480.))
+                                    .build(w, cx)
+                            })
+                            .child(session_title),
+                    ),
+            )
+            .child(div().w(px(90.)).flex_shrink_0());
+
+        v_flex()
+            .id("chat-panel-root")
+            .relative()
+            .key_context("ChatPanel")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .font_family(cx.theme().font_family.clone())
+            .on_action(cx.listener(|this, _: &StopAgent, _, cx| {
+                this.app_state.update(cx, |s, cx| s.stop_running_agent(cx));
+            }))
+            .on_action(cx.listener(|this, _: &SendPrompt, window, cx| {
+                this.composer.update(cx, |c, cx| c.submit(window, cx));
+            }))
+            .child(conversation_header)
+            .child(render_branch_nav(&self.app_state, window, cx))
+            .child(body_area)
+            .children(q_overlay)
+            .child(
+                div()
+                    .key_context("Composer")
+                    .child(self.composer.clone()),
+            )
+            .child(self.palette.clone())
+    }
+}
+
+struct TurnLocation {
+    msg_index: usize,
+    question: String,
+    answer: Option<String>,
+}
+
+fn collect_turn_locations(messages: &[ChatMessage]) -> Vec<TurnLocation> {
+    let mut turns = Vec::new();
+    for (idx, m) in messages.iter().enumerate() {
+        if m.role != MessageRole::User {
+            continue;
+        }
+        let preview: String = m
+            .content
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect();
+        let mut answer: Option<String> = None;
+        for next_msg in &messages[idx + 1..] {
+            if next_msg.role == MessageRole::User {
+                break;
+            }
+            if next_msg.role == MessageRole::Assistant {
+                let ans_line: String = next_msg
+                    .content
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect();
+                if !ans_line.is_empty() {
+                    answer = Some(ans_line);
+                }
+            }
+        }
+        turns.push(TurnLocation {
+            msg_index: idx,
+            question: if preview.is_empty() {
+                format!("Turn {}", turns.len() + 1)
+            } else {
+                preview
+            },
+            answer,
+        });
+    }
+    turns
+}
+
+const MAX_NAV_TICKS: usize = 8;
+
+/// Sliding 8-tick window for ConversationNavigator:
+/// - Shows at most 8 ticks
+/// - When scrolling up to/past the top tick (or down to the 8th tick), shifts the window
+///   so the active turn becomes the 8th (last) tick and earlier turns load above it.
+fn compute_nav_window(total: usize, active_turn: usize, prev_start: usize) -> (usize, usize) {
+    if total <= MAX_NAV_TICKS {
+        return (0, total);
+    }
+    let max_start = total - MAX_NAV_TICKS;
+    let start = if prev_start == usize::MAX {
+        max_start
+    } else {
+        prev_start.min(max_start)
+    };
+    if active_turn <= start && start > 0 {
+        let end = (active_turn + 1).max(MAX_NAV_TICKS).min(total);
+        (end - MAX_NAV_TICKS, end)
+    } else if active_turn >= start + MAX_NAV_TICKS - 1 {
+        let end = (active_turn + 1).max(MAX_NAV_TICKS).min(total);
+        (end - MAX_NAV_TICKS, end)
+    } else {
+        (start, start + MAX_NAV_TICKS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nav_window_caps_at_eight_and_loads_earlier_on_scroll() {
+        assert_eq!(compute_nav_window(5, 4, 0), (0, 5));
+        assert_eq!(compute_nav_window(20, 19, usize::MAX), (12, 20));
+        // Inside window stays stable
+        assert_eq!(compute_nav_window(20, 15, 12), (12, 20));
+        // Reaching top tick (12) places 12 as 8th (last) tick and loads 5..13
+        assert_eq!(compute_nav_window(20, 12, 12), (5, 13));
+    }
+}

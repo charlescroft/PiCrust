@@ -1,0 +1,403 @@
+use crate::app_state::{AppState, SettingsAddKind};
+use crate::i18n::{AppLocale, format_commas, tr};
+use crate::settings::SETTINGS_BTN_W;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{IconName, Sizable as _, h_flex};
+use gpui_kit::{App, Entity, ParentElement as _, SharedString, Styled as _, px};
+use serde_json::json;
+
+pub fn subagents_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App) -> SettingPage {
+    let state = app_state.read(cx);
+    let profiles = state.subagents.clone();
+    let max_conc = state.subagent_max_concurrent;
+    let app_builtin_read = app_state.clone();
+    let app_builtin_write = app_state.clone();
+    let app_add_sub = app_state.clone();
+
+    let settings_group = SettingGroup::new()
+        .title(tr(locale, "settings.subagents"))
+        .item(SettingItem::new(
+            tr(locale, "settings.builtInSubagents"),
+            SettingField::switch(
+                move |cx: &App| app_builtin_read.read(cx).subagent_built_in_enabled,
+                move |val: bool, cx: &mut App| {
+                    app_builtin_write.update(cx, |s, cx| {
+                        s.subagent_built_in_enabled = val;
+                        if s.sidecar_connected {
+                            let client = s.client.clone();
+                            cx.spawn(async move |_, _| {
+                                let _ = client
+                                    .set_subagent_settings(json!({ "enabled": val }))
+                                    .await;
+                            })
+                            .detach();
+                        }
+                        cx.notify();
+                    });
+                },
+            ),
+        ))
+        .item(
+            SettingItem::new(
+                tr(locale, "settings.maxConcurrentSubagents"),
+                SettingField::render(move |_, _, _| {
+                    Tag::secondary()
+                        .small()
+                        .child(SharedString::from(format_commas(max_conc)))
+                }),
+            ),
+        )
+        .item(
+            SettingItem::new(
+                tr(locale, "settings.addSubagent"),
+                SettingField::render(move |_, _, _| {
+                    let app_btn = app_add_sub.clone();
+                    Button::new("add-subagent-btn")
+                        .primary()
+                        .small()
+                        .h(px(28.))
+                        .w(SETTINGS_BTN_W)
+                        .icon(IconName::Plus)
+                        .label(tr(locale, "settings.add"))
+                        .on_click(move |_, _, cx| {
+                            app_btn.update(cx, |s, cx| {
+                                s.settings_add_kind = Some(SettingsAddKind::SubagentProfile);
+                                cx.notify();
+                            });
+                        })
+                }),
+            ),
+        );
+
+    let mut group = SettingGroup::new().title(tr(locale, "settings.subagentProfiles"));
+
+    if profiles.is_empty() {
+        group = group.item(SettingItem::new(
+            tr(locale, "settings.emptySidecar"),
+            SettingField::render(|_, _, _| Tag::secondary().small().child(SharedString::from("0"))),
+        ));
+    } else {
+        for p in profiles {
+            let name = p.name.clone();
+            let scope = p.scope.clone();
+            let title = p.display_name.clone().unwrap_or_else(|| p.name.clone());
+            let model_str = p.model.clone().unwrap_or_default();
+            let scope_for_desc = scope.clone();
+            let desc_for_search = format!("{scope} · {model_str} · {}", p.description);
+            let app_read = app_state.clone();
+            let app_write = app_state.clone();
+            let name_read = name.clone();
+            let scope_read = scope.clone();
+
+            group = group.item(
+                SettingItem::new(
+                    SharedString::from(title),
+                    SettingField::switch(
+                        move |cx: &App| {
+                            app_read
+                                .read(cx)
+                                .subagents
+                                .iter()
+                                .find(|x| x.name == name_read && x.scope == scope_read)
+                                .map(|x| x.enabled)
+                                .unwrap_or(true)
+                        },
+                        move |val: bool, cx: &mut App| {
+                            let n = name.clone();
+                            let sc = scope.clone();
+                            app_write.update(cx, |s, cx| {
+                                if let Some(target) = s
+                                    .subagents
+                                    .iter_mut()
+                                    .find(|x| x.name == n && x.scope == sc)
+                                {
+                                    target.enabled = val;
+                                }
+                                if s.sidecar_connected {
+                                    let client = s.client.clone();
+                                    let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                    cx.spawn(async move |_, _| {
+                                        let _ = client
+                                            .toggle_subagent_profile(json!({
+                                                "cwd": cwd,
+                                                "scope": sc,
+                                                "name": n,
+                                                "enabled": val,
+                                            }))
+                                            .await;
+                                    })
+                                    .detach();
+                                }
+                                cx.notify();
+                            });
+                        },
+                    ),
+                )
+                .description(if model_str.is_empty() {
+                    scope_for_desc
+                } else {
+                    model_str.clone()
+                })
+                .keywords([desc_for_search]),
+            );
+        }
+    }
+
+    SettingPage::new(tr(locale, "settings.subagents"))
+        .icon(IconName::Bot)
+        .group(settings_group)
+        .group(group)
+}
+
+pub fn skills_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App) -> SettingPage {
+    let skills = app_state.read(cx).skills.clone();
+    let app_add_skill = app_state.clone();
+
+    let mut group = SettingGroup::new()
+        .title(tr(locale, "settings.skillsTitle"))
+        .item(
+            SettingItem::new(
+                tr(locale, "settings.installSkill"),
+                SettingField::render(move |_, _, _| {
+                    let app_btn = app_add_skill.clone();
+                    Button::new("add-skill-btn")
+                        .primary()
+                        .small()
+                        .h(px(28.))
+                        .w(SETTINGS_BTN_W)
+                        .icon(IconName::Plus)
+                        .label(tr(locale, "settings.add"))
+                        .on_click(move |_, _, cx| {
+                            app_btn.update(cx, |s, cx| {
+                                s.settings_add_kind = Some(SettingsAddKind::Skill);
+                                cx.notify();
+                            });
+                        })
+                }),
+            ),
+        );
+
+    if skills.is_empty() {
+        group = group.item(SettingItem::new(
+            tr(locale, "settings.emptySidecar"),
+            SettingField::render(|_, _, _| Tag::secondary().small().child(SharedString::from("0"))),
+        ));
+    } else {
+        for s in skills {
+            let name = s.name.clone();
+            let source = s.source.clone();
+            let desc = s.description.clone();
+            let app_read = app_state.clone();
+            let app_write = app_state.clone();
+            let name_read = name.clone();
+            let file_path_view = s.file_path.clone();
+            let source_for_search = s.source.clone();
+
+            // The switch and a compact source tag share the field column: a long
+            // description under the title would wrap inside a narrow 35% column.
+            group = group.item(
+                SettingItem::new(
+                    SharedString::from(name.clone()),
+                    SettingField::render(move |_, _, cx| {
+                        let enabled = app_read
+                            .read(cx)
+                            .skills
+                            .iter()
+                            .find(|x| x.name == name_read)
+                            .map(|x| x.enabled)
+                            .unwrap_or(true);
+                        let app_w = app_write.clone();
+                        let n = name.clone();
+                        let fp_for_switch = file_path_view.clone();
+                        h_flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .child(Tag::secondary().small().child(SharedString::from(
+                                source.clone(),
+                            )))
+                            .child(
+                                Switch::new(SharedString::from(format!("skill-switch-{}", n)))
+                                    .checked(enabled)
+                                    .on_click(move |checked: &bool, _, cx| {
+                                        let val = *checked;
+                                        let n = n.clone();
+                                        let fp = fp_for_switch.clone();
+                                        app_w.update(cx, |st, cx| {
+                                            if let Some(target) =
+                                                st.skills.iter_mut().find(|x| x.name == n)
+                                            {
+                                                target.enabled = val;
+                                                target.disable_model_invocation = !val;
+                                            }
+                                            if st.sidecar_connected && !fp.is_empty() {
+                                                let client = st.client.clone();
+                                                cx.spawn(async move |_, _| {
+                                                    let _ = client.toggle_skill(&fp, !val).await;
+                                                })
+                                                .detach();
+                                            }
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                    }),
+                )
+                .keywords([desc, source_for_search.clone()]),
+            );
+        }
+    }
+
+    SettingPage::new(tr(locale, "settings.skills"))
+        .icon(IconName::BookOpen)
+        .group(group)
+}
+
+pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App) -> SettingPage {
+    let plugins = app_state.read(cx).plugins.clone();
+    let app_add_plugin = app_state.clone();
+
+    let mut group = SettingGroup::new()
+        .title(tr(locale, "settings.pluginsTitle"))
+        .item(
+            SettingItem::new(
+                tr(locale, "settings.installPlugin"),
+                SettingField::render(move |_, _, _| {
+                    let app_btn = app_add_plugin.clone();
+                    Button::new("add-plugin-btn")
+                        .primary()
+                        .small()
+                        .h(px(28.))
+                        .w(SETTINGS_BTN_W)
+                        .icon(IconName::Plus)
+                        .label(tr(locale, "settings.add"))
+                        .on_click(move |_, _, cx| {
+                            app_btn.update(cx, |s, cx| {
+                                s.settings_add_kind = Some(SettingsAddKind::Plugin);
+                                cx.notify();
+                            });
+                        })
+                }),
+            ),
+        );
+
+    if plugins.is_empty() {
+        group = group.item(SettingItem::new(
+            tr(locale, "settings.emptySidecar"),
+            SettingField::render(|_, _, _| Tag::secondary().small().child(SharedString::from("0"))),
+        ));
+    } else {
+        for (idx, p) in plugins.into_iter().enumerate() {
+            let name = p.name.clone();
+            let source = p.source.clone();
+            let scope = p.scope.clone();
+            let ver = p.version.clone();
+            let summary = p.resource_summary.clone();
+            let desc_text = p.description.clone().unwrap_or_default();
+            let mut desc_parts = vec![scope.clone()];
+            if !summary.is_empty() {
+                desc_parts.push(summary);
+            }
+            if !desc_text.is_empty() {
+                desc_parts.push(desc_text);
+            }
+            let app_read = app_state.clone();
+            let app_write = app_state.clone();
+            let src_read = source.clone();
+            let sc_read = scope.clone();
+
+            group = group.item(
+                SettingItem::new(
+                    SharedString::from(name),
+                    SettingField::render(move |_, _, cx| {
+                        let enabled_now = app_read
+                            .read(cx)
+                            .plugins
+                            .iter()
+                            .find(|x| x.source == src_read && x.scope == sc_read)
+                            .map(|x| x.enabled)
+                            .unwrap_or(true);
+                        let app_w = app_write.clone();
+                        let src_w = source.clone();
+                        let sc_w = scope.clone();
+
+                        h_flex()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap_2()
+                            .items_center()
+                            .child(Tag::secondary().small().child(SharedString::from(ver.clone())))
+                            .child(Tag::secondary().small().child(SharedString::from(scope.clone())))
+                            .child(
+                                Button::new(("toggle-plugin", idx))
+                                    .outline()
+                                    .small()
+                                    .h(px(28.))
+                                    .w(SETTINGS_BTN_W)
+                                    .icon(if enabled_now {
+                                        IconName::Close
+                                    } else {
+                                        IconName::Check
+                                    })
+                                    .label(if enabled_now {
+                                        tr(locale, "settings.disable")
+                                    } else {
+                                        tr(locale, "settings.enable")
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        let next = !enabled_now;
+                                        let src = src_w.clone();
+                                        let sc = sc_w.clone();
+                                        app_w.update(cx, |s, cx| {
+                                            if let Some(target) = s
+                                                .plugins
+                                                .iter_mut()
+                                                .find(|x| x.source == src && x.scope == sc)
+                                            {
+                                                target.enabled = next;
+                                                target.status = if next {
+                                                    "loaded".to_string()
+                                                } else {
+                                                    "disabled".to_string()
+                                                };
+                                            }
+                                            if s.sidecar_connected {
+                                                let client = s.client.clone();
+                                                let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                                let entity = cx.entity().clone();
+                                                cx.spawn(async move |_, cx| {
+                                                    if let Ok(res) = client
+                                                        .plugin_action(json!({
+                                                            "cwd": cwd,
+                                                            "action": if next { "enable" } else { "disable" },
+                                                            "source": src,
+                                                            "scope": sc,
+                                                        }))
+                                                        .await
+                                                    {
+                                                        let _ = entity.update(cx, |s, cx| {
+                                                            s.apply_plugins_response(&res);
+                                                            cx.notify();
+                                                        });
+                                                    }
+                                                })
+                                                .detach();
+                                            }
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                    }),
+                )
+                .keywords([desc_parts.join(" · ")]),
+            );
+        }
+    }
+
+    SettingPage::new(tr(locale, "settings.plugins"))
+        .icon(IconName::HardDrive)
+        .group(group)
+}
