@@ -45,3 +45,12 @@ impl IconNamed for TrashIcon {
         gpui_kit::assets::IconName::Trash.path()
     }
 }
+
+#[derive(Clone, Copy)]
+pub struct AtSignIcon;
+
+impl IconNamed for AtSignIcon {
+    fn path(self) -> SharedString {
+        gpui_kit::assets::IconName::AtSign.path()
+    }
+}

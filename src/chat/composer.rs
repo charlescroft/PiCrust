@@ -1228,7 +1228,7 @@ impl ComposerView {
                     .h(px(36.))
                     .rounded_full()
                     .flex_shrink_0()
-                    .icon(IconName::Plus)
+                    .icon(Icon::new(crate::icons::AtSignIcon))
                     .tooltip(tr(locale, "chat.referenceFiles"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.file_picker_open = !this.file_picker_open;
