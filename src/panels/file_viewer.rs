@@ -78,10 +78,17 @@ impl FileViewerView {
                 ed.set_value(content.as_ref(), window, cx);
             });
 
+            // One presentation only: unified. No split/unified switching in the panel.
             self.diff_state = patch
                 .as_ref()
                 .and_then(|p| DiffFile::parse(p.as_ref()).ok())
-                .map(|files| cx.new(|cx| DiffState::new(files, cx)));
+                .map(|files| {
+                    cx.new(|cx| {
+                        let mut state = DiffState::new(files, cx);
+                        state.set_mode(DiffMode::Unified, cx);
+                        state
+                    })
+                });
 
             if self.diff_state.is_some() {
                 self.mode = FilePreviewMode::Diff;
@@ -146,34 +153,6 @@ impl FileViewerView {
                         cx.notify();
                     })),
             );
-            if let Some(ref ds) = self.diff_state {
-                if self.mode == FilePreviewMode::Diff {
-                    let ds_toggle = ds.clone();
-                    let cur_mode = ds.read(cx).mode();
-                    header_actions = header_actions.child(
-                        Button::new("fv-diff-mode")
-                            .ghost()
-                            .xsmall()
-                            .h(px(24.))
-                            .icon(IconName::LayoutDashboard)
-                            .label(if cur_mode == DiffMode::Unified {
-                                tr(locale, "panel.split")
-                            } else {
-                                tr(locale, "panel.unified")
-                            })
-                            .on_click(move |_, _, cx| {
-                                ds_toggle.update(cx, |s, cx| {
-                                    let next = if s.mode() == DiffMode::Unified {
-                                        DiffMode::Split
-                                    } else {
-                                        DiffMode::Unified
-                                    };
-                                    s.set_mode(next, cx);
-                                });
-                            }),
-                    );
-                }
-            }
         }
         if is_md {
             header_actions = header_actions.child(
@@ -224,7 +203,12 @@ impl FileViewerView {
                     .flex_1()
                     .min_h_0()
                     .size_full()
-                    .child(Diff::new(ds).size_full())
+                    .child(
+                        Diff::new(ds)
+                            .header_visible(false)
+                            .line_number(true)
+                            .size_full(),
+                    )
                     .into_any_element()
             } else {
                 div().flex_1().into_any_element()
