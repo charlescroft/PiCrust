@@ -1729,39 +1729,22 @@ impl AppState {
         let entity = cx.entity().clone();
         let pid_for_error = provider_id.clone();
         cx.spawn(async move |_, cx| {
-            // Probe the provider's own Base URL; pi's service is not involved. A
-            // catalog-only provider has no configured URL yet, so it falls back to
-            // the pi catalog resolver in that one case.
+            // Strictly the provider's own Base URL: the pi core is never asked to probe
+            // on our behalf, so the request always goes to the configured address.
             let has_base_url = provider_raw
                 .get("baseUrl")
                 .and_then(Value::as_str)
                 .map(|u| !u.trim().is_empty())
                 .unwrap_or(false);
-            let mut discovered = if has_base_url {
+            let discovered = if has_base_url {
                 client
                     .discover_models_from_provider(&provider_id, &provider_raw)
                     .await
-                .map_err(|e| e.to_string())
-            } else {
-                client
-                    .discover_provider_models(&provider_id, provider_raw.clone())
-                    .await
                     .map_err(|e| e.to_string())
+            } else {
+                Err("This provider has no Base URL - set one before probing".to_string())
             };
-            // A rejected probe means the key we resolved is not the one the provider
-            // wants; pi's server-side resolver knows every credential shape, so retry
-            // there instead of reporting a bare 401.
-            let rejected = discovered
-                .as_ref()
-                .err()
-                .map(|e| e.contains("401") || e.contains("403") || e.to_lowercase().contains("unauthorized"))
-                .unwrap_or(false);
-            if rejected {
-                discovered = client
-                    .discover_provider_models(&provider_id, provider_raw.clone())
-                    .await
-                    .map_err(|e| e.to_string());
-            }
+
             let mut failure: Option<String> = None;
             let mut added = 0usize;
             match discovered.map_err(anyhow::Error::msg) {

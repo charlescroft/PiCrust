@@ -369,7 +369,12 @@ impl PiDaemonClient {
             let status = resp.status();
             let text = resp.text().await?;
             if !status.is_success() {
-                anyhow::bail!("Upstream returned HTTP {}: {}", status.as_u16(), text.chars().take(300).collect::<String>());
+                anyhow::bail!(
+                    "{} -> HTTP {}: {}",
+                    url,
+                    status.as_u16(),
+                    text.chars().take(300).collect::<String>()
+                );
             }
             let payload: Value = serde_json::from_str(&text)
                 .map_err(|_| anyhow::anyhow!("Upstream model list was not valid JSON"))?;
