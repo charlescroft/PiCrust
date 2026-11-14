@@ -534,6 +534,16 @@ impl GitGraphView {
         .detach();
     }
 
+    pub fn toggle_commit(&mut self, hash: &str, cx: &mut Context<Self>) {
+        if self.selected_commit.as_ref().is_some_and(|sc| sc.hash == hash) {
+            self.selected_commit = None;
+            self.commit_files.clear();
+            cx.notify();
+            return;
+        }
+        self.select_commit(hash, cx);
+    }
+
     pub fn select_commit(&mut self, hash: &str, cx: &mut Context<Self>) {
         let Some(c) = self.commits.iter().find(|c| c.hash == hash).cloned() else {
             self.selected_commit = None;
@@ -797,11 +807,7 @@ impl Render for GitGraphView {
             .clamp(2, 8);
         let graph_col_w = px(global_max_lanes as f32 * 16.0 + 8.0);
 
-        let mut list_rows = v_flex()
-            .id("git-graph-list")
-            .size_full()
-            .overflow_y_scroll()
-            .min_h_0();
+        let mut list_inner = v_flex().w_full();
 
         for commit in filtered_commits {
             let hash_c = commit.hash.clone();
@@ -903,14 +909,9 @@ impl Render for GitGraphView {
                         .bg(node_color),
                 );
 
-            // Ref Badges (HEAD, branch, tag, remote) - bounded width to prevent overlap
-            let mut refs_stack = h_flex()
-                .gap_1()
-                .items_center()
-                .max_w(px(180.))
-                .overflow_hidden()
-                .flex_shrink_0();
-            for r in &commit.refs {
+            // Ref Badges (HEAD, branch, tag, remote) - show at most 2 badges inline to prevent overflow
+            let mut refs_stack = h_flex().gap_1().items_center().flex_shrink_0();
+            for r in commit.refs.iter().take(2) {
                 let badge_el = if r.is_head {
                     Tag::primary()
                         .small()
@@ -928,7 +929,16 @@ impl Render for GitGraphView {
                         .small()
                         .child(r.name.clone())
                 };
-                refs_stack = refs_stack.child(badge_el);
+                refs_stack = refs_stack.child(div().flex_shrink_0().child(badge_el));
+            }
+            if commit.refs.len() > 2 {
+                refs_stack = refs_stack.child(
+                    div().flex_shrink_0().child(
+                        Tag::secondary()
+                            .small()
+                            .child(format!("+{}", commit.refs.len() - 2)),
+                    ),
+                );
             }
 
             let hash_copy = commit.hash.clone();
@@ -939,6 +949,7 @@ impl Render for GitGraphView {
                 .id(row_id)
                 .w_full()
                 .h(px(32.))
+                .flex_shrink_0()
                 .px_2()
                 .gap_2()
                 .items_center()
@@ -952,7 +963,7 @@ impl Render for GitGraphView {
                 })
                 .hover(|s| s.bg(cx.theme().secondary.opacity(0.5)))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_commit(&hash_c, cx);
+                    this.toggle_commit(&hash_c, cx);
                 }))
                 .child(
                     h_flex()
@@ -966,8 +977,9 @@ impl Render for GitGraphView {
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(60.))
-                                .truncate()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
                                 .text_xs()
                                 .text_color(if is_selected {
                                     cx.theme().foreground
@@ -979,24 +991,17 @@ impl Render for GitGraphView {
                 )
                 .child(
                     h_flex()
-                        .gap_2p5()
+                        .gap_2()
                         .items_center()
                         .flex_shrink_0()
                         .child(
                             div()
-                                .max_w(px(90.))
-                                .truncate()
+                                .max_w(px(72.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(SharedString::from(commit.author_name.clone())),
-                        )
-                        .child(
-                            div()
-                                .w(px(108.))
-                                .truncate()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground.opacity(0.75))
-                                .child(SharedString::from(commit.date_str.clone())),
                         )
                         .child(
                             Button::new(btn_hash_id)
@@ -1005,13 +1010,14 @@ impl Render for GitGraphView {
                                 .label(short_h)
                                 .tooltip(tr(locale, "git.copyHash"))
                                 .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
                                     cx.write_to_clipboard(ClipboardItem::new_string(hash_copy.clone()));
                                     window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                                 }),
                         ),
                 );
 
-            list_rows = list_rows.child(commit_row);
+            list_inner = list_inner.child(commit_row);
 
             // If selected, render commit details card directly inline below row
             if is_selected {
@@ -1026,6 +1032,7 @@ impl Render for GitGraphView {
                 let actions_bar = h_flex()
                     .gap_2()
                     .items_center()
+                    .flex_shrink_0()
                     .child(
                         Button::new("btn-co-commit")
                             .outline()
@@ -1063,6 +1070,17 @@ impl Render for GitGraphView {
                                     cx.notify();
                                 });
                             }),
+                    )
+                    .child(
+                        Button::new("btn-close-commit-details")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.selected_commit = None;
+                                this.commit_files.clear();
+                                cx.notify();
+                            })),
                     );
 
                 let mut files_view = v_flex().gap_1().w_full();
@@ -1106,6 +1124,7 @@ impl Render for GitGraphView {
 
                 let details_panel = v_flex()
                     .w_full()
+                    .flex_shrink_0()
                     .p_3()
                     .gap_2p5()
                     .border_b_1()
@@ -1115,12 +1134,15 @@ impl Render for GitGraphView {
                         h_flex()
                             .justify_between()
                             .items_center()
+                            .gap_2()
                             .child(
                                 h_flex()
+                                    .flex_1()
+                                    .min_w_0()
                                     .gap_2()
                                     .items_center()
-                                    .child(div().text_xs().font_semibold().child("Commit:"))
-                                    .child(div().text_xs().font_family(cx.theme().font_family.clone()).child(SharedString::from(h_full))),
+                                    .child(div().text_xs().font_semibold().flex_shrink_0().child("Commit:"))
+                                    .child(div().text_xs().min_w_0().overflow_hidden().whitespace_nowrap().font_family(cx.theme().font_family.clone()).child(SharedString::from(h_full))),
                             )
                             .child(actions_bar),
                     )
@@ -1155,11 +1177,19 @@ impl Render for GitGraphView {
                     )
                     .child(files_view);
 
-                list_rows = list_rows.child(details_panel);
+                list_inner = list_inner.child(details_panel);
             }
         }
 
-        let mut root = v_flex().size_full().child(toolbar).child(list_rows);
+        let list_scroll = div()
+            .id("git-graph-list")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .child(list_inner);
+
+        let mut root = v_flex().size_full().child(toolbar).child(list_scroll);
 
         // Dialog for Create Branch
         if let Some(GitGraphDialog::CreateBranch(ref hash)) = self.dialog_mode.clone() {
