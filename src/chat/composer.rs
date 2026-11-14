@@ -727,11 +727,16 @@ impl ComposerView {
                 .unwrap_or(0);
             self.textarea.update(cx, |state, cx| {
                 state.set_value(&updated, window, cx);
-                state.set_cursor_position(
-                    gpui_kit::component::input::Position::new(line, col),
-                    window,
-                    cx,
-                );
+            });
+            let textarea = self.textarea.clone();
+            window.defer(cx, move |window, cx| {
+                textarea.update(cx, |state, cx| {
+                    state.set_cursor_position(
+                        gpui_kit::component::input::Position::new(line, col),
+                        window,
+                        cx,
+                    );
+                });
             });
         }
 
