@@ -80,7 +80,26 @@ impl FileViewerView {
             });
 
             // One presentation only: unified. No split/unified switching in the panel.
-            self.diff_state = patch
+            let patch_to_use = patch.or_else(|| {
+                if let Some(ref p) = path {
+                    let output = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&cwd_root)
+                        .args(["diff", "HEAD", "--"])
+                        .arg(p)
+                        .output()
+                        .ok()?;
+                    if output.status.success() && !output.stdout.is_empty() {
+                        let text = String::from_utf8_lossy(&output.stdout).to_string();
+                        if !text.trim().is_empty() {
+                            return Some(SharedString::from(text));
+                        }
+                    }
+                }
+                None
+            });
+
+            self.diff_state = patch_to_use
                 .as_ref()
                 .and_then(|p| DiffFile::parse(p.as_ref()).ok())
                 .map(|files| {
@@ -141,9 +160,11 @@ impl FileViewerView {
         let rel_for_mention = rel_path.clone();
 
         let mut header_actions = h_flex().items_center().gap_1p5();
-        let mut mode_tabs = TabBar::new("fv-mode-tabs").segmented().small().h(px(24.));
-        if has_diff {
-            mode_tabs = mode_tabs.child(
+        let mode_tabs = TabBar::new("fv-mode-tabs")
+            .segmented()
+            .small()
+            .h(px(24.))
+            .child(
                 Tab::new()
                     .label(tr(locale, "chat.diff"))
                     .selected(self.mode == FilePreviewMode::Diff)
@@ -151,17 +172,16 @@ impl FileViewerView {
                         this.mode = FilePreviewMode::Diff;
                         cx.notify();
                     })),
+            )
+            .child(
+                Tab::new()
+                    .label(tr(locale, "chat.source"))
+                    .selected(self.mode == FilePreviewMode::Source)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.mode = FilePreviewMode::Source;
+                        cx.notify();
+                    })),
             );
-        }
-        mode_tabs = mode_tabs.child(
-            Tab::new()
-                .label(tr(locale, "chat.source"))
-                .selected(self.mode == FilePreviewMode::Source)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.mode = FilePreviewMode::Source;
-                    cx.notify();
-                })),
-        );
         header_actions = header_actions.child(mode_tabs)
             .child(
                 Button::new("fv-mention")
@@ -194,7 +214,19 @@ impl FileViewerView {
                     )
                     .into_any_element()
             } else {
-                div().flex_1().into_any_element()
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .items_center()
+                    .justify_center()
+                    .p_6()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(tr(locale, "panel.fileNoDiff")),
+                    )
+                    .into_any_element()
             }
         } else if is_img {
             div()
