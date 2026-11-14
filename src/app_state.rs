@@ -8,7 +8,7 @@ use crate::client::session_controller::{
     current_local_hhmm, extract_artifacts_from_markdown, extract_model_and_thinking_from_jsonl,
     extract_subagent_session_id, extract_todos_from_jsonl,
     extract_todos_from_payload, extract_turn_usage, flatten_content_text, flatten_tool_args,
-    merge_turn_usage, parse_compaction_summary, parse_message_content, parse_session_jsonl_file,
+    merge_turn_usage, parse_compaction_summary, parse_message_content,
     parse_session_jsonl_with_siblings, parse_session_messages, parse_subagent_async_json_widget,
     parse_todo_tool_details, parse_todo_widget_lines,
 };
@@ -244,8 +244,7 @@ impl AppState {
             .unwrap_or_else(|| PiDaemonClient::new(base_url.clone(), token, instance_id));
 
         // A configured manual core (Settings › General › Pi Core) overrides the
-        // bundled sidecar address; auto mode keeps the sidecar, which is itself the
-        // detected local core.
+        // bundled sidecar address only when mode is "manual".
         let settings_snapshot = crate::app_settings::load_app_settings();
         let configured_core = settings_snapshot
             .core
@@ -253,13 +252,10 @@ impl AppState {
             .trim()
             .trim_end_matches('/')
             .to_string();
-        let core_url = if configured_core.is_empty() {
-            None
-        } else if settings_snapshot.core.mode == "manual" {
+        let core_url = if settings_snapshot.core.mode == "manual" && !configured_core.is_empty() {
             Some(configured_core)
         } else {
-            // Auto mode: a chosen service still wins over the default port.
-            Some(configured_core)
+            None
         };
         let client = match core_url {
             Some(base) if base != base_url => {
@@ -2938,16 +2934,15 @@ impl AppState {
     pub fn start_external_jsonl_watcher(&mut self, cx: &mut Context<Self>) {
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
-            let mut last_mtime: Option<(String, std::time::SystemTime)> = None;
-            let mut last_root_mtime: Option<std::time::SystemTime> = None;
+            let mut last_file_sig: Option<(String, u64, std::time::SystemTime)> = None;
+            let mut scan_counter = 0usize;
             loop {
-                smol::Timer::after(std::time::Duration::from_millis(1500)).await;
+                smol::Timer::after(std::time::Duration::from_millis(300)).await;
+                scan_counter += 1;
                 let mut check_path: Option<(String, PathBuf)> = None;
-                let mut is_running = false;
                 let mut alive = false;
                 entity.update(cx, |this, _| {
                     alive = true;
-                    is_running = this.is_agent_running;
                     if let Some(sid) = this.active_session_id.as_deref() {
                         if let Some(sess) = this.sessions.iter().find(|s| s.id == sid) {
                             if let Some(p) = &sess.path {
@@ -2959,46 +2954,23 @@ impl AppState {
                 if !alive {
                     break;
                 }
-                let root = pi_sessions_root();
-                if let Ok(meta) = std::fs::metadata(&root) {
-                    if let Ok(mt) = meta.modified() {
-                        if last_root_mtime != Some(mt) {
-                            let prev = last_root_mtime;
-                            last_root_mtime = Some(mt);
-                            if prev.is_some() {
-                                let _ = entity.update(cx, |this, cx| {
-                                    let scanned = scan_local_sessions(&root);
-                                    if !scanned.is_empty() && this.sessions.len() != scanned.len() {
-                                        this.sessions = scanned;
-                                        cx.notify();
-                                    }
-                                });
-                            }
-                        }
-                    }
-                }
-                if is_running {
-                    continue;
-                }
+
+                // Check active session file for new messages from TUI / CLI
                 if let Some((sid, path)) = check_path {
                     if let Ok(meta) = std::fs::metadata(&path) {
+                        let len = meta.len();
                         if let Ok(mt) = meta.modified() {
-                            let changed = last_mtime
+                            let changed = last_file_sig
                                 .as_ref()
-                                .map(|(id, prev)| id != &sid || *prev != mt)
-                                .unwrap_or(false);
-                            let same_sid = last_mtime
-                                .as_ref()
-                                .map(|(id, _)| id == &sid)
-                                .unwrap_or(false);
-                            last_mtime = Some((sid.clone(), mt));
-                            if changed && same_sid {
+                                .map(|(id, prev_len, prev_mt)| id != &sid || *prev_len != len || *prev_mt != mt)
+                                .unwrap_or(true);
+                            last_file_sig = Some((sid.clone(), len, mt));
+                            if changed {
                                 let _ = entity.update(cx, |this, cx| {
-                                    if this.active_session_id.as_deref() == Some(sid.as_str())
-                                        && !this.is_agent_running
-                                    {
-                                        let parsed = parse_session_jsonl_file(
+                                    if this.active_session_id.as_deref() == Some(sid.as_str()) {
+                                        let (parsed, siblings) = parse_session_jsonl_with_siblings(
                                             &path,
+                                            None,
                                             &mut this.controller.next_local_msg_id,
                                         );
                                         if !parsed.is_empty()
@@ -3007,6 +2979,7 @@ impl AppState {
                                                     != this.messages.last().map(|m| &m.content))
                                         {
                                             this.messages = parsed;
+                                            this.branch_siblings = siblings;
                                             let cw = this
                                                 .selected_model
                                                 .as_ref()
@@ -3021,6 +2994,18 @@ impl AppState {
                             }
                         }
                     }
+                }
+
+                // Periodic check for new sessions created in TUI / CLI (~every 1.5s)
+                if scan_counter % 5 == 0 {
+                    let root = pi_sessions_root();
+                    let _ = entity.update(cx, |this, cx| {
+                        let scanned = scan_local_sessions(&root);
+                        if !scanned.is_empty() && this.sessions.len() != scanned.len() {
+                            this.sessions = scanned;
+                            cx.notify();
+                        }
+                    });
                 }
             }
         })
@@ -6250,24 +6235,45 @@ fn parse_thinking_level_str(raw: &str) -> Option<ThinkingLevel> {
 }
 
 fn resolve_git_branch(cwd: &Path) -> Option<SharedString> {
-    let mut dir = cwd;
-    loop {
-        let head = dir.join(".git").join("HEAD");
-        if let Ok(raw) = std::fs::read_to_string(&head) {
-            let trimmed = raw.trim();
-            if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
-                return Some(SharedString::from(branch.to_string()));
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .ok()?;
+
+    if !out.status.success() || !out.stdout.starts_with(b"true") {
+        return None;
+    }
+
+    if let Ok(branch_out) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["branch", "--show-current"])
+        .output()
+    {
+        if branch_out.status.success() {
+            let b = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+            if !b.is_empty() {
+                return Some(SharedString::from(b));
             }
-            if !trimmed.is_empty() {
-                let short: String = trimmed.chars().take(7).collect();
-                return Some(SharedString::from(short));
-            }
-        }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => break,
         }
     }
+
+    if let Ok(head_out) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+    {
+        if head_out.status.success() {
+            let h = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+            if !h.is_empty() {
+                return Some(SharedString::from(h));
+            }
+        }
+    }
+
     None
 }
 

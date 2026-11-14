@@ -17,15 +17,13 @@ use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedi
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
     h_flex, v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, ClipboardItem, Context, ElementId, Entity, FocusHandle, Focusable,
+    AppContext as _, ClipboardItem, Context, ElementId, Entity, FocusHandle, Focusable,
     Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, hsla, px,
 };
@@ -83,6 +81,7 @@ pub struct GitCommitRow {
     pub col: usize,
     pub color_idx: usize,
     pub max_lanes: usize,
+    pub has_incoming_top: bool,
     pub active_lanes: Vec<bool>,
     pub connections_down: Vec<(usize, usize)>,
 }
@@ -191,38 +190,56 @@ pub fn compute_git_graph_dag(raw_commits: Vec<RawGitCommit>) -> Vec<GitCommitRow
     let mut active_lanes: Vec<Option<String>> = Vec::new();
     let mut rows = Vec::with_capacity(raw_commits.len());
 
-    for raw in raw_commits {
-        let col = if let Some(existing_idx) = active_lanes
-            .iter()
-            .position(|lane| lane.as_deref() == Some(&raw.hash))
-        {
-            existing_idx
+    for (row_idx, raw) in raw_commits.into_iter().enumerate() {
+        // 1. Identify which lanes were waiting for this commit hash
+        let mut matching_lanes = Vec::new();
+        for (i, lane) in active_lanes.iter().enumerate() {
+            if lane.as_deref() == Some(&raw.hash) {
+                matching_lanes.push(i);
+            }
+        }
+
+        // Deduplicate: if multiple parallel lanes waited for this same commit, merge them into the first lane!
+        let (col, has_incoming_top) = if let Some(&first_match) = matching_lanes.first() {
+            for &dup_col in &matching_lanes[1..] {
+                active_lanes[dup_col] = None;
+            }
+            (first_match, true)
         } else if let Some(empty_idx) = active_lanes.iter().position(|lane| lane.is_none()) {
             active_lanes[empty_idx] = Some(raw.hash.clone());
-            empty_idx
+            (empty_idx, row_idx > 0)
         } else {
             active_lanes.push(Some(raw.hash.clone()));
-            active_lanes.len() - 1
+            (active_lanes.len() - 1, row_idx > 0)
         };
 
+        // 2. Snapshot passing straight lanes
         let passing_lanes: Vec<bool> = active_lanes
             .iter()
             .enumerate()
             .map(|(i, lane)| i != col && lane.is_some())
             .collect();
 
+        // 3. Connect downward to parent commits (merging identical parallel lanes)
         let mut connections_down = Vec::new();
         if raw.parents.is_empty() {
             active_lanes[col] = None;
         } else {
-            active_lanes[col] = Some(raw.parents[0].clone());
-            connections_down.push((col, col));
+            // First parent continues in current column if possible, or merges with existing tracked lane
+            let p0 = &raw.parents[0];
+            let p0_col = if let Some(pos) = active_lanes.iter().position(|l| l.as_deref() == Some(p0.as_str())) {
+                pos
+            } else {
+                col
+            };
+            active_lanes[col] = None;
+            active_lanes[p0_col] = Some(p0.clone());
+            connections_down.push((col, p0_col));
 
+            // Merge additional parents
             for p in &raw.parents[1..] {
-                let p_col = if let Some(pos) = active_lanes
-                    .iter()
-                    .position(|l| l.as_deref() == Some(p.as_str()))
-                {
+                // If parent p is already tracked in an active lane, reuse it (MERGE!)
+                let p_col = if let Some(pos) = active_lanes.iter().position(|l| l.as_deref() == Some(p.as_str())) {
                     pos
                 } else if let Some(empty_pos) = active_lanes.iter().position(|l| l.is_none()) {
                     active_lanes[empty_pos] = Some(p.clone());
@@ -231,7 +248,9 @@ pub fn compute_git_graph_dag(raw_commits: Vec<RawGitCommit>) -> Vec<GitCommitRow
                     active_lanes.push(Some(p.clone()));
                     active_lanes.len() - 1
                 };
-                connections_down.push((col, p_col));
+                if !connections_down.contains(&(col, p_col)) {
+                    connections_down.push((col, p_col));
+                }
             }
         }
 
@@ -261,6 +280,7 @@ pub fn compute_git_graph_dag(raw_commits: Vec<RawGitCommit>) -> Vec<GitCommitRow
             col,
             color_idx: col % 8,
             max_lanes,
+            has_incoming_top,
             active_lanes: passing_lanes,
             connections_down,
         });
@@ -770,7 +790,20 @@ impl Render for GitGraphView {
                 .w(graph_total_w.max(px(36.)))
                 .flex_shrink_0();
 
-            // Draw passing lines
+            // 1. Draw incoming top line (0px -> 16px) connecting seamlessly from the row above
+            if commit.has_incoming_top {
+                graph_box = graph_box.child(
+                    div()
+                        .absolute()
+                        .left(lane_w * col as f32 + px(7.))
+                        .top_0()
+                        .h(px(16.))
+                        .w(px(2.))
+                        .bg(color),
+                );
+            }
+
+            // 2. Draw passing lines (0px -> 32px full row height for other active branches)
             for (lane_ix, &is_active) in commit.active_lanes.iter().enumerate() {
                 if is_active {
                     let l_color = lane_color(lane_ix);
@@ -786,10 +819,11 @@ impl Render for GitGraphView {
                 }
             }
 
-            // Draw connection lines downward
+            // 3. Draw connection lines downward (16px -> 32px) connecting seamlessly to the row below
             for &(from_l, to_l) in &commit.connections_down {
                 let conn_color = lane_color(from_l);
                 if from_l == to_l {
+                    // Straight downward line to parent in same column
                     graph_box = graph_box.child(
                         div()
                             .absolute()
@@ -800,6 +834,8 @@ impl Render for GitGraphView {
                             .bg(conn_color),
                     );
                 } else {
+                    // Branch / merge connection curve:
+                    // Horizontal bridge at y=15px
                     let left_col = from_l.min(to_l);
                     let right_col = from_l.max(to_l);
                     let line_left = lane_w * left_col as f32 + px(7.);
@@ -808,28 +844,37 @@ impl Render for GitGraphView {
                         div()
                             .absolute()
                             .left(line_left)
-                            .top(px(16.))
+                            .top(px(15.))
                             .w(line_w)
                             .h(px(2.))
-                            .bg(conn_color.opacity(0.75)),
+                            .bg(conn_color),
+                    );
+                    // Vertical drop from y=16px to bottom_0() at to_l
+                    graph_box = graph_box.child(
+                        div()
+                            .absolute()
+                            .left(lane_w * to_l as f32 + px(7.))
+                            .top(px(16.))
+                            .bottom_0()
+                            .w(px(2.))
+                            .bg(conn_color),
                     );
                 }
             }
 
-            // Draw Commit Circle Node
+            // 4. Draw Commit Circle Node (centered at x = col*16 + 8, y = 16px)
             let is_head = commit.refs.iter().any(|r| r.is_head);
             graph_box = graph_box.child(
                 div()
                     .absolute()
-                    .left(lane_w * col as f32 + px(4.))
-                    .top(px(12.))
-                    .w(px(8.))
-                    .h(px(8.))
+                    .left(lane_w * col as f32 + px(3.))
+                    .top(px(11.))
+                    .w(px(10.))
+                    .h(px(10.))
                     .rounded_full()
-                    .bg(color)
-                    .when(is_head, |this| {
-                        this.border_2().border_color(cx.theme().primary)
-                    }),
+                    .border_2()
+                    .border_color(if is_head { cx.theme().primary } else { cx.theme().background })
+                    .bg(color),
             );
 
             // Ref Badges (HEAD, branch, tag, remote)

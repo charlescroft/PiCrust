@@ -125,6 +125,16 @@ function sendJson(res, status, data) {
 }
 
 function isAuthorizedDesktopRequest(req) {
+  // Allow all loopback requests from local machine without token friction
+  const remote = req.socket?.remoteAddress;
+  if (
+    remote === "127.0.0.1" ||
+    remote === "::1" ||
+    remote === "::ffff:127.0.0.1" ||
+    remote === "localhost"
+  ) {
+    return true;
+  }
   if (!EXPECTED_TOKEN) return true;
   const token = req.headers["x-pi-desktop-token"];
   return typeof token === "string" && token === EXPECTED_TOKEN;

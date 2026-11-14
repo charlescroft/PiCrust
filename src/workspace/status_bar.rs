@@ -22,7 +22,11 @@ pub fn render_status_bar(
     let locale = state.locale;
     let sidecar_ok = state.sidecar_connected;
     let is_running = state.is_agent_running;
-    let branch = state.active_branch.clone();
+    let branch = if state.active_workspace_kind == WorkspaceKind::Chat {
+        None
+    } else {
+        state.active_branch.clone()
+    };
     let cwd_display = if state.active_workspace_kind == WorkspaceKind::Chat {
         SharedString::from(tr(locale, "status.chatWorkspace"))
     } else {
