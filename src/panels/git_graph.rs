@@ -13,6 +13,7 @@ use std::process::Command;
 
 use chrono::{Local, TimeZone};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -24,8 +25,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, ClipboardItem, Context, ElementId, Entity, FocusHandle, Focusable,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, PathBuilder, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla,
+    Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PathBuilder,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla,
     point, px,
 };
 
@@ -385,6 +386,18 @@ pub fn load_commit_files(cwd: &Path, hash: &str) -> Vec<GitFileChange> {
     files
 }
 
+pub fn load_commit_file_diff(cwd: &Path, hash: &str, file_path: &str) -> String {
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(["show", "--format=", hash, "--", file_path])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(o) => String::from_utf8_lossy(&o.stderr).to_string(),
+        Err(e) => format!("Failed to load diff: {e}"),
+    }
+}
+
 pub fn git_checkout_target(cwd: &Path, target: &str) -> Result<String, String> {
     let out = Command::new("git")
         .current_dir(cwd)
@@ -437,6 +450,14 @@ pub fn git_fetch_all(cwd: &Path) -> Result<String, String> {
     }
 }
 
+pub struct CommitFilePreview {
+    pub commit_hash: String,
+    pub file_path: String,
+    pub patch: String,
+    pub diff_state: Option<Entity<DiffState>>,
+    pub diff_mode: DiffMode,
+}
+
 pub struct GitGraphView {
     focus_handle: FocusHandle,
     app_state: Entity<AppState>,
@@ -447,6 +468,7 @@ pub struct GitGraphView {
     search_query: String,
     selected_commit: Option<GitCommitRow>,
     commit_files: Vec<GitFileChange>,
+    file_preview: Option<CommitFilePreview>,
     is_loading: bool,
     is_fetching: bool,
     new_branch_input: Entity<InputState>,
@@ -496,6 +518,7 @@ impl GitGraphView {
             search_query: String::new(),
             selected_commit: None,
             commit_files: Vec::new(),
+            file_preview: None,
             is_loading: false,
             is_fetching: false,
             new_branch_input,
@@ -538,10 +561,31 @@ impl GitGraphView {
         if self.selected_commit.as_ref().is_some_and(|sc| sc.hash == hash) {
             self.selected_commit = None;
             self.commit_files.clear();
+            self.file_preview = None;
             cx.notify();
             return;
         }
         self.select_commit(hash, cx);
+    }
+
+    pub fn open_file_preview(&mut self, hash: &str, file_path: &str, cx: &mut Context<Self>) {
+        let cwd = self.app_state.read(cx).active_cwd.clone();
+        let patch = load_commit_file_diff(&cwd, hash, file_path);
+        let diff_state = DiffFile::parse(&patch).ok().map(|files| {
+            cx.new(|cx| {
+                let mut state = DiffState::new(files, cx);
+                state.set_mode(DiffMode::Unified, cx);
+                state
+            })
+        });
+        self.file_preview = Some(CommitFilePreview {
+            commit_hash: hash.to_string(),
+            file_path: file_path.to_string(),
+            patch,
+            diff_state,
+            diff_mode: DiffMode::Unified,
+        });
+        cx.notify();
     }
 
     pub fn select_commit(&mut self, hash: &str, cx: &mut Context<Self>) {
@@ -804,8 +848,8 @@ impl Render for GitGraphView {
             .map(|c| c.max_lanes)
             .max()
             .unwrap_or(1)
-            .clamp(2, 8);
-        let graph_col_w = px(global_max_lanes as f32 * 16.0 + 8.0);
+            .clamp(2, 20);
+        let graph_col_w = px(global_max_lanes as f32 * 16.0 + 12.0);
 
         let mut list_inner = v_flex().w_full();
 
@@ -889,12 +933,13 @@ impl Render for GitGraphView {
             )
             .size_full();
 
-            // Construct DAG Lane Element
+            // Construct DAG Lane Element (overflow_hidden so branch lines never collide with text)
             let graph_box = div()
                 .relative()
                 .h(px(32.))
                 .w(graph_col_w)
                 .flex_shrink_0()
+                .overflow_hidden()
                 .child(graph_canvas)
                 .child(
                     div()
@@ -1018,167 +1063,6 @@ impl Render for GitGraphView {
                 );
 
             list_inner = list_inner.child(commit_row);
-
-            // If selected, render commit details card directly inline below row
-            if is_selected {
-                let ent_dlg_b = cx.entity().clone();
-                let ent_dlg_t = cx.entity().clone();
-                let ent_co = cx.entity().clone();
-                let h_full = commit.hash.clone();
-                let h_co = commit.hash.clone();
-                let h_br = commit.hash.clone();
-                let h_tag = commit.hash.clone();
-
-                let actions_bar = h_flex()
-                    .gap_2()
-                    .items_center()
-                    .flex_shrink_0()
-                    .child(
-                        Button::new("btn-co-commit")
-                            .outline()
-                            .small()
-                            .icon(IconName::Check)
-                            .label(tr(locale, "git.checkout"))
-                            .on_click(move |_, window, cx| {
-                                ent_co.update(cx, |this, cx| {
-                                    this.checkout_ref(&h_co, window, cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new("btn-new-branch")
-                            .outline()
-                            .small()
-                            .icon(Icon::new(crate::icons::GitBranchIcon))
-                            .label(tr(locale, "git.createBranch"))
-                            .on_click(move |_, _, cx| {
-                                ent_dlg_b.update(cx, |this, cx| {
-                                    this.dialog_mode = Some(GitGraphDialog::CreateBranch(h_br.clone()));
-                                    cx.notify();
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new("btn-new-tag")
-                            .outline()
-                            .small()
-                            .icon(IconName::Info)
-                            .label(tr(locale, "git.createTag"))
-                            .on_click(move |_, _, cx| {
-                                ent_dlg_t.update(cx, |this, cx| {
-                                    this.dialog_mode = Some(GitGraphDialog::CreateTag(h_tag.clone()));
-                                    cx.notify();
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new("btn-close-commit-details")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.selected_commit = None;
-                                this.commit_files.clear();
-                                cx.notify();
-                            })),
-                    );
-
-                let mut files_view = v_flex().gap_1().w_full();
-                for (f_ix, f) in self.commit_files.iter().enumerate() {
-                    let p_clone = f.path.clone();
-                    let app_for_diff = self.app_state.clone();
-                    let f_row_id: ElementId = SharedString::from(format!("git-file-{f_ix}-{}", f.path)).into();
-                    files_view = files_view.child(
-                        h_flex()
-                            .id(f_row_id)
-                            .w_full()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .justify_between()
-                            .items_center()
-                            .hover(|s| s.bg(cx.theme().secondary))
-                            .cursor_pointer()
-                            .on_click(move |_, _, cx| {
-                                let p = p_clone.clone();
-                                app_for_diff.update(cx, |s, cx| {
-                                    let full_path = s.active_cwd.join(&p);
-                                    s.open_file(full_path, cx);
-                                });
-                            })
-                            .child(
-                                h_flex()
-                                    .gap_1p5()
-                                    .items_center()
-                                    .child(Icon::new(IconName::FileText).xsmall().text_color(cx.theme().muted_foreground))
-                                    .child(div().text_xs().child(SharedString::from(f.path.clone()))),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().text_color(cx.theme().success).child(format!("+{}", f.added)))
-                                    .child(div().text_xs().text_color(cx.theme().danger).child(format!("-{}", f.deleted))),
-                            ),
-                    );
-                }
-
-                let details_panel = v_flex()
-                    .w_full()
-                    .flex_shrink_0()
-                    .p_3()
-                    .gap_2p5()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().popover.opacity(0.85))
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                h_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(div().text_xs().font_semibold().flex_shrink_0().child("Commit:"))
-                                    .child(div().text_xs().min_w_0().overflow_hidden().whitespace_nowrap().font_family(cx.theme().font_family.clone()).child(SharedString::from(h_full))),
-                            )
-                            .child(actions_bar),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} <{}> · {}",
-                                commit.author_name, commit.author_email, commit.date_str
-                            )),
-                    )
-                    .children((!commit.body.is_empty()).then(|| {
-                        div()
-                            .p_2()
-                            .rounded_md()
-                            .bg(cx.theme().secondary.opacity(0.5))
-                            .text_xs()
-                            .text_color(cx.theme().foreground)
-                            .child(SharedString::from(commit.body.clone()))
-                    }))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} ({})",
-                                tr(locale, "git.changedFiles"),
-                                self.commit_files.len()
-                            )),
-                    )
-                    .child(files_view);
-
-                list_inner = list_inner.child(details_panel);
-            }
         }
 
         let list_scroll = div()
@@ -1189,7 +1073,434 @@ impl Render for GitGraphView {
             .overflow_y_scroll()
             .child(list_inner);
 
-        let mut root = v_flex().size_full().child(toolbar).child(list_scroll);
+        let mut root = v_flex().relative().size_full().child(toolbar).child(list_scroll);
+
+        // Full-panel overlay Commit Details Modal
+        if let Some(ref commit) = self.selected_commit.clone() {
+            let ent_dlg_b = cx.entity().clone();
+            let ent_dlg_t = cx.entity().clone();
+            let ent_co = cx.entity().clone();
+            let h_full = commit.hash.clone();
+            let h_copy_modal = commit.hash.clone();
+            let h_co = commit.hash.clone();
+            let h_br = commit.hash.clone();
+            let h_tag = commit.hash.clone();
+
+            let mut modal_refs = h_flex().gap_1().flex_wrap().items_center();
+            for r in &commit.refs {
+                let badge = if r.is_head {
+                    Tag::primary().small().child(format!("HEAD: {}", r.name))
+                } else if r.is_tag {
+                    Tag::warning().small().child(format!("tag: {}", r.name))
+                } else if r.is_remote {
+                    Tag::secondary().small().child(r.name.clone())
+                } else {
+                    Tag::success().small().child(r.name.clone())
+                };
+                modal_refs = modal_refs.child(badge);
+            }
+
+            let actions_bar = h_flex()
+                .gap_2()
+                .items_center()
+                .flex_wrap()
+                .child(
+                    Button::new("btn-co-commit")
+                        .outline()
+                        .small()
+                        .icon(IconName::Check)
+                        .label(tr(locale, "git.checkout"))
+                        .on_click(move |_, window, cx| {
+                            ent_co.update(cx, |this, cx| {
+                                this.checkout_ref(&h_co, window, cx);
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("btn-new-branch")
+                        .outline()
+                        .small()
+                        .icon(Icon::new(crate::icons::GitBranchIcon))
+                        .label(tr(locale, "git.createBranch"))
+                        .on_click(move |_, _, cx| {
+                            ent_dlg_b.update(cx, |this, cx| {
+                                this.dialog_mode = Some(GitGraphDialog::CreateBranch(h_br.clone()));
+                                cx.notify();
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("btn-new-tag")
+                        .outline()
+                        .small()
+                        .icon(IconName::Info)
+                        .label(tr(locale, "git.createTag"))
+                        .on_click(move |_, _, cx| {
+                            ent_dlg_t.update(cx, |this, cx| {
+                                this.dialog_mode = Some(GitGraphDialog::CreateTag(h_tag.clone()));
+                                cx.notify();
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("btn-copy-commit-sha-modal")
+                        .outline()
+                        .small()
+                        .icon(IconName::Copy)
+                        .label(tr(locale, "chat.copy"))
+                        .on_click(move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(h_copy_modal.clone()));
+                            window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
+                        }),
+                );
+
+            let mut files_list_inner = v_flex().w_full().gap_1();
+            for (f_ix, f) in self.commit_files.iter().enumerate() {
+                let p_clone = f.path.clone();
+                let h_for_preview = commit.hash.clone();
+                let f_row_id: ElementId = SharedString::from(format!("git-file-{f_ix}-{}", f.path)).into();
+                files_list_inner = files_list_inner.child(
+                    h_flex()
+                        .id(f_row_id)
+                        .w_full()
+                        .h(px(30.))
+                        .flex_shrink_0()
+                        .px_2p5()
+                        .rounded_md()
+                        .justify_between()
+                        .items_center()
+                        .hover(|s| s.bg(cx.theme().secondary))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_file_preview(&h_for_preview, &p_clone, cx);
+                        }))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .child(Icon::new(IconName::FileText).xsmall().text_color(cx.theme().muted_foreground))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_xs()
+                                        .child(SharedString::from(f.path.clone())),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .flex_shrink_0()
+                                .child(div().text_xs().text_color(cx.theme().success).child(format!("+{}", f.added)))
+                                .child(div().text_xs().text_color(cx.theme().danger).child(format!("-{}", f.deleted))),
+                        ),
+                );
+            }
+
+            // Fixed-height scrollable changed files box (~6 visible rows = 200px)
+            let files_scroll_box = div()
+                .id("git-commit-files-scroll")
+                .w_full()
+                .h(px(200.))
+                .flex_shrink_0()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background.opacity(0.6))
+                .p_1p5()
+                .overflow_y_scroll()
+                .child(files_list_inner);
+
+            let modal_card = v_flex()
+                .id("commit-details-modal")
+                .w_full()
+                .max_w(px(660.))
+                .max_h_full()
+                .rounded_xl()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().popover)
+                .shadow_lg()
+                .p_4()
+                .gap_3()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                // Header with SHA + Close
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .child(Icon::new(crate::icons::GitBranchIcon).small().text_color(cx.theme().primary))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_semibold()
+                                        .flex_shrink_0()
+                                        .child(SharedString::from(commit.short_hash.clone())),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .font_family(cx.theme().font_family.clone())
+                                        .child(SharedString::from(h_full)),
+                                ),
+                        )
+                        .child(
+                            Button::new("btn-close-commit-modal")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.selected_commit = None;
+                                    this.commit_files.clear();
+                                    this.file_preview = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .children((!commit.refs.is_empty()).then(|| modal_refs))
+                // Subject & Body
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_semibold()
+                                .text_color(cx.theme().foreground)
+                                .child(SharedString::from(commit.subject.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!(
+                                    "{} <{}> · {}",
+                                    commit.author_name, commit.author_email, commit.date_str
+                                )),
+                        ),
+                )
+                .children((!commit.body.is_empty()).then(|| {
+                    div()
+                        .id("commit-body-scroll")
+                        .w_full()
+                        .max_h(px(120.))
+                        .overflow_y_scroll()
+                        .p_2p5()
+                        .rounded_md()
+                        .bg(cx.theme().secondary.opacity(0.45))
+                        .text_xs()
+                        .text_color(cx.theme().foreground)
+                        .child(SharedString::from(commit.body.clone()))
+                }))
+                .child(actions_bar)
+                // Bottom Changed Files section with fixed visible height
+                .child(
+                    v_flex()
+                        .gap_1p5()
+                        .w_full()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!(
+                                    "{} ({})",
+                                    tr(locale, "git.changedFiles"),
+                                    self.commit_files.len()
+                                )),
+                        )
+                        .child(files_scroll_box),
+                );
+
+            root = root.child(
+                div()
+                    .id("commit-modal-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_5()
+                    .bg(cx.theme().background.opacity(0.75))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.selected_commit = None;
+                            this.commit_files.clear();
+                            this.file_preview = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(modal_card),
+            );
+        }
+
+        // Dedicated File Diff Preview Window Modal (opened when clicking a changed file)
+        if let Some(ref preview) = self.file_preview {
+            let patch_for_copy = preview.patch.clone();
+            let file_path_title = preview.file_path.clone();
+            let short_sha: String = preview.commit_hash.chars().take(8).collect();
+            let diff_mode = preview.diff_mode;
+
+            let diff_body = if let Some(ref ds) = preview.diff_state {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(
+                        Diff::new(ds)
+                            .header_visible(false)
+                            .line_number(true)
+                            .size_full(),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .id("git-raw-patch-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .overflow_y_scroll()
+                    .p_3()
+                    .text_xs()
+                    .font_family(cx.theme().font_family.clone())
+                    .child(SharedString::from(preview.patch.clone()))
+                    .into_any_element()
+            };
+
+            let preview_card = v_flex()
+                .id("git-file-preview-modal")
+                .size_full()
+                .max_w(px(900.))
+                .max_h(px(680.))
+                .rounded_xl()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().popover)
+                .shadow_lg()
+                .overflow_hidden()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    h_flex()
+                        .w_full()
+                        .px_4()
+                        .py_2p5()
+                        .justify_between()
+                        .items_center()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .child(Icon::new(IconName::FileText).small().text_color(cx.theme().primary))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_sm()
+                                        .font_semibold()
+                                        .child(SharedString::from(file_path_title)),
+                                )
+                                .child(Tag::secondary().small().child(short_sha)),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .flex_shrink_0()
+                                .children(preview.diff_state.is_some().then(|| {
+                                    Button::new("btn-preview-diff-mode")
+                                        .outline()
+                                        .small()
+                                        .label(if diff_mode == DiffMode::Unified {
+                                            tr(locale, "chat.splitView")
+                                        } else {
+                                            tr(locale, "chat.unifiedView")
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(ref mut pv) = this.file_preview {
+                                                let next = if pv.diff_mode == DiffMode::Unified {
+                                                    DiffMode::Split
+                                                } else {
+                                                    DiffMode::Unified
+                                                };
+                                                pv.diff_mode = next;
+                                                if let Some(ref ds) = pv.diff_state {
+                                                    ds.update(cx, |d, cx| d.set_mode(next, cx));
+                                                }
+                                            }
+                                            cx.notify();
+                                        }))
+                                }))
+                                .child(
+                                    Button::new("btn-copy-file-patch")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::Copy)
+                                        .label(tr(locale, "chat.copy"))
+                                        .on_click(move |_, window, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(patch_for_copy.clone()));
+                                            window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
+                                        }),
+                                )
+                                .child(
+                                    Button::new("btn-close-file-preview")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Close)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.file_preview = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                )
+                .child(diff_body);
+
+            root = root.child(
+                div()
+                    .id("git-file-preview-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_6()
+                    .bg(cx.theme().background.opacity(0.8))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.file_preview = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(preview_card),
+            );
+        }
 
         // Dialog for Create Branch
         if let Some(GitGraphDialog::CreateBranch(ref hash)) = self.dialog_mode.clone() {
