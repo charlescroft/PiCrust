@@ -24,8 +24,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, ClipboardItem, Context, ElementId, Entity, FocusHandle, Focusable,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, hsla, px,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, PathBuilder, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla,
+    point, px,
 };
 
 use crate::app_state::AppState;
@@ -81,9 +82,9 @@ pub struct GitCommitRow {
     pub col: usize,
     pub color_idx: usize,
     pub max_lanes: usize,
-    pub has_incoming_top: bool,
-    pub active_lanes: Vec<bool>,
-    pub connections_down: Vec<(usize, usize)>,
+    pub incoming_connections: Vec<(usize, usize, usize)>,
+    pub passing_lanes: Vec<(usize, usize)>,
+    pub outgoing_connections: Vec<(usize, usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -187,69 +188,92 @@ pub fn parse_raw_git_log(log_output: &str) -> Vec<RawGitCommit> {
 }
 
 pub fn compute_git_graph_dag(raw_commits: Vec<RawGitCommit>) -> Vec<GitCommitRow> {
-    let mut active_lanes: Vec<Option<String>> = Vec::new();
+    // Each active lane holds Option<(expected_commit_hash, color_idx)>
+    let mut active_lanes: Vec<Option<(String, usize)>> = Vec::new();
+    let mut next_color_idx: usize = 0;
     let mut rows = Vec::with_capacity(raw_commits.len());
 
-    for (row_idx, raw) in raw_commits.into_iter().enumerate() {
-        // 1. Identify which lanes were waiting for this commit hash
+    for raw in raw_commits {
+        // 1. Identify all lanes expecting this commit hash
         let mut matching_lanes = Vec::new();
         for (i, lane) in active_lanes.iter().enumerate() {
-            if lane.as_deref() == Some(&raw.hash) {
-                matching_lanes.push(i);
+            if let Some((h, c_idx)) = lane {
+                if h == &raw.hash {
+                    matching_lanes.push((i, *c_idx));
+                }
             }
         }
 
-        // Deduplicate: if multiple parallel lanes waited for this same commit, merge them into the first lane!
-        let (col, has_incoming_top) = if let Some(&first_match) = matching_lanes.first() {
-            for &dup_col in &matching_lanes[1..] {
+        let mut incoming_connections = Vec::new();
+        let (col, color_idx) = if let Some(&(first_col, first_color)) = matching_lanes.first() {
+            incoming_connections.push((first_col, first_col, first_color));
+            // Merge any duplicate lanes waiting for this same commit smoothly into first_col!
+            for &(dup_col, dup_color) in &matching_lanes[1..] {
+                incoming_connections.push((dup_col, first_col, dup_color));
                 active_lanes[dup_col] = None;
             }
-            (first_match, true)
-        } else if let Some(empty_idx) = active_lanes.iter().position(|lane| lane.is_none()) {
-            active_lanes[empty_idx] = Some(raw.hash.clone());
-            (empty_idx, row_idx > 0)
+            (first_col, first_color)
         } else {
-            active_lanes.push(Some(raw.hash.clone()));
-            (active_lanes.len() - 1, row_idx > 0)
+            let c_idx = next_color_idx % 8;
+            next_color_idx += 1;
+            let assigned_col = if let Some(empty_idx) = active_lanes.iter().position(|l| l.is_none()) {
+                active_lanes[empty_idx] = Some((raw.hash.clone(), c_idx));
+                empty_idx
+            } else {
+                active_lanes.push(Some((raw.hash.clone(), c_idx)));
+                active_lanes.len() - 1
+            };
+            (assigned_col, c_idx)
         };
 
-        // 2. Snapshot passing straight lanes
-        let passing_lanes: Vec<bool> = active_lanes
-            .iter()
-            .enumerate()
-            .map(|(i, lane)| i != col && lane.is_some())
-            .collect();
+        // 2. Snapshot passing lanes (all other active lanes running straight through this row)
+        let mut passing_lanes = Vec::new();
+        for (i, lane) in active_lanes.iter().enumerate() {
+            if i != col {
+                if let Some((_, c_idx)) = lane {
+                    passing_lanes.push((i, *c_idx));
+                }
+            }
+        }
 
-        // 3. Connect downward to parent commits (merging identical parallel lanes)
-        let mut connections_down = Vec::new();
-        if raw.parents.is_empty() {
-            active_lanes[col] = None;
-        } else {
-            // First parent continues in current column if possible, or merges with existing tracked lane
+        // 3. Process parents and build outgoing curves (deduplicating identical parallel tracks!)
+        let mut outgoing_connections = Vec::new();
+        active_lanes[col] = None;
+
+        if !raw.parents.is_empty() {
             let p0 = &raw.parents[0];
-            let p0_col = if let Some(pos) = active_lanes.iter().position(|l| l.as_deref() == Some(p0.as_str())) {
-                pos
+            if let Some(existing_col) = active_lanes
+                .iter()
+                .position(|l| l.as_ref().is_some_and(|(h, _)| h == p0))
+            {
+                // Parent already tracked on existing_col -> merge directly into it!
+                outgoing_connections.push((col, existing_col, color_idx));
             } else {
-                col
-            };
-            active_lanes[col] = None;
-            active_lanes[p0_col] = Some(p0.clone());
-            connections_down.push((col, p0_col));
+                active_lanes[col] = Some((p0.clone(), color_idx));
+                outgoing_connections.push((col, col, color_idx));
+            }
 
-            // Merge additional parents
             for p in &raw.parents[1..] {
-                // If parent p is already tracked in an active lane, reuse it (MERGE!)
-                let p_col = if let Some(pos) = active_lanes.iter().position(|l| l.as_deref() == Some(p.as_str())) {
-                    pos
-                } else if let Some(empty_pos) = active_lanes.iter().position(|l| l.is_none()) {
-                    active_lanes[empty_pos] = Some(p.clone());
-                    empty_pos
+                if let Some(existing_col) = active_lanes
+                    .iter()
+                    .position(|l| l.as_ref().is_some_and(|(h, _)| h == p))
+                {
+                    let existing_color = active_lanes[existing_col]
+                        .as_ref()
+                        .map(|(_, c)| *c)
+                        .unwrap_or(color_idx);
+                    outgoing_connections.push((col, existing_col, existing_color));
                 } else {
-                    active_lanes.push(Some(p.clone()));
-                    active_lanes.len() - 1
-                };
-                if !connections_down.contains(&(col, p_col)) {
-                    connections_down.push((col, p_col));
+                    let branch_color = next_color_idx % 8;
+                    next_color_idx += 1;
+                    let p_col = if let Some(empty_pos) = active_lanes.iter().position(|l| l.is_none()) {
+                        active_lanes[empty_pos] = Some((p.clone(), branch_color));
+                        empty_pos
+                    } else {
+                        active_lanes.push(Some((p.clone(), branch_color)));
+                        active_lanes.len() - 1
+                    };
+                    outgoing_connections.push((col, p_col, branch_color));
                 }
             }
         }
@@ -264,7 +288,7 @@ pub fn compute_git_graph_dag(raw_commits: Vec<RawGitCommit>) -> Vec<GitCommitRow
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "Unknown date".to_string());
 
-        let max_lanes = col.max(active_lanes.len()).max(1);
+        let max_lanes = (col + 1).max(active_lanes.len()).max(1);
 
         rows.push(GitCommitRow {
             hash: raw.hash,
@@ -278,11 +302,11 @@ pub fn compute_git_graph_dag(raw_commits: Vec<RawGitCommit>) -> Vec<GitCommitRow
             body: raw.body,
             refs: raw.refs,
             col,
-            color_idx: col % 8,
+            color_idx,
             max_lanes,
-            has_incoming_top,
-            active_lanes: passing_lanes,
-            connections_down,
+            incoming_connections,
+            passing_lanes,
+            outgoing_connections,
         });
     }
 
@@ -765,6 +789,14 @@ impl Render for GitGraphView {
         }
 
         // 2. Commit List with Visual DAG tracks
+        let global_max_lanes = filtered_commits
+            .iter()
+            .map(|c| c.max_lanes)
+            .max()
+            .unwrap_or(1)
+            .clamp(2, 8);
+        let graph_col_w = px(global_max_lanes as f32 * 16.0 + 8.0);
+
         let mut list_rows = v_flex()
             .id("git-graph-list")
             .size_full()
@@ -778,107 +810,106 @@ impl Render for GitGraphView {
                 .selected_commit
                 .as_ref()
                 .is_some_and(|sc| sc.hash == commit.hash);
-            let col = commit.col;
-            let color = lane_color(commit.color_idx);
-            let lane_w = px(16.);
-            let graph_total_w = px((commit.max_lanes + 1) as f32 * 16.0);
+            let node_col = commit.col;
+            let node_color = lane_color(commit.color_idx);
+            let is_head = commit.refs.iter().any(|r| r.is_head);
+            let bg_color = cx.theme().background;
+            let primary_color = cx.theme().primary;
+
+            let incoming = commit.incoming_connections.clone();
+            let passing = commit.passing_lanes.clone();
+            let outgoing = commit.outgoing_connections.clone();
+
+            let graph_canvas = canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let lane_w = 16.0f32;
+                    let top = bounds.top();
+                    let bottom = bounds.bottom();
+                    let mid_y = top + px(16.0);
+                    let left = bounds.left();
+
+                    // 1. Passing vertical lanes (0px -> 32px)
+                    for (lane_col, c_idx) in &passing {
+                        let x = left + px(*lane_col as f32 * lane_w + 8.0);
+                        let mut pb = PathBuilder::stroke(px(2.0));
+                        pb.move_to(point(x, top));
+                        pb.line_to(point(x, bottom));
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, lane_color(*c_idx).opacity(0.85));
+                        }
+                    }
+
+                    // 2. Incoming connections (0px -> 16px) with smooth Bezier curves
+                    for (from_l, to_l, c_idx) in &incoming {
+                        let x1 = left + px(*from_l as f32 * lane_w + 8.0);
+                        let x2 = left + px(*to_l as f32 * lane_w + 8.0);
+                        let mut pb = PathBuilder::stroke(px(2.0));
+                        pb.move_to(point(x1, top));
+                        if from_l == to_l {
+                            pb.line_to(point(x2, mid_y));
+                        } else {
+                            pb.cubic_bezier_to(
+                                point(x2, mid_y),
+                                point(x1, top + px(8.0)),
+                                point(x2, mid_y - px(8.0)),
+                            );
+                        }
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, lane_color(*c_idx));
+                        }
+                    }
+
+                    // 3. Outgoing connections (16px -> 32px) with smooth Bezier curves
+                    for (from_l, to_l, c_idx) in &outgoing {
+                        let x1 = left + px(*from_l as f32 * lane_w + 8.0);
+                        let x2 = left + px(*to_l as f32 * lane_w + 8.0);
+                        let mut pb = PathBuilder::stroke(px(2.0));
+                        pb.move_to(point(x1, mid_y));
+                        if from_l == to_l {
+                            pb.line_to(point(x2, bottom));
+                        } else {
+                            pb.cubic_bezier_to(
+                                point(x2, bottom),
+                                point(x1, mid_y + px(8.0)),
+                                point(x2, bottom - px(8.0)),
+                            );
+                        }
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, lane_color(*c_idx));
+                        }
+                    }
+                },
+            )
+            .size_full();
 
             // Construct DAG Lane Element
-            let mut graph_box = div()
+            let graph_box = div()
                 .relative()
                 .h(px(32.))
-                .w(graph_total_w.max(px(36.)))
-                .flex_shrink_0();
-
-            // 1. Draw incoming top line (0px -> 16px) connecting seamlessly from the row above
-            if commit.has_incoming_top {
-                graph_box = graph_box.child(
+                .w(graph_col_w)
+                .flex_shrink_0()
+                .child(graph_canvas)
+                .child(
                     div()
                         .absolute()
-                        .left(lane_w * col as f32 + px(7.))
-                        .top_0()
-                        .h(px(16.))
-                        .w(px(2.))
-                        .bg(color),
+                        .left(px(node_col as f32 * 16.0 + 3.0))
+                        .top(px(11.0))
+                        .w(px(10.0))
+                        .h(px(10.0))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(if is_head { primary_color } else { bg_color })
+                        .bg(node_color),
                 );
-            }
 
-            // 2. Draw passing lines (0px -> 32px full row height for other active branches)
-            for (lane_ix, &is_active) in commit.active_lanes.iter().enumerate() {
-                if is_active {
-                    let l_color = lane_color(lane_ix);
-                    graph_box = graph_box.child(
-                        div()
-                            .absolute()
-                            .left(lane_w * lane_ix as f32 + px(7.))
-                            .top_0()
-                            .bottom_0()
-                            .w(px(2.))
-                            .bg(l_color.opacity(0.85)),
-                    );
-                }
-            }
-
-            // 3. Draw connection lines downward (16px -> 32px) connecting seamlessly to the row below
-            for &(from_l, to_l) in &commit.connections_down {
-                let conn_color = lane_color(from_l);
-                if from_l == to_l {
-                    // Straight downward line to parent in same column
-                    graph_box = graph_box.child(
-                        div()
-                            .absolute()
-                            .left(lane_w * from_l as f32 + px(7.))
-                            .top(px(16.))
-                            .bottom_0()
-                            .w(px(2.))
-                            .bg(conn_color),
-                    );
-                } else {
-                    // Branch / merge connection curve:
-                    // Horizontal bridge at y=15px
-                    let left_col = from_l.min(to_l);
-                    let right_col = from_l.max(to_l);
-                    let line_left = lane_w * left_col as f32 + px(7.);
-                    let line_w = lane_w * (right_col - left_col) as f32;
-                    graph_box = graph_box.child(
-                        div()
-                            .absolute()
-                            .left(line_left)
-                            .top(px(15.))
-                            .w(line_w)
-                            .h(px(2.))
-                            .bg(conn_color),
-                    );
-                    // Vertical drop from y=16px to bottom_0() at to_l
-                    graph_box = graph_box.child(
-                        div()
-                            .absolute()
-                            .left(lane_w * to_l as f32 + px(7.))
-                            .top(px(16.))
-                            .bottom_0()
-                            .w(px(2.))
-                            .bg(conn_color),
-                    );
-                }
-            }
-
-            // 4. Draw Commit Circle Node (centered at x = col*16 + 8, y = 16px)
-            let is_head = commit.refs.iter().any(|r| r.is_head);
-            graph_box = graph_box.child(
-                div()
-                    .absolute()
-                    .left(lane_w * col as f32 + px(3.))
-                    .top(px(11.))
-                    .w(px(10.))
-                    .h(px(10.))
-                    .rounded_full()
-                    .border_2()
-                    .border_color(if is_head { cx.theme().primary } else { cx.theme().background })
-                    .bg(color),
-            );
-
-            // Ref Badges (HEAD, branch, tag, remote)
-            let mut refs_stack = h_flex().gap_1().items_center().flex_shrink_0();
+            // Ref Badges (HEAD, branch, tag, remote) - bounded width to prevent overlap
+            let mut refs_stack = h_flex()
+                .gap_1()
+                .items_center()
+                .max_w(px(180.))
+                .overflow_hidden()
+                .flex_shrink_0();
             for r in &commit.refs {
                 let badge_el = if r.is_head {
                     Tag::primary()
@@ -909,8 +940,10 @@ impl Render for GitGraphView {
                 .w_full()
                 .h(px(32.))
                 .px_2()
+                .gap_2()
                 .items_center()
                 .justify_between()
+                .overflow_hidden()
                 .cursor_pointer()
                 .bg(if is_selected {
                     cx.theme().selection.opacity(0.35)
@@ -927,12 +960,13 @@ impl Render for GitGraphView {
                         .min_w_0()
                         .gap_2()
                         .items_center()
+                        .overflow_hidden()
                         .child(graph_box)
                         .children((!commit.refs.is_empty()).then(|| refs_stack))
                         .child(
                             div()
                                 .flex_1()
-                                .min_w_0()
+                                .min_w(px(60.))
                                 .truncate()
                                 .text_xs()
                                 .text_color(if is_selected {
@@ -945,17 +979,21 @@ impl Render for GitGraphView {
                 )
                 .child(
                     h_flex()
-                        .gap_3()
+                        .gap_2p5()
                         .items_center()
                         .flex_shrink_0()
                         .child(
                             div()
+                                .max_w(px(90.))
+                                .truncate()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(SharedString::from(commit.author_name.clone())),
                         )
                         .child(
                             div()
+                                .w(px(108.))
+                                .truncate()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground.opacity(0.75))
                                 .child(SharedString::from(commit.date_str.clone())),

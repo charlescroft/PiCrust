@@ -584,6 +584,7 @@ impl AppState {
                 this.refresh_from_sidecar(cx);
                 this.start_external_jsonl_watcher(cx);
                 this.start_native_scheduler_and_worker_reaper(cx);
+                this.start_sidecar_watchdog(cx);
                 if this.core_mode == "auto" {
                     this.probe_core_candidates(cx);
                 }
@@ -3039,6 +3040,72 @@ impl AppState {
         }
     }
 
+    /// Persistent connection watchdog: ensures the sidecar stays alive and
+    /// automatically reconnects if the initial boot took >250ms or if the sidecar dropped.
+    pub fn start_sidecar_watchdog(&mut self, cx: &mut Context<Self>) {
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            loop {
+                let mut wait_secs = 15u64;
+                let mut client_opt = None;
+                let mut was_connected = false;
+                let mut alive = false;
+
+                let _ = entity.update(cx, |this, cx| {
+                    alive = true;
+                    was_connected = this.sidecar_connected;
+                    if !was_connected {
+                        wait_secs = 2;
+                    }
+
+                    if this.core_mode == "auto" {
+                        let needs_respawn = match this._sidecar.as_mut() {
+                            Some(sc) => !sc.is_alive(),
+                            None => true,
+                        };
+                        if needs_respawn {
+                            let port: u16 = std::env::var("PI_SIDECAR_PORT")
+                                .ok()
+                                .and_then(|p| p.parse().ok())
+                                .unwrap_or(38471);
+                            let token = this.client.token.clone();
+                            let inst = this.client.instance_id.clone();
+                            if let Some(sc) = SidecarProcess::spawn_if_available(port, token, inst) {
+                                let base_url = sc.base_url();
+                                this.client = PiDaemonClient::new(base_url.clone(), &sc.token, &sc.instance_id);
+                                this.core_url = base_url;
+                                this._sidecar = Some(sc);
+                                wait_secs = 1;
+                                cx.notify();
+                            }
+                        }
+                    }
+
+                    client_opt = Some(this.client.clone());
+                });
+
+                if !alive {
+                    break;
+                }
+
+                smol::Timer::after(std::time::Duration::from_secs(wait_secs)).await;
+
+                if let Some(client) = client_opt {
+                    let healthy = client.health().await.is_ok();
+                    let _ = entity.update(cx, |this, cx| {
+                        if healthy && !this.sidecar_connected {
+                            this.refresh_from_sidecar(cx);
+                        } else if !healthy && this.sidecar_connected {
+                            this.sidecar_connected = false;
+                            cx.notify();
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Starts the native Rust cron scheduler and Scale-to-Zero RPC worker reaper loop (§6.3.3).
     pub fn start_native_scheduler_and_worker_reaper(&mut self, cx: &mut Context<Self>) {
         let entity = cx.entity().clone();
@@ -3050,10 +3117,7 @@ impl AppState {
                     alive = true;
                     let liveness = this.current_worker_liveness();
                     this.worker_manager.update_liveness(liveness);
-                    if this.worker_manager.reclaim_if_idle() {
-                        this.sidecar_connected = false;
-                        cx.notify();
-                    }
+                    let _ = this.worker_manager.reclaim_if_idle();
 
                     // Native scheduler lease & due-task check when sidecar is not owning scheduler
                     if !this.sidecar_connected

@@ -43,6 +43,14 @@ impl SidecarProcess {
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
+
+    pub fn is_alive(&mut self) -> bool {
+        if let Some(ref mut child) = self.child {
+            matches!(child.try_wait(), Ok(None))
+        } else {
+            false
+        }
+    }
 }
 
 impl Drop for SidecarProcess {
