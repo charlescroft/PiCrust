@@ -575,6 +575,7 @@ impl AppState {
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
         state.load_local_store_snapshot();
+        state.sync_tool_subagent_runs_from_messages();
 
         // Kick off initial sidecar probe & refresh + lightweight external session watcher
         let entity = cx.entity().clone();
@@ -1819,6 +1820,7 @@ impl AppState {
                 if let Some(val) = agent_state_val {
                     this.apply_agent_state_response(&val);
                 }
+                this.sync_tool_subagent_runs_from_messages();
                 if let Some(sid) = this.active_session_id.clone() {
                     if sid != "demo-welcome-session" {
                         if this.messages.is_empty() {
@@ -2988,6 +2990,7 @@ impl AppState {
                                                 .unwrap_or(200_000);
                                             this.stats = compute_stats_from_jsonl(&path, cw);
                                             this.set_todos(extract_todos_from_jsonl(&path));
+                                            this.sync_tool_subagent_runs_from_messages();
                                             cx.notify();
                                         }
                                     }
