@@ -1,8 +1,14 @@
 <div align="center">
 
-# ⚡ Pi Agent Desktop (GPUI Edition)
+<img src="assets/icon.png" alt="PiCrust Icon" width="128" height="128" style="margin-bottom: 12px;" />
 
-**An ultra-fast, lightweight, GPU-accelerated native AI coding & agent workbench built in Rust.**
+# 🥧 PiCrust (派壳)
+
+**The crispy, ultra-fast, GPU-native Rust crust baked for Pi Agent — bite into a slice of pure coding speed.**
+
+*为 Pi 烘焙的一层酥脆、极速、GPU 硬件加速的原生 Rust 外壳，轻咬一口，代码即成。*
+
+<br/>
 
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![GPUI](https://img.shields.io/badge/GUI-GPUI%200.9.1-blue.svg?style=flat-square)](https://github.com/zed-industries/zed)
@@ -18,15 +24,18 @@
 
 ## 🚀 Overview
 
-**Pi Agent Desktop (GPUI Edition)** is a next-generation desktop workbench for agentic AI coding. While modern AI code editors (Cursor, Windsurf, VS Code forks) rely on heavy Chromium/Electron runtimes that consume **1GB–2GB of memory** on startup, Pi Agent Desktop is built from the ground up in **pure Rust** using Zed's high-performance **GPUI** framework.
+**PiCrust (派壳)** is a next-generation desktop workbench for agentic AI coding. While modern AI code editors (Cursor, Windsurf, VS Code forks) rely on heavy Chromium/Electron runtimes that consume **1GB–2GB of memory** on startup, PiCrust is built from the ground up in **pure Rust** using Zed's high-performance **GPUI** framework.
 
 It delivers **120 FPS butter-smooth rendering**, hardware-accelerated typography, native PTY terminal virtualization, an integrated **Git Graph** DAG visualizer, and a full-featured agentic coding environment—all packed into a tiny **26 MB standalone bundle** that uses **under 80 MB of RAM**.
+
+> **🥧 What is PiCrust (派壳)?**  
+> Just like the crispy, golden crust that holds a pie together, **PiCrust (派壳)** provides a rock-solid, ultra-fast, GPU-accelerated native Rust shell for your AI coding agent. It cuts through latency like a hot knife through butter, giving you instant 0ms responses without the bloat of web technologies.
 
 ---
 
 ## ⚡ Key Highlights & Competitive Edge
 
-| Feature | Pi Agent Desktop (GPUI) | Electron / Chromium IDEs | VS Code Extensions |
+| Feature | PiCrust (派壳) | Electron / Chromium IDEs | VS Code Extensions |
 | :--- | :--- | :--- | :--- |
 | **GUI Framework** | **GPUI 0.9.1 (Metal / GPU Native)** | Chromium WebView / DOM | Webview Iframe inside Electron |
 | **Startup Memory** | **~75 MB** | 800 MB – 1.8 GB | Bound to host editor (~1 GB+) |
@@ -53,7 +62,7 @@ It delivers **120 FPS butter-smooth rendering**, hardware-accelerated typography
 - **Complete vscode-git-graph Migration**: Dedicated Graph panel and status bar integration right next to the active branch indicator.
 - **Topological DAG Engine**: Real-time git commit DAG visualization with smooth cubic Bézier curves, persistent branch lane colors, and deduplicated parallel tracks.
 - **Ref Badges**: Visual tags for `HEAD`, local branches, remote branches (`origin/*`), and annotated/lightweight tags.
-- **Interactive Commit Inspector**: Full-screen commit detail modal with author, timestamp, parent links, and full commit message.
+- **Interactive Commit Inspector**: Full-screen overlay commit detail modal with author, timestamp, parent links, and full commit message.
 - **Inline Numstat & Diff Preview**: Fixed-height scrollable file change list with `+added / -deleted` badges and an integrated multi-tab Diff viewer (Unified & Split modes).
 - **Direct Actions**: Checkout commit/branch, create branch from commit, create tag, and copy SHA.
 
@@ -102,9 +111,9 @@ To produce a self-contained, signed macOS application bundle:
 
 The output bundle will be generated at:
 ```text
-pi-gpui/dist-macos/Pi Agent.app  (~26 MB)
+pi-gpui/dist-macos/PiCrust.app  (~26 MB)
 ```
-You can drag `Pi Agent.app` into `/Applications` and launch it directly.
+You can drag `PiCrust.app` into `/Applications` and launch it directly.
 
 ---
 
@@ -125,7 +134,7 @@ You can drag `Pi Agent.app` into `/Applications` and launch it directly.
 
 ## ⚙️ Configuration & Customization
 
-Pi Agent Desktop stores all client preferences in a single local JSON file:
+PiCrust stores all client preferences in a single local JSON file:
 ```text
 ~/.pi/agent/gpui-settings.json
 ```
@@ -142,7 +151,7 @@ Key configuration options include:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│                 Pi Agent Desktop (GPUI)                     │
+│                    PiCrust (派壳)                           │
 │                                                             │
 │  ┌───────────────────────┐       ┌───────────────────────┐  │
 │  │     WorkspaceView     │       │     ChatPanel         │  │
@@ -191,4 +200,4 @@ We welcome contributions! Please follow these guidelines:
 
 ## 📄 License
 
-Pi Agent Desktop is open-sourced under the [Apache License 2.0](LICENSE-APACHE) / [MIT License](LICENSE-MIT).
+PiCrust is open-sourced under the [Apache License 2.0](LICENSE-APACHE) / [MIT License](LICENSE-MIT).

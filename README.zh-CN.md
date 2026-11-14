@@ -1,8 +1,14 @@
 <div align="center">
 
-# ⚡ Pi Agent Desktop (GPUI 原生版)
+<img src="assets/icon.png" alt="PiCrust 派壳 图标" width="128" height="128" style="margin-bottom: 12px;" />
 
-**基于 Rust 与 Zed GPUI 打造的超轻量、极速 GPU 硬件加速 AI 编程工作台**
+# 🥧 PiCrust (派壳)
+
+**为 Pi 烘焙的一层酥脆、极速、GPU 硬件加速的原生 Rust 外壳，轻咬一口，代码即成。**
+
+*The crispy, ultra-fast, GPU-native Rust crust baked for Pi Agent — bite into a slice of pure coding speed.*
+
+<br/>
 
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![GPUI](https://img.shields.io/badge/GUI-GPUI%200.9.1-blue.svg?style=flat-square)](https://github.com/zed-industries/zed)
@@ -18,15 +24,18 @@
 
 ## 🚀 项目介绍
 
-**Pi Agent Desktop (GPUI 原生版)** 是专为 AI 辅助编程打造的下一代原生桌面工作台。当市面上绝大多数 AI 代码编辑器（如 Cursor、Windsurf、VS Code 衍生版）仍重度依赖 Chromium/Electron 架构，在启动时即霸占 **1GB 至 2GB 内存** 时，Pi Agent Desktop 采用 **纯 Rust** 与 Zed 高性能 **GPUI** 框架进行了彻底重构。
+**PiCrust (派壳)** 是专为 AI 辅助编程打造的下一代原生桌面工作台。当市面上绝大多数 AI 代码编辑器（如 Cursor、Windsurf、VS Code 衍生版）仍重度依赖 Chromium/Electron 架构，在启动时即霸占 **1GB 至 2GB 内存** 时，PiCrust 采用 **纯 Rust** 与 Zed 高性能 **GPUI** 框架进行了彻底重构。
 
 它实现了 **120 FPS 极速丝滑渲染**、GPU 硬件加速排版、原生 PTY 虚拟终端集成、完整迁移的 **Git Graph（分支图谱）** 可视化以及全功能 AI Agent 交互工作区——整套独立应用程序打包体积仅 **~26 MB**，空闲内存占用 **低于 80 MB**。
+
+> **🥧 为什么叫 PiCrust (派壳)？**  
+> 就像烘焙派（Pie）时那层金黄香脆、支撑整道美味的外壳（Crust），**派壳 (PiCrust)** 为强大的 AI 编程智能体提供了一层坚固、轻巧、全硬件加速的原生 Rust 甲壳。它像切开热派一样干脆利索地消除所有延迟，让开发者彻底告别 Web 技术的沉重与臃肿。
 
 ---
 
 ## ⚡ 核心优势与竞品对比
 
-| 功能特性 | Pi Agent Desktop (GPUI 版) | Electron / Chromium 架构编辑器 | 传统 VS Code 插件 |
+| 功能特性 | PiCrust (派壳) | Electron / Chromium 架构编辑器 | 传统 VS Code 插件 |
 | :--- | :--- | :--- | :--- |
 | **界面框架** | **GPUI 0.9.1 (Metal / GPU 原生渲染)** | Chromium WebView / DOM 树渲染 | 嵌在 Electron 内的 Webview Iframe |
 | **冷启动内存** | **~75 MB** | 800 MB – 1.8 GB | 受宿主编辑器拖累 (通常 > 1 GB) |
@@ -102,9 +111,9 @@ cargo run --release
 
 生成的应用程序位于：
 ```text
-pi-gpui/dist-macos/Pi Agent.app  (约 26 MB)
+pi-gpui/dist-macos/PiCrust.app  (约 26 MB)
 ```
-直接将 `Pi Agent.app` 拖入 `/Applications` 文件夹即可独立双击运行。
+直接将 `PiCrust.app` 拖入 `/Applications` 文件夹即可独立双击运行。
 
 ---
 
@@ -142,7 +151,7 @@ pi-gpui/dist-macos/Pi Agent.app  (约 26 MB)
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│                 Pi Agent Desktop (GPUI)                     │
+│                    PiCrust (派壳)                           │
 │                                                             │
 │  ┌───────────────────────┐       ┌───────────────────────┐  │
 │  │     WorkspaceView     │       │     ChatPanel         │  │

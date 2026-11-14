@@ -112,7 +112,7 @@ pub fn render_status_bar(
                         .text_xs()
                         .font_medium()
                         .text_color(cx.theme().foreground)
-                        .child("Pi Agent"),
+                        .child("PiCrust"),
                 ),
         )
         .left(Separator::vertical())

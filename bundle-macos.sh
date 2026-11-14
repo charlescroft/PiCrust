@@ -49,9 +49,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Pi Agent</string>
+  <string>PiCrust</string>
   <key>CFBundleDisplayName</key>
-  <string>Pi Agent (GPUI)</string>
+  <string>PiCrust (派壳)</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

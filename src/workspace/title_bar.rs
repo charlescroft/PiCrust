@@ -59,7 +59,7 @@ pub fn render_title_bar(
                         .text_sm()
                         .font_semibold()
                         .text_color(cx.theme().foreground)
-                        .child("Pi Agent"),
+                        .child("PiCrust"),
                 ),
         )
         .child(

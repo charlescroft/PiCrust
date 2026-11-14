@@ -94,12 +94,12 @@ fn main() {
 
         cx.set_menus(vec![
             Menu {
-                name: "Pi Agent".into(),
+                name: "PiCrust".into(),
                 disabled: false,
                 items: vec![
                     MenuItem::action("Settings...", OpenSettings),
                     MenuItem::separator(),
-                    MenuItem::action("Quit Pi Agent", QuitApp),
+                    MenuItem::action("Quit PiCrust", QuitApp),
                 ],
             },
             Menu {
@@ -155,7 +155,7 @@ fn main() {
                 WorkspaceView::new(state, window, cx)
             })
         })
-        .expect("failed to open Pi Agent GPUI window");
+        .expect("failed to open PiCrust GPUI window");
 
         cx.on_app_quit({
             let wh = window_handle;
