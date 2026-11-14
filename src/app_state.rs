@@ -5,7 +5,8 @@ use crate::client::native_index::{
 use crate::client::session_controller::{
     SessionController, apply_optimistic_todo_args, apply_todo_tool_output_text,
     build_diff_from_tool, compute_context_tokens_from_payload, compute_stats_from_jsonl,
-    current_local_hhmm, extract_artifacts_from_markdown, extract_model_and_thinking_from_jsonl, extract_todos_from_jsonl,
+    current_local_hhmm, extract_artifacts_from_markdown, extract_model_and_thinking_from_jsonl,
+    extract_subagent_session_id, extract_todos_from_jsonl,
     extract_todos_from_payload, extract_turn_usage, flatten_content_text, flatten_tool_args,
     merge_turn_usage, parse_compaction_summary, parse_message_content, parse_session_jsonl_file,
     parse_session_messages, parse_subagent_async_json_widget, parse_todo_tool_details,
@@ -208,6 +209,10 @@ pub struct AppState {
     /// Session whose todo panel the user dismissed, so re-selecting the same
     /// session (or a refresh that re-runs select_session) keeps it hidden.
     pub todos_hidden_session: Option<String>,
+    /// True once structured `todo` tool calls or `rpiv-todo-state` entries populated
+    /// `self.todos` in the current session, preventing lossy widget scraping from
+    /// clearing completed or collapsed tasks.
+    pub todos_from_tool: bool,
     pub retry_status: Option<SharedString>,
     pub draft_restore_text: Option<String>,
     pub pending_composer_mention: Option<String>,
@@ -543,8 +548,9 @@ impl AppState {
             todos,
             todos_expanded: false,
             dismissed_todo_ids: std::collections::HashSet::new(),
-            todos_hidden: appearance.todos_hidden,
+            todos_hidden: false,
             todos_hidden_session: None,
+            todos_from_tool: false,
             retry_status: None,
             draft_restore_text: None,
             pending_composer_mention: None,
@@ -813,7 +819,7 @@ impl AppState {
             diff_view_mode: self.diff_view_mode.clone(),
             core_mode: self.core_mode.clone(),
             core_url: self.core_url.clone(),
-            todos_hidden: self.todos_hidden,
+            todos_hidden: false,
         });
     }
 
@@ -888,7 +894,7 @@ impl AppState {
         self.todos.clear();
         self.todos_expanded = false;
         self.todos_hidden = true;
-        self.persist_appearance_only();
+        self.todos_hidden_session = self.active_session_id.clone();
         cx.notify();
     }
 
@@ -1099,10 +1105,173 @@ impl AppState {
         let mut merged = self.subagent_runs.clone();
         for tool_run in &self.tool_subagent_runs {
             if !merged.iter().any(|r| r.id == tool_run.id) {
-                merged.push(tool_run.clone());
+                let mut run = tool_run.clone();
+                if let Some(ref sid) = run.session_id {
+                    if self.running_session_ids.contains(sid) {
+                        run.state = "running".to_string();
+                    } else if run.is_active() && self.running_events_subscribed {
+                        // Keep running only if its tool call itself is still running
+                        let tc_still_running = self.messages.iter().rev().take(4).any(|m| {
+                            m.tool_calls.iter().any(|t| t.id.as_ref() == run.id && t.is_running)
+                        });
+                        if !tc_still_running && !self.is_agent_running {
+                            run.state = "complete".to_string();
+                        }
+                    }
+                }
+                merged.push(run);
             }
         }
         merged
+    }
+
+    pub fn apply_pi_web_subagent_details(
+        &mut self,
+        tool_call_id: &str,
+        details: &Value,
+        is_error: bool,
+    ) {
+        let sid = details
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from);
+        let profile = details
+            .get("profile")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("subagent")
+            .to_string();
+        let desc = details
+            .get("description")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.chars().take(80).collect::<String>());
+        let raw_status = details
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or(if is_error { "failed" } else { "completed" });
+        let normalized_state = match raw_status {
+            "starting" => "running",
+            "completed" => "complete",
+            "aborted" | "interrupted" => "stopped",
+            other => other,
+        }
+        .to_string();
+
+        if let Some(run) = self.tool_subagent_runs.iter_mut().find(|r| r.id == tool_call_id) {
+            run.label = profile;
+            run.state = normalized_state;
+            if desc.is_some() {
+                run.progress_text = desc;
+            }
+            if sid.is_some() {
+                run.session_id = sid;
+            }
+            run.current_tool = None;
+        } else {
+            self.tool_subagent_runs.push(SubagentRunInfo {
+                id: tool_call_id.to_string(),
+                kind: "subagent".to_string(),
+                label: profile,
+                state: normalized_state,
+                started_at: None,
+                ended_at: None,
+                model: None,
+                thinking: None,
+                current_tool: None,
+                turn_count: None,
+                tool_count: None,
+                progress_text: desc,
+                session_id: sid,
+                children: Vec::new(),
+            });
+        }
+    }
+
+    pub fn sync_tool_subagent_runs_from_messages(&mut self) {
+        for msg in &self.messages {
+            for tc in &msg.tool_calls {
+                if !matches!(tc.name.as_ref(), "Agent" | "subagent" | "subagent_launch") {
+                    continue;
+                }
+                if self.tool_subagent_runs.iter().any(|r| r.id == tc.id.as_ref()) {
+                    continue;
+                }
+                let is_builtin = tc.name.as_ref() == "Agent";
+                let label = tc
+                    .arguments
+                    .iter()
+                    .find(|(k, _)| {
+                        if is_builtin {
+                            k.as_ref() == "subagent_type"
+                        } else {
+                            k.as_ref() == "agent" || k.as_ref() == "key"
+                        }
+                    })
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or_else(|| {
+                        if is_builtin {
+                            "general-purpose".to_string()
+                        } else {
+                            "subagent".to_string()
+                        }
+                    });
+                let desc = tc
+                    .arguments
+                    .iter()
+                    .find(|(k, _)| matches!(k.as_ref(), "description" | "task" | "prompt"))
+                    .map(|(_, v)| v.chars().take(80).collect::<String>());
+                let model = tc
+                    .arguments
+                    .iter()
+                    .find(|(k, _)| k.as_ref() == "model")
+                    .map(|(_, v)| v.to_string());
+                let sid = tc
+                    .subagent_session_id
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        tc.arguments
+                            .iter()
+                            .find(|(k, _)| k.as_ref() == "resume")
+                            .map(|(_, v)| v.to_string())
+                    });
+                let state = if let Some(ref child_sid) = sid {
+                    if self.running_session_ids.contains(child_sid) {
+                        "running"
+                    } else if tc.is_error {
+                        "failed"
+                    } else if tc.is_running {
+                        "running"
+                    } else {
+                        "complete"
+                    }
+                } else if tc.is_error {
+                    "failed"
+                } else if tc.is_running {
+                    "running"
+                } else {
+                    "complete"
+                };
+                self.tool_subagent_runs.push(SubagentRunInfo {
+                    id: tc.id.to_string(),
+                    kind: "subagent".to_string(),
+                    label,
+                    state: state.to_string(),
+                    started_at: None,
+                    ended_at: None,
+                    model,
+                    thinking: None,
+                    current_tool: None,
+                    turn_count: None,
+                    tool_count: None,
+                    progress_text: desc,
+                    session_id: sid,
+                    children: Vec::new(),
+                });
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -2816,7 +2985,10 @@ impl AppState {
                         self.subagent_runs = runs;
                     }
                 } else if key.contains("todo") {
-                    self.set_todos(parse_todo_widget_lines(&lines));
+                    let parsed = parse_todo_widget_lines(&lines);
+                    if !self.todos_from_tool && (!parsed.is_empty() || lines.is_empty()) {
+                        self.set_todos(parsed);
+                    }
                 }
             }
         }
@@ -3002,6 +3174,9 @@ impl AppState {
         self.questionnaire_request_id = None;
         self.todos.clear();
         self.todos_expanded = false;
+        self.todos_hidden = false;
+        self.todos_hidden_session = None;
+        self.todos_from_tool = false;
         self.dismissed_todo_ids.clear();
         
         
@@ -3097,6 +3272,12 @@ impl AppState {
         self.subagent_status_text = None;
         self.todos.clear();
         self.todos_expanded = false;
+        self.todos_from_tool = false;
+        if self.todos_hidden_session.as_deref() != Some(session_id.as_str()) {
+            self.todos_hidden = false;
+            self.todos_hidden_session = None;
+            self.dismissed_todo_ids.clear();
+        }
         self.stats = SessionStats::default();
         self.has_earlier_messages = false;
         self.is_loading_earlier = false;
@@ -3133,7 +3314,12 @@ impl AppState {
                 self.messages = parsed;
             }
             self.stats = compute_stats_from_jsonl(p, ctx_win);
-            self.set_todos(extract_todos_from_jsonl(p));
+            let local_todos = extract_todos_from_jsonl(p);
+            if !local_todos.is_empty() {
+                self.todos_from_tool = true;
+                self.set_todos(local_todos);
+            }
+            self.sync_tool_subagent_runs_from_messages();
 
             let (extracted_model, extracted_thinking) = extract_model_and_thinking_from_jsonl(p);
             if let Some((prov, mid)) = extracted_model {
@@ -3194,8 +3380,10 @@ impl AppState {
                         }
                     }
                     if let Some(payload_todos) = extract_todos_from_payload(&payload) {
+                        this.todos_from_tool = true;
                         this.set_todos(payload_todos);
                     }
+                    this.sync_tool_subagent_runs_from_messages();
                     if let Some(stats_obj) = payload.get("stats") {
                         if let Some(tok) = stats_obj.get("tokens") {
                             this.stats.input_tokens =
@@ -3708,23 +3896,32 @@ impl AppState {
                             .get("toolCallId")
                             .and_then(Value::as_str)
                             .unwrap_or("");
-                        let tool_name = msg_val
+                        let mut resolved_tool_name = msg_val
                             .get("toolName")
                             .and_then(Value::as_str)
-                            .unwrap_or("");
+                            .unwrap_or("")
+                            .to_string();
                         let is_error = msg_val
                             .get("isError")
                             .and_then(Value::as_bool)
                             .unwrap_or(false);
                         let output_text = flatten_content_text(msg_val.get("content"));
+                        let details_val = msg_val.get("details");
+                        let subagent_sid = extract_subagent_session_id(details_val);
 
                         if let Some(last) = self.messages.last_mut() {
                             for tc in last.tool_calls.iter_mut().rev() {
                                 if tc.id.as_ref() == tool_call_id || tool_call_id.is_empty() {
+                                    if resolved_tool_name.is_empty() {
+                                        resolved_tool_name = tc.name.to_string();
+                                    }
                                     tc.is_running = false;
                                     tc.is_error = is_error;
                                     if !output_text.is_empty() {
                                         tc.output = SharedString::from(output_text.clone());
+                                    }
+                                    if subagent_sid.is_some() {
+                                        tc.subagent_session_id = subagent_sid.clone();
                                     }
                                     break;
                                 }
@@ -3732,10 +3929,16 @@ impl AppState {
                             for step in last.process_steps.iter_mut().rev() {
                                 if let ProcessStep::ToolCall(tc) = step {
                                     if tc.id.as_ref() == tool_call_id || tool_call_id.is_empty() {
+                                        if resolved_tool_name.is_empty() {
+                                            resolved_tool_name = tc.name.to_string();
+                                        }
                                         tc.is_running = false;
                                         tc.is_error = is_error;
                                         if !output_text.is_empty() {
                                             tc.output = SharedString::from(output_text.clone());
+                                        }
+                                        if subagent_sid.is_some() {
+                                            tc.subagent_session_id = subagent_sid.clone();
                                         }
                                         break;
                                     }
@@ -3743,16 +3946,36 @@ impl AppState {
                             }
                         }
 
-                        if !is_error && (tool_name == "todo" || msg_val.get("details").and_then(|d| d.get("tasks")).is_some()) {
-                            let updated_from_details = msg_val
-                                .get("details")
+                        if let Some(d) = details_val {
+                            if d.get("kind").and_then(Value::as_str) == Some("pi-web-subagent") {
+                                self.apply_pi_web_subagent_details(tool_call_id, d, is_error);
+                            }
+                        }
+
+                        if !is_error
+                            && (resolved_tool_name == "todo"
+                                || details_val.and_then(|d| d.get("tasks")).is_some())
+                        {
+                            self.todos_from_tool = true;
+                            let updated_from_details = details_val
                                 .and_then(parse_todo_tool_details)
                                 .map(|items| {
+                                    if !items.is_empty() {
+                                        self.todos_hidden = false;
+                                        self.todos_hidden_session = None;
+                                    }
                                     self.set_todos(items);
                                 })
                                 .is_some();
                             if !updated_from_details && !output_text.is_empty() {
+                                if !output_text.starts_with("No tasks")
+                                    && !output_text.starts_with("Cleared ")
+                                {
+                                    self.todos_hidden = false;
+                                    self.todos_hidden_session = None;
+                                }
                                 apply_todo_tool_output_text(&mut self.todos, &output_text);
+                                self.prune_dismissed_todos();
                             }
                             if let Some(sid) = self.active_session_id.clone() {
                                 self.sync_active_agent_state(sid, cx);
@@ -3760,6 +3983,37 @@ impl AppState {
                         }
                     }
                     cx.notify();
+                    return;
+                }
+                if role == "custom" || role == "notice" {
+                    if let Some(msg_val) = message.as_ref() {
+                        let notice_text = flatten_content_text(msg_val.get("content"));
+                        if !notice_text.trim().is_empty() {
+                            let id = self.controller.alloc_msg_id();
+                            self.messages.push(ChatMessage {
+                                id,
+                                entry_id: None,
+                                role: MessageRole::Notice,
+                                model_label: None,
+                                timestamp: current_local_hhmm(),
+                                thinking: SharedString::default(),
+                                process_steps: Vec::new(),
+                                process_message_count: 1,
+                                thinking_ms: None,
+                                thinking_expanded: false,
+                                content: notice_text,
+                                tool_calls: Vec::new(),
+                                attachments: Vec::new(),
+                                is_streaming: false,
+                                turn_duration_ms: None,
+                                token_summary: None,
+                                turn_usage: None,
+                                stop_reason: None,
+                                error_message: None,
+                            });
+                            cx.notify();
+                        }
+                    }
                     return;
                 }
                 if role == "user" {
@@ -3870,28 +4124,59 @@ impl AppState {
                 args,
             } => {
                 if tool_name == "todo" {
+                    self.todos_from_tool = true;
                     if let Some(ref a) = args {
+                        let action = a.get("action").and_then(Value::as_str).unwrap_or("");
+                        if matches!(action, "create" | "update" | "list") {
+                            self.todos_hidden = false;
+                            self.todos_hidden_session = None;
+                        }
+                        if let Some(id_val) = a.get("id") {
+                            let id_str = match id_val {
+                                Value::Number(n) => n.to_string(),
+                                Value::String(s) => s.trim_start_matches('#').to_string(),
+                                _ => String::new(),
+                            };
+                            if !id_str.is_empty() {
+                                self.dismissed_todo_ids.remove(&id_str);
+                            }
+                        }
                         apply_optimistic_todo_args(&mut self.todos, a);
                         self.prune_dismissed_todos();
                     }
                 }
-                if tool_name == "subagent" || tool_name == "subagent_launch" {
+                if matches!(tool_name.as_str(), "Agent" | "subagent" | "subagent_launch") {
+                    let is_builtin_agent = tool_name == "Agent";
                     let agent_lbl = args
                         .as_ref()
                         .and_then(|a| {
-                            a.get("agent")
-                                .and_then(Value::as_str)
-                                .or_else(|| a.get("key").and_then(Value::as_str))
+                            if is_builtin_agent {
+                                a.get("subagent_type").and_then(Value::as_str)
+                            } else {
+                                a.get("agent")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| a.get("key").and_then(Value::as_str))
+                            }
                         })
-                        .unwrap_or("subagent")
+                        .unwrap_or(if is_builtin_agent { "general-purpose" } else { "subagent" })
                         .to_string();
                     let task_desc = args
                         .as_ref()
-                        .and_then(|a| a.get("task").and_then(Value::as_str))
+                        .and_then(|a| {
+                            a.get("description")
+                                .and_then(Value::as_str)
+                                .or_else(|| a.get("task").and_then(Value::as_str))
+                                .or_else(|| a.get("prompt").and_then(Value::as_str))
+                        })
                         .map(|t| t.chars().take(80).collect::<String>());
                     let model = args
                         .as_ref()
                         .and_then(|a| a.get("model").and_then(Value::as_str))
+                        .map(String::from);
+                    let resume_sid = args
+                        .as_ref()
+                        .and_then(|a| a.get("resume").and_then(Value::as_str))
+                        .filter(|s| !s.trim().is_empty())
                         .map(String::from);
                     self.tool_subagent_runs.retain(|r| r.id != tool_call_id);
                     self.tool_subagent_runs.push(SubagentRunInfo {
@@ -3907,7 +4192,7 @@ impl AppState {
                         turn_count: None,
                         tool_count: None,
                         progress_text: task_desc,
-                        session_id: None,
+                        session_id: resume_sid,
                         children: Vec::new(),
                     });
                 }
@@ -3925,6 +4210,7 @@ impl AppState {
                         arguments,
                         output: SharedString::default(),
                         diff_patch,
+                        subagent_session_id: None,
                         is_running: true,
                         is_error: false,
                         expanded: false,
@@ -3937,8 +4223,15 @@ impl AppState {
                 tool_call_id,
                 partial_result,
             } => {
+                let details_val = partial_result.as_ref().and_then(|v| v.get("details"));
+                let subagent_sid = extract_subagent_session_id(details_val);
+                if let Some(d) = details_val {
+                    if d.get("kind").and_then(Value::as_str) == Some("pi-web-subagent") {
+                        self.apply_pi_web_subagent_details(&tool_call_id, d, false);
+                    }
+                }
                 if let Some(run) = self.tool_subagent_runs.iter_mut().find(|r| r.id == tool_call_id) {
-                    if let Some(details) = partial_result.as_ref().and_then(|v| v.get("details")) {
+                    if let Some(details) = details_val {
                         if let Some(first_res) = details
                             .get("results")
                             .and_then(Value::as_array)
@@ -3959,14 +4252,36 @@ impl AppState {
                     }
                 }
                 if let Some(last) = self.messages.last_mut() {
-                    let out_str = partial_result.map(|v| v.to_string()).unwrap_or_default();
+                    let out_str = partial_result
+                        .as_ref()
+                        .map(|v| {
+                            let txt = flatten_content_text(v.get("content"));
+                            if !txt.trim().is_empty() {
+                                txt
+                            } else if let Some(s) = v.as_str() {
+                                s.to_string()
+                            } else {
+                                String::new()
+                            }
+                        })
+                        .unwrap_or_default();
                     if let Some(tc) = last.tool_calls.iter_mut().find(|t| t.id.as_ref() == tool_call_id) {
-                        tc.output = SharedString::from(out_str.clone());
+                        if !out_str.is_empty() {
+                            tc.output = SharedString::from(out_str.clone());
+                        }
+                        if subagent_sid.is_some() {
+                            tc.subagent_session_id = subagent_sid.clone();
+                        }
                     }
                     for step in &mut last.process_steps {
                         if let ProcessStep::ToolCall(tc) = step {
                             if tc.id.as_ref() == tool_call_id {
-                                tc.output = SharedString::from(out_str.clone());
+                                if !out_str.is_empty() {
+                                    tc.output = SharedString::from(out_str.clone());
+                                }
+                                if subagent_sid.is_some() {
+                                    tc.subagent_session_id = subagent_sid.clone();
+                                }
                             }
                         }
                     }
@@ -3979,8 +4294,13 @@ impl AppState {
                 is_error,
             } => {
                 if tool_name == "todo" {
+                    self.todos_from_tool = true;
                     if let Some(details) = result.as_ref().and_then(|v| v.get("details")) {
                         if let Some(parsed) = parse_todo_tool_details(details) {
+                            if !parsed.is_empty() {
+                                self.todos_hidden = false;
+                                self.todos_hidden_session = None;
+                            }
                             self.set_todos(parsed);
                         }
                     }
@@ -3988,26 +4308,36 @@ impl AppState {
                         self.sync_active_agent_state(sid, cx);
                     }
                 }
-                if let Some(run) = self.tool_subagent_runs.iter_mut().find(|r| r.id == tool_call_id) {
+                let details_val = result.as_ref().and_then(|v| v.get("details"));
+                let subagent_sid = extract_subagent_session_id(details_val);
+                if let Some(d) = details_val {
+                    if d.get("kind").and_then(Value::as_str) == Some("pi-web-subagent") {
+                        self.apply_pi_web_subagent_details(&tool_call_id, d, is_error);
+                    } else if let Some(run) = self.tool_subagent_runs.iter_mut().find(|r| r.id == tool_call_id) {
+                        run.state = if is_error { "failed" } else { "complete" }.to_string();
+                        run.current_tool = None;
+                    }
+                } else if let Some(run) = self.tool_subagent_runs.iter_mut().find(|r| r.id == tool_call_id) {
                     run.state = if is_error { "failed" } else { "complete" }.to_string();
                     run.current_tool = None;
                 }
                 if let Some(last) = self.messages.last_mut() {
-                    let details_val = result.as_ref().and_then(|v| v.get("details"));
                     let extra_diff = if tool_name == "edit" {
                         build_diff_from_tool(&tool_name, None, details_val)
                     } else {
                         None
                     };
                     let text = result
+                        .as_ref()
                         .map(|val| {
-                            val.get("content")
-                                .and_then(Value::as_array)
-                                .and_then(|a| a.first())
-                                .and_then(|c| c.get("text"))
-                                .and_then(Value::as_str)
-                                .map(String::from)
-                                .unwrap_or_else(|| val.to_string())
+                            let txt = flatten_content_text(val.get("content"));
+                            if !txt.is_empty() {
+                                txt
+                            } else if let Some(s) = val.as_str() {
+                                s.to_string()
+                            } else {
+                                val.to_string()
+                            }
                         })
                         .unwrap_or_default();
                     if let Some(tc) = last.tool_calls.iter_mut().find(|t| t.id.as_ref() == tool_call_id) {
@@ -4015,6 +4345,9 @@ impl AppState {
                         tc.is_error = is_error;
                         if tc.diff_patch.is_none() {
                             tc.diff_patch = extra_diff.clone();
+                        }
+                        if subagent_sid.is_some() {
+                            tc.subagent_session_id = subagent_sid.clone();
                         }
                         if !text.is_empty() {
                             tc.output = SharedString::from(text.clone());
@@ -4027,6 +4360,9 @@ impl AppState {
                                 tc.is_error = is_error;
                                 if tc.diff_patch.is_none() {
                                     tc.diff_patch = extra_diff.clone();
+                                }
+                                if subagent_sid.is_some() {
+                                    tc.subagent_session_id = subagent_sid.clone();
                                 }
                                 if !text.is_empty() {
                                     tc.output = SharedString::from(text.clone());
@@ -4063,7 +4399,10 @@ impl AppState {
                             self.subagent_runs = runs;
                         }
                     } else if key.contains("todo") {
-                        self.set_todos(parse_todo_widget_lines(&lines));
+                        let parsed = parse_todo_widget_lines(&lines);
+                        if !self.todos_from_tool && (!parsed.is_empty() || lines.is_empty()) {
+                            self.set_todos(parsed);
+                        }
                     }
                 } else if method == "setStatus" {
                     let key = payload.get("statusKey").and_then(Value::as_str).unwrap_or("");
@@ -5028,6 +5367,7 @@ fn build_demo_messages(ctrl: &mut SessionController) -> Vec<ChatMessage> {
         )],
         output: SharedString::from("test result: ok. 4 passed; 0 failed"),
         diff_patch: None,
+        subagent_session_id: None,
         is_running: false,
         is_error: false,
         expanded: false,
@@ -5043,6 +5383,7 @@ fn build_demo_messages(ctrl: &mut SessionController) -> Vec<ChatMessage> {
         diff_patch: Some(SharedString::from(
             "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,4 @@\n fn main() {\n-    start_default();\n+    start_agent_session();\n }\n",
         )),
+        subagent_session_id: None,
         is_running: false,
         is_error: false,
         expanded: false,
@@ -5062,6 +5403,7 @@ fn build_demo_messages(ctrl: &mut SessionController) -> Vec<ChatMessage> {
         ],
         output: SharedString::from("Wrote 3 lines to config.toml"),
         diff_patch: None,
+        subagent_session_id: None,
         is_running: false,
         is_error: false,
         expanded: false,

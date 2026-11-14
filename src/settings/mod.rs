@@ -17,6 +17,7 @@ use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::setting::Settings;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
@@ -314,5 +315,47 @@ pub fn render_settings_overlay(
                 )
                 .child(add_dialog.clone()),
         )
+        .children(busy.then(|| {
+            div()
+                .id("settings-blocking-overlay")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(cx.theme().background.opacity(0.68))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
+                .child(
+                    v_flex()
+                        .occlude()
+                        .w(px(360.))
+                        .p_5()
+                        .gap_2p5()
+                        .items_center()
+                        .rounded_xl()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().popover)
+                        .shadow_lg()
+                        .child(Spinner::new().large())
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_semibold()
+                                .text_color(cx.theme().foreground)
+                                .child(tr(locale, "settings.waitingCoreTitle")),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_center()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(tr(locale, "settings.waitingCoreDesc")),
+                        ),
+                )
+        }))
         .into_any_element()
 }

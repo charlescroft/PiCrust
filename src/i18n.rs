@@ -257,6 +257,7 @@ fn en_text(key: &'static str) -> &'static str {
         "subagents.idle" => "idle",
         "subagents.noneRunning" => "No subagents active",
         "subagents.manageProfiles" => "Subagent Settings...",
+        "subagents.openSession" => "Open subagent session",
 
         // Tasks
         "tasks.waiting" => "Waiting for Input",
@@ -420,6 +421,7 @@ fn en_text(key: &'static str) -> &'static str {
         "page.searchArtifacts" => "Search artifacts by title, path, content...",
         "page.allTypes" => "All Types",
         "page.typeOffice" => "Office Files",
+        "page.typeImages" => "Images",
         "page.typeCodes" => "Codes",
         "page.typeBinary" => "Binary",
         "page.typeOthers" => "Others",
@@ -497,6 +499,9 @@ fn en_text(key: &'static str) -> &'static str {
         "settings.install" => "Install",
         "settings.installPlugin" => "Install Package Plugin",
         "settings.pluginSource" => "Package source (npm:@scope/pkg, git:https://..., or path)",
+        "settings.pluginSourceNormalized" => "Normalized package source:",
+        "settings.waitingCoreTitle" => "Waiting for Pi Core…",
+        "settings.waitingCoreDesc" => "Plugin or skill installation is in progress. Please wait for the core result.",
         "settings.modelsConfigPath" => "Custom models.json",
         "settings.mcpGlobalPath" => "Global mcp.json",
         "settings.mcpProjectPath" => "Project .pi/mcp.json",
@@ -779,6 +784,7 @@ fn zh_text(key: &'static str) -> &'static str {
         "subagents.idle" => "空闲",
         "subagents.noneRunning" => "当前无运行中的子代理",
         "subagents.manageProfiles" => "子代理设置...",
+        "subagents.openSession" => "打开子代理会话",
 
         // Tasks
         "tasks.waiting" => "等待输入",
@@ -942,6 +948,7 @@ fn zh_text(key: &'static str) -> &'static str {
         "page.searchArtifacts" => "搜索产物名称、路径或内容...",
         "page.allTypes" => "全部类型",
         "page.typeOffice" => "Office 文档",
+        "page.typeImages" => "图片",
         "page.typeCodes" => "代码文件",
         "page.typeBinary" => "二进制文件",
         "page.typeOthers" => "其他",
@@ -1019,6 +1026,9 @@ fn zh_text(key: &'static str) -> &'static str {
         "settings.install" => "安装",
         "settings.installPlugin" => "安装插件包",
         "settings.pluginSource" => "插件源（npm:@scope/pkg、git:https://... 或本地路径）",
+        "settings.pluginSourceNormalized" => "将自动去除命令前缀，实际安装：",
+        "settings.waitingCoreTitle" => "正在等待核心返回结果…",
+        "settings.waitingCoreDesc" => "正在安装，完成前已锁定界面操作。",
         "settings.modelsConfigPath" => "自定义 models.json",
         "settings.mcpGlobalPath" => "全局 mcp.json",
         "settings.mcpProjectPath" => "项目 .pi/mcp.json",

@@ -157,7 +157,7 @@ Outer vertical flex (`size_full`):
 
 ### 7.3 Artifacts Page (`artifacts_page.rs`)
 - Search & Browse library (NO unread tracking or unread dots):
-  - Top Filter Bar: Search `Input` (`h(px(32.))`, title, identifier, path, content) + Type **Dropdown** (`> 3` options → `Button::outline().h(px(32.)).dropdown_caret(true)`: `All Types`, `HTML`, `PDF`, `Markdown`, `Office Files`, `Codes`, `Binary`, `Others`).
+  - Top Filter Bar: Search `Input` (`h(px(32.))`, title, identifier, path, content) + Type **Dropdown** (`> 3` options → `Button::outline().h(px(32.)).dropdown_caret(true)`: `All Types`, `HTML`, `Images`, `PDF`, `Markdown`, `Office Files`, `Codes`, `Binary`, `Others`).
   - Scrollable Card List (`bg(cx.theme().background)` + `rounded_xl` + `border_1`): Type icon, Title, Category tag, Identifier, Version, Session Title, Relative Time, `"Preview"` outline button (`h(px(28.))`).
   - Pagination Footer (`8` items/page): `"Page X of Y"`, Prev / Next buttons (`h(px(28.))`).
 

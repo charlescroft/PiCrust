@@ -1060,7 +1060,7 @@ impl ComposerView {
                                         .ghost()
                                         .w(px(24.))
                                         .h(px(24.))
-                                        .icon(IconName::Delete)
+                                        .icon(Icon::new(crate::icons::TrashIcon))
                                         .tooltip(tr(locale, "chat.deleteQueuedMessage"))
                                         .on_click(move |_, _, cx| {
                                             app_rm.update(cx, |s, cx| {
@@ -2115,7 +2115,7 @@ impl<E: ParentElement> ComposerExt for E {
                 .h(px(36.))
                 .rounded_full()
                 .flex_shrink_0()
-                .icon(IconName::Delete)
+                .icon(Icon::new(crate::icons::TrashIcon))
                 .tooltip(tr(locale, "chat.clearDraft"))
                 .on_click(on_click),
         )

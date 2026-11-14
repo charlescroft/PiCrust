@@ -259,6 +259,7 @@ pub struct ToolCallItem {
     pub arguments: Vec<(SharedString, SharedString)>,
     pub output: SharedString,
     pub diff_patch: Option<SharedString>,
+    pub subagent_session_id: Option<SharedString>,
     pub is_running: bool,
     pub is_error: bool,
     pub expanded: bool,
@@ -731,7 +732,7 @@ pub struct SubagentRunInfo {
 
 impl SubagentRunInfo {
     pub fn is_active(&self) -> bool {
-        matches!(self.state.as_str(), "running" | "queued" | "pending")
+        matches!(self.state.as_str(), "running" | "queued" | "pending" | "starting")
     }
 }
 

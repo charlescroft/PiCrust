@@ -1734,7 +1734,7 @@ fn render_tool_call_card(
         SharedString::from(arg_preview)
     };
 
-    let mut header_row = h_flex()
+    let header_row = h_flex()
         .w_full()
         .items_center()
         .justify_between()
@@ -1800,7 +1800,28 @@ fn render_tool_call_card(
                     })
                     .xsmall(),
                 ),
-        );
+        )
+        .children(tc.subagent_session_id.as_ref().map(|child_sid| {
+            let sid_str = child_sid.to_string();
+            div()
+                .flex_shrink_0()
+                .pr_1p5()
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    Button::new(("tool-open-subagent", msg_id * 1000 + idx as u64))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::ExternalLink)
+                        .tooltip(tr(locale, "subagents.openSession"))
+                        .on_click(cx.listener(move |panel, _, _, cx| {
+                            cx.stop_propagation();
+                            let sid = sid_str.clone();
+                            panel.app_state.update(cx, |s, cx| {
+                                s.select_session(sid, cx);
+                            });
+                        })),
+                )
+        }));
 
 
 

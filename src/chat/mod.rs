@@ -38,7 +38,7 @@ pub struct ConversationScrollerState {
 }
 
 impl ConversationScrollerState {
-    pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
+    fn build_list_state(item_count: usize, cx: &mut Context<Self>) -> ListState {
         let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW);
         list_state.set_follow_mode(FollowMode::Tail);
 
@@ -55,6 +55,11 @@ impl ConversationScrollerState {
                 });
             });
         });
+        list_state
+    }
+
+    pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
+        let list_state = Self::build_list_state(item_count, cx);
 
         Self {
             list_state,
@@ -79,6 +84,16 @@ impl ConversationScrollerState {
     pub fn reset(&mut self, item_count: usize, cx: &mut Context<Self>) {
         self.list_state.reset(item_count);
         self.list_state.set_follow_mode(FollowMode::Tail);
+        self.last_scroll_notify_key = (false, item_count);
+        cx.notify();
+    }
+
+    /// Replaces `list_state` with a fresh `ListState` instance instead of mutating
+    /// the previous `Rc<RefCell<ListStateInner>>` in place. Required when switching
+    /// sessions so previously cached `ListState` handles stay isolated.
+    pub fn replace_fresh(&mut self, item_count: usize, cx: &mut Context<Self>) {
+        self.list_state = Self::build_list_state(item_count, cx);
+        self.last_scroll_notify_key = (false, item_count);
         cx.notify();
     }
 
@@ -143,6 +158,15 @@ impl ConversationScrollerState {
     }
 }
 
+struct SessionPanelCache {
+    row_cache: HashMap<u64, CachedRowEntities>,
+    msg_ids: Vec<u64>,
+    list_state: ListState,
+    turns: Vec<TurnLocation>,
+    tail_sig: Option<(u64, usize, usize, usize, bool)>,
+    font_size: f32,
+}
+
 pub struct ChatPanel {
     focus_handle: FocusHandle,
     app_state: Entity<AppState>,
@@ -159,17 +183,8 @@ pub struct ChatPanel {
     nav_window_start: usize,
     show_all_turns: bool,
     cached_turns: Vec<TurnLocation>,
-    session_caches: HashMap<
-        String,
-        (
-            HashMap<u64, CachedRowEntities>,
-            ListState,
-            Vec<TurnLocation>,
-            usize,
-            Option<(u64, usize, usize, usize, bool)>,
-            f32,
-        ),
-    >,
+    cached_msg_ids: Vec<u64>,
+    session_caches: HashMap<String, SessionPanelCache>,
     session_cache_order: Vec<String>,
 }
 
@@ -181,8 +196,14 @@ impl Focusable for ChatPanel {
 
 impl ChatPanel {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let count = app_state.read(cx).messages.len();
-        let last_font_size = app_state.read(cx).chat_font_size;
+        let (count, last_font_size, init_msg_ids) = {
+            let st = app_state.read(cx);
+            (
+                st.messages.len(),
+                st.chat_font_size,
+                st.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
+            )
+        };
         let scroller = cx.new(|cx| ConversationScrollerState::new(count, cx));
         cx.observe(&scroller, |_, _, cx| cx.notify()).detach();
         cx.observe(&app_state, |this, app, cx| {
@@ -212,6 +233,7 @@ impl ChatPanel {
             nav_window_start: 0,
             show_all_turns: false,
             cached_turns: Vec::new(),
+            cached_msg_ids: init_msg_ids,
             session_caches: HashMap::new(),
             session_cache_order: Vec::new(),
         }
@@ -310,7 +332,7 @@ impl ChatPanel {
     }
 
     fn sync_scroller_with_messages(&mut self, app: &Entity<AppState>, cx: &mut Context<Self>) {
-        let (new_count, sid, font_sz, tail_sig, keep_ids, next_turns) = {
+        let (new_count, sid, font_sz, tail_sig, keep_ids, next_turns, next_msg_ids) = {
             let state = app.read(cx);
             let new_count = state.messages.len();
             let sid = state.active_session_id.clone();
@@ -339,12 +361,20 @@ impl ChatPanel {
                 }
                 ids
             });
-            let next_turns = if sid != self.last_session_id || new_count != self.last_message_count {
-                Some(collect_turn_locations(&state.messages))
-            } else {
-                None
-            };
-            (new_count, sid, font_sz, tail_sig, keep_ids, next_turns)
+            let structure_changed =
+                sid != self.last_session_id || new_count != self.last_message_count;
+            let next_turns = structure_changed.then(|| collect_turn_locations(&state.messages));
+            let next_msg_ids =
+                structure_changed.then(|| state.messages.iter().map(|m| m.id).collect::<Vec<_>>());
+            (
+                new_count,
+                sid,
+                font_sz,
+                tail_sig,
+                keep_ids,
+                next_turns,
+                next_msg_ids,
+            )
         };
 
         // A review position must survive tail updates: remember the exact top offset
@@ -366,17 +396,18 @@ impl ChatPanel {
             if let Some(prev_sid) = self.last_session_id.take() {
                 let prev_list_state = self.scroller.read(cx).list_state.clone();
                 let prev_rows = std::mem::take(&mut self.row_cache);
+                let prev_msg_ids = std::mem::take(&mut self.cached_msg_ids);
                 let prev_turns = std::mem::take(&mut self.cached_turns);
                 self.session_caches.insert(
                     prev_sid.clone(),
-                    (
-                        prev_rows,
-                        prev_list_state,
-                        prev_turns,
-                        self.last_message_count,
-                        self.last_tail_sig,
-                        self.last_font_size,
-                    ),
+                    SessionPanelCache {
+                        row_cache: prev_rows,
+                        msg_ids: prev_msg_ids,
+                        list_state: prev_list_state,
+                        turns: prev_turns,
+                        tail_sig: self.last_tail_sig,
+                        font_size: self.last_font_size,
+                    },
                 );
                 self.session_cache_order.retain(|s| s != &prev_sid);
                 self.session_cache_order.push(prev_sid);
@@ -389,27 +420,30 @@ impl ChatPanel {
             self.last_session_id = sid.clone();
             self.nav_window_start = usize::MAX;
             self.show_all_turns = false;
+            let msg_ids = next_msg_ids.unwrap_or_default();
 
-            // Restore if previously visited and message count matches, for 0ms jitter-free switch!
+            // Restore if previously visited and message count + ListState match, for 0ms jitter-free switch!
             if let Some(ref next_sid) = sid {
-                if let Some((
-                    cached_rows,
-                    cached_list,
-                    cached_turns,
-                    cached_count,
-                    cached_sig,
-                    cached_font,
-                )) = self.session_caches.remove(next_sid)
-                {
-                    if cached_count == new_count {
-                        self.row_cache = cached_rows;
-                        self.cached_turns = cached_turns;
-                        self.last_message_count = cached_count;
-                        self.last_tail_sig = cached_sig;
+                if let Some(mut cached) = self.session_caches.remove(next_sid) {
+                    if cached.msg_ids.len() == new_count
+                        && cached.list_state.item_count() == new_count
+                    {
+                        let mut remapped_rows = HashMap::with_capacity(cached.row_cache.len());
+                        for (old_id, new_id) in cached.msg_ids.iter().zip(msg_ids.iter()) {
+                            if let Some(entry) = cached.row_cache.remove(old_id) {
+                                remapped_rows.insert(*new_id, entry);
+                            }
+                        }
+                        self.row_cache = remapped_rows;
+                        self.cached_msg_ids = msg_ids;
+                        self.cached_turns = cached.turns;
+                        self.last_message_count = new_count;
+                        self.last_tail_sig = cached.tail_sig;
                         self.scroller.update(cx, |s, cx| {
-                            s.list_state = cached_list;
-                            s.last_scroll_notify_key = (s.is_scrolled_up(), s.logical_scroll_top().item_ix);
-                            if cached_font != font_sz {
+                            s.list_state = cached.list_state;
+                            s.last_scroll_notify_key =
+                                (s.is_scrolled_up(), s.logical_scroll_top().item_ix);
+                            if cached.font_size != font_sz {
                                 s.remeasure(cx);
                             } else {
                                 cx.notify();
@@ -421,13 +455,14 @@ impl ChatPanel {
             }
 
             self.row_cache.clear();
+            self.cached_msg_ids = msg_ids;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
             if let Some(t) = next_turns {
                 self.cached_turns = t;
             }
             self.scroller.update(cx, |s, cx| {
-                s.reset(new_count, cx);
+                s.replace_fresh(new_count, cx);
             });
             return;
         }
@@ -441,6 +476,9 @@ impl ChatPanel {
             if let Some(t) = next_turns {
                 self.cached_turns = t;
             }
+            if let Some(ids) = next_msg_ids {
+                self.cached_msg_ids = ids;
+            }
             self.scroller.update(cx, |s, cx| {
                 let _ = s.append(added, cx);
             });
@@ -451,6 +489,9 @@ impl ChatPanel {
             self.last_tail_sig = tail_sig;
             if let Some(t) = next_turns {
                 self.cached_turns = t;
+            }
+            if let Some(ids) = next_msg_ids {
+                self.cached_msg_ids = ids;
             }
             self.scroller.update(cx, |s, cx| {
                 if s.is_scrolled_up() {
@@ -952,7 +993,20 @@ impl Render for ChatPanel {
                             run.kind,
                             details.join(" · ")
                         );
-                        menu = menu.item(PopupMenuItem::new(line).disabled(true));
+                        if let Some(child_sid) = run.session_id.clone() {
+                            let app_open = app_for_subagents.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(line)
+                                    .icon(IconName::ExternalLink)
+                                    .on_click(move |_, _, cx| {
+                                        app_open.update(cx, |s, cx| {
+                                            s.select_session(child_sid.clone(), cx);
+                                        });
+                                    }),
+                            );
+                        } else {
+                            menu = menu.item(PopupMenuItem::new(line).disabled(true));
+                        }
                         for child in &run.children {
                             let c_glyph = match child.state.as_str() {
                                 "running" => "●",

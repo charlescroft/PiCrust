@@ -471,12 +471,16 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
             let is_error = msg.get("isError").and_then(Value::as_bool).unwrap_or(false);
             let output_text = flatten_content_text(msg.get("content"));
             let details_val = msg.get("details");
+            let subagent_sid = extract_subagent_session_id(details_val);
             'outer: for prev in out.iter_mut().rev() {
                 for tc in prev.tool_calls.iter_mut().rev() {
                     if tc.id.as_ref() == tool_call_id || tool_call_id.is_empty() {
                         tc.output = SharedString::from(output_text.clone());
                         tc.is_error = is_error;
                         tc.is_running = false;
+                        if subagent_sid.is_some() {
+                            tc.subagent_session_id = subagent_sid.clone();
+                        }
                         if tc.diff_patch.is_none() && tc.name.as_ref() == "edit" {
                             tc.diff_patch = build_diff_from_tool("edit", None, details_val);
                         }
@@ -489,6 +493,9 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
                             tc.output = SharedString::from(output_text.clone());
                             tc.is_error = is_error;
                             tc.is_running = false;
+                            if subagent_sid.is_some() {
+                                tc.subagent_session_id = subagent_sid.clone();
+                            }
                             if tc.diff_patch.is_none() && tc.name.as_ref() == "edit" {
                                 tc.diff_patch = build_diff_from_tool("edit", None, details_val);
                             }
@@ -805,6 +812,7 @@ pub fn parse_message_content(
                     arguments,
                     output: SharedString::default(),
                     diff_patch,
+                    subagent_session_id: None,
                     is_running: false,
                     is_error: false,
                     expanded: false,
@@ -1373,6 +1381,8 @@ pub fn apply_todo_tool_output_text(todos: &mut Vec<TodoWidgetItem>, output: &str
                 let id = id_str.trim();
                 if let Some(existing) = todos.iter_mut().find(|t| t.id.as_ref() == id) {
                     existing.content = SharedString::from(subj.to_string());
+                } else if let Some(opt_match) = todos.iter_mut().find(|t| t.content.as_ref() == subj) {
+                    opt_match.id = SharedString::from(id.to_string());
                 } else {
                     todos.push(TodoWidgetItem {
                         id: SharedString::from(id.to_string()),
@@ -1485,20 +1495,81 @@ pub fn extract_todos_from_jsonl(path: &Path) -> Vec<TodoWidgetItem> {
     latest.unwrap_or_default()
 }
 
+pub fn extract_subagent_session_id(details: Option<&Value>) -> Option<SharedString> {
+    let d = details?;
+    if d.get("kind").and_then(Value::as_str) == Some("pi-web-subagent") {
+        return d
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| SharedString::from(s.to_string()));
+    }
+    d.get("results")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|r| r.get("sessionId"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| SharedString::from(s.to_string()))
+}
+
 pub fn extract_todos_from_payload(payload: &Value) -> Option<Vec<TodoWidgetItem>> {
     let messages = payload
         .get("messages")
         .or_else(|| payload.get("context").and_then(|c| c.get("messages")))
         .and_then(Value::as_array)?;
     let mut latest: Option<Vec<TodoWidgetItem>> = None;
+    let mut replayed: Vec<TodoWidgetItem> = Vec::new();
+    let mut saw_replay = false;
+    let mut todo_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for msg in messages {
-        if let Some(details) = msg.get("details") {
+        if let Some(details) = msg.get("details").or_else(|| msg.get("data")) {
             if let Some(parsed) = parse_todo_tool_details(details) {
-                latest = Some(parsed);
+                latest = Some(parsed.clone());
+                replayed = parsed;
+                saw_replay = true;
+            }
+        }
+        let role = msg.get("role").and_then(Value::as_str).unwrap_or("");
+        if role == "assistant" {
+            if let Some(blocks) = msg.get("content").and_then(Value::as_array) {
+                for block in blocks {
+                    let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+                    let name = block
+                        .get("toolName")
+                        .or_else(|| block.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if (kind == "toolCall" || kind == "tool_use") && name == "todo" {
+                        if let Some(cid) = block
+                            .get("toolCallId")
+                            .or_else(|| block.get("id"))
+                            .and_then(Value::as_str)
+                        {
+                            todo_call_ids.insert(cid.to_string());
+                        }
+                        if let Some(args) = block.get("input").or_else(|| block.get("arguments")) {
+                            apply_optimistic_todo_args(&mut replayed, args);
+                            saw_replay = true;
+                        }
+                    }
+                }
+            }
+        } else if role == "toolResult" || role == "tool" {
+            let is_error = msg.get("isError").and_then(Value::as_bool).unwrap_or(false);
+            let tool_name = msg.get("toolName").and_then(Value::as_str).unwrap_or("");
+            let call_id = msg.get("toolCallId").and_then(Value::as_str).unwrap_or("");
+            if !is_error && (tool_name == "todo" || todo_call_ids.contains(call_id)) {
+                let text = flatten_content_text(msg.get("content"));
+                if !text.trim().is_empty() {
+                    apply_todo_tool_output_text(&mut replayed, &text);
+                    saw_replay = true;
+                }
             }
         }
     }
-    latest
+    latest.or(if saw_replay { Some(replayed) } else { None })
 }
 
 #[cfg(test)]
@@ -1722,6 +1793,70 @@ mod tests {
         assert_eq!(todos.len(), 3);
         assert!(todos[0].done);
         assert_eq!(todos[2].content.as_ref(), "Third step");
+    }
+
+    #[test]
+    fn replays_todos_from_payload_when_details_stripped_and_parses_subagent_session_id() {
+        let payload = serde_json::json!({
+            "entryIds": ["u1", "a1", "t1", "a2", "t2"],
+            "messages": [
+                { "role": "user", "content": "Track and delegate" },
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "toolCall",
+                        "toolCallId": "tc-todo-1",
+                        "toolName": "todo",
+                        "input": { "action": "create", "tasks": [{ "subject": "Audit todo" }, { "subject": "Audit subagent" }] }
+                    }]
+                },
+                {
+                    "role": "toolResult",
+                    "toolCallId": "tc-todo-1",
+                    "toolName": "todo",
+                    "isError": false,
+                    "content": [{ "type": "text", "text": "Created #1: Audit todo (pending)\nCreated #2: Audit subagent (pending)" }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "toolCall",
+                        "toolCallId": "tc-agent-1",
+                        "toolName": "Agent",
+                        "input": { "subagent_type": "explore", "description": "Check subagent", "prompt": "Check subagent" }
+                    }]
+                },
+                {
+                    "role": "toolResult",
+                    "toolCallId": "tc-agent-1",
+                    "toolName": "Agent",
+                    "isError": false,
+                    "content": [{ "type": "text", "text": "Subagent child-abc completed." }],
+                    "details": {
+                        "kind": "pi-web-subagent",
+                        "sessionId": "child-abc",
+                        "profile": "explore",
+                        "description": "Check subagent",
+                        "status": "completed",
+                        "runInBackground": false
+                    }
+                }
+            ]
+        });
+
+        let replayed_todos = extract_todos_from_payload(&payload).unwrap();
+        assert_eq!(replayed_todos.len(), 2);
+        assert_eq!(replayed_todos[0].id.as_ref(), "1");
+        assert_eq!(replayed_todos[1].content.as_ref(), "Audit subagent");
+
+        let mut next_id = 1;
+        let parsed = parse_session_messages(&payload, &mut next_id);
+        let agent_tc = parsed[1]
+            .tool_calls
+            .iter()
+            .find(|tc| tc.name.as_ref() == "Agent")
+            .unwrap();
+        assert_eq!(agent_tc.subagent_session_id.as_deref(), Some("child-abc"));
     }
 }
 

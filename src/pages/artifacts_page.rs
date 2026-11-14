@@ -29,21 +29,21 @@ fn classify_artifact_category(art: &ArtifactRecord) -> &'static str {
 
     match ext.as_str() {
         "html" | "htm" => "html",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "icns" | "avif" | "tiff"
+        | "tif" | "svg" => "images",
         "pdf" => "pdf",
         "md" | "markdown" | "mdx" => "markdown",
         "doc" | "docx" | "odt" | "xls" | "xlsx" | "ods" | "csv" | "ppt" | "pptx" | "odp" => "office",
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "icns" | "zip" | "tar"
-        | "gz" | "dmg" | "exe" | "bin" | "wasm" | "dll" | "so" | "dylib" | "mp3" | "mp4"
-        | "wav" | "mov" => "binary",
+        "zip" | "tar" | "gz" | "dmg" | "exe" | "bin" | "wasm" | "dll" | "so" | "dylib"
+        | "mp3" | "mp4" | "wav" | "mov" => "binary",
         "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go" | "c" | "cpp"
         | "h" | "hpp" | "java" | "kt" | "swift" | "css" | "scss" | "json" | "toml" | "yaml"
-        | "yml" | "sh" | "bash" | "zsh" | "sql" | "xml" | "svg" => "codes",
+        | "yml" | "sh" | "bash" | "zsh" | "sql" | "xml" => "codes",
         _ => match art.kind {
             ArtifactKind::Html => "html",
+            ArtifactKind::Svg => "images",
             ArtifactKind::Markdown => "markdown",
-            ArtifactKind::React | ArtifactKind::Svg | ArtifactKind::Code | ArtifactKind::Mermaid => {
-                "codes"
-            }
+            ArtifactKind::React | ArtifactKind::Code | ArtifactKind::Mermaid => "codes",
         },
     }
 }
@@ -51,6 +51,7 @@ fn classify_artifact_category(art: &ArtifactRecord) -> &'static str {
 fn category_label(cat: &str, locale: AppLocale) -> &'static str {
     match cat {
         "html" => "HTML",
+        "images" => tr(locale, "page.typeImages"),
         "pdf" => "PDF",
         "markdown" => "Markdown",
         "office" => tr(locale, "page.typeOffice"),
@@ -101,7 +102,7 @@ pub fn render_artifacts_page(
         .collect();
 
     let categories = [
-        "all", "html", "pdf", "markdown", "office", "codes", "binary", "others",
+        "all", "html", "images", "pdf", "markdown", "office", "codes", "binary", "others",
     ];
     let current_cat_label = category_label(&type_filter, locale);
     let app_cat = app_state.clone();
@@ -201,7 +202,7 @@ pub fn render_artifacts_page(
             let app_open = app_state.clone();
             let cat = classify_artifact_category(art);
             let type_icon = match cat {
-                "html" => IconName::Frame,
+                "html" | "images" => IconName::Frame,
                 "markdown" | "pdf" | "office" => IconName::FileText,
                 _ => IconName::File,
             };

@@ -138,6 +138,14 @@ impl SettingsAddDialogView {
         })
         .detach();
 
+        let input_a = cx.new(|cx| InputState::new(window, cx));
+        cx.subscribe(&input_a, |_, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+
         Self {
             app_state,
             last_kind: None,
@@ -150,7 +158,7 @@ impl SettingsAddDialogView {
             model_input_text: true,
             model_input_image: false,
             model_reasoning: false,
-            input_a: cx.new(|cx| InputState::new(window, cx)),
+            input_a,
             input_b: cx.new(|cx| InputState::new(window, cx)),
             input_c: cx.new(|cx| InputState::new(window, cx)),
             input_d: cx.new(|cx| InputState::new(window, cx)),
@@ -285,6 +293,9 @@ impl SettingsAddDialogView {
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         self.app_state.update(cx, |s, cx| {
             s.settings_add_kind = None;
             cx.notify();
@@ -423,6 +434,10 @@ impl SettingsAddDialogView {
 
         self.busy = true;
         self.error = None;
+        self.app_state.update(cx, |s, cx| {
+            s.settings_busy = true;
+            cx.notify();
+        });
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -511,24 +526,26 @@ impl SettingsAddDialogView {
                     }
                 }
                 SettingsAddKind::Skill => {
-                    if a.is_empty() {
+                    let pkg = normalize_skill_source(&a);
+                    if pkg.is_empty() {
                         Err(anyhow::anyhow!("Skill package name required"))
                     } else {
                         client
-                            .install_skill(&a, &scope, Some(&cwd))
+                            .install_skill(&pkg, &scope, Some(&cwd))
                             .await
                             .map(|_| ())
                     }
                 }
                 SettingsAddKind::Plugin => {
-                    if a.is_empty() {
+                    let src = normalize_plugin_source(&a);
+                    if src.is_empty() {
                         Err(anyhow::anyhow!("Plugin source required"))
                     } else {
                         client
                             .plugin_action(json!({
                                 "cwd": cwd,
                                 "action": "install",
-                                "source": a,
+                                "source": src,
                                 "scope": scope,
                             }))
                             .await
@@ -539,20 +556,21 @@ impl SettingsAddDialogView {
 
             let _ = this.update(cx, |view, cx| {
                 view.busy = false;
-                match res {
-                    Ok(()) => {
-                        app_state.update(cx, |s, cx| {
-                            if let Some(pid) = expand_provider_id.take() {
-                                s.expanded_configured_providers.insert(pid);
-                            }
-                            s.settings_add_kind = None;
-                            s.refresh_from_sidecar(cx);
-                            s.refresh_settings_data(cx);
-                        });
+                app_state.update(cx, |s, cx| {
+                    s.settings_busy = false;
+                    if res.is_ok() {
+                        if let Some(pid) = expand_provider_id.take() {
+                            s.expanded_configured_providers.insert(pid);
+                        }
+                        s.settings_add_kind = None;
+                        s.refresh_from_sidecar(cx);
+                        s.refresh_settings_data(cx);
+                    } else {
+                        cx.notify();
                     }
-                    Err(err) => {
-                        view.error = Some(err.to_string());
-                    }
+                });
+                if let Err(err) = res {
+                    view.error = Some(err.to_string());
                 }
                 cx.notify();
             });
@@ -605,6 +623,9 @@ impl SettingsAddDialogView {
     }
 
     fn install_skill_pkg(&mut self, pkg: String, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let state = self.app_state.read(cx);
         let client = state.client.clone();
         let cwd = state.active_cwd.to_string_lossy().into_owned();
@@ -612,22 +633,27 @@ impl SettingsAddDialogView {
         let app_state = self.app_state.clone();
         self.busy = true;
         self.error = None;
+        self.app_state.update(cx, |s, cx| {
+            s.settings_busy = true;
+            cx.notify();
+        });
         cx.notify();
 
         cx.spawn(async move |this, cx| {
             let res = client.install_skill(&pkg, &scope, Some(&cwd)).await;
             let _ = this.update(cx, |view, cx| {
                 view.busy = false;
-                match res {
-                    Ok(_) => {
-                        app_state.update(cx, |s, cx| {
-                            s.settings_add_kind = None;
-                            s.refresh_settings_data(cx);
-                        });
+                app_state.update(cx, |s, cx| {
+                    s.settings_busy = false;
+                    if res.is_ok() {
+                        s.settings_add_kind = None;
+                        s.refresh_settings_data(cx);
+                    } else {
+                        cx.notify();
                     }
-                    Err(e) => {
-                        view.error = Some(e.to_string());
-                    }
+                });
+                if let Err(e) = res {
+                    view.error = Some(e.to_string());
                 }
                 cx.notify();
             });
@@ -1298,11 +1324,38 @@ impl SettingsAddDialogView {
                 }
             }
             SettingsAddKind::Plugin => {
-                body = body.child(field_box(
-                    tr(locale, "settings.pluginSource"),
-                    Input::new(&self.input_a).small(),
-                    cx,
-                ));
+                let raw = self.input_a.read(cx).value().to_string();
+                let trimmed = raw.trim();
+                let normalized = normalize_plugin_source(trimmed);
+                let show_hint = !trimmed.is_empty() && normalized != trimmed && !normalized.is_empty();
+                body = body
+                    .child(field_box(
+                        tr(locale, "settings.pluginSource"),
+                        Input::new(&self.input_a).small(),
+                        cx,
+                    ))
+                    .children(show_hint.then(|| {
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(cx.theme().secondary)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(tr(locale, "settings.pluginSourceNormalized")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(cx.theme().foreground)
+                                    .child(SharedString::from(normalized)),
+                            )
+                    }));
             }
             SettingsAddKind::PluginInfo(p) => {
                 let desc = p.description.clone().unwrap_or_else(|| "No description provided.".to_string());
@@ -1481,7 +1534,9 @@ impl SettingsAddDialogView {
             .bg(cx.theme().background.opacity(0.65 * progress))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
-                this.close(cx);
+                if !this.busy {
+                    this.close(cx);
+                }
             }))
             .child(
                 v_flex()
@@ -1509,6 +1564,7 @@ impl SettingsAddDialogView {
                                     .ghost()
                                     .small()
                                     .icon(IconName::Close)
+                                    .disabled(self.busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                             ),
                     )
@@ -1529,6 +1585,7 @@ impl SettingsAddDialogView {
                                         .small()
                                         .h(px(28.))
                                         .icon(IconName::Close)
+                                        .disabled(self.busy)
                                         .label(tr(locale, "scheduled.cancel"))
                                         .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                                 )
@@ -1562,4 +1619,115 @@ fn field_box(label: &'static str, control: impl IntoElement, cx: &gpui_kit::App)
                 .child(label),
         )
         .child(control)
+}
+
+pub(crate) fn normalize_plugin_source(raw: &str) -> String {
+    let mut s = raw.trim().to_string();
+    loop {
+        let trimmed = s.trim();
+        let unwrapped = if (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2)
+            || (trimmed.starts_with('`') && trimmed.ends_with('`') && trimmed.len() >= 2)
+        {
+            trimmed[1..trimmed.len() - 1].trim()
+        } else {
+            trimmed
+        };
+
+        let mut next = unwrapped;
+        for prompt in ["$ ", "> "] {
+            if let Some(rest) = next.strip_prefix(prompt) {
+                next = rest.trim_start();
+            }
+        }
+
+        let lower = next.to_ascii_lowercase();
+        if let Some(rest) = ["npx ", "pnpx ", "bunx "]
+            .iter()
+            .find_map(|p| lower.strip_prefix(p).map(|_| &next[p.len()..]))
+        {
+            next = rest.trim_start();
+        } else if lower.starts_with("pi install ") || lower.starts_with("pi install\t") {
+            next = next["pi install ".len()..].trim_start();
+        } else if lower.starts_with("pi i ") || lower.starts_with("pi i\t") {
+            next = next["pi i ".len()..].trim_start();
+        } else {
+            let mut stripped_flag = None;
+            for flag in ["--local", "--global", "--yes", "-l", "-g", "-y"] {
+                if let Some(rest) = next.strip_prefix(flag) {
+                    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                        stripped_flag = Some(rest.trim_start());
+                        break;
+                    }
+                }
+            }
+            if let Some(rest) = stripped_flag {
+                next = rest;
+            }
+        }
+
+        if next == s {
+            break;
+        }
+        s = next.to_string();
+    }
+    s.trim().to_string()
+}
+
+pub(crate) fn normalize_skill_source(raw: &str) -> String {
+    let mut s = normalize_plugin_source(raw);
+    loop {
+        let trimmed = s.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let next = if lower.starts_with("skills add ") || lower.starts_with("skills add\t") {
+            trimmed["skills add ".len()..].trim_start()
+        } else if lower.starts_with("skills install ") || lower.starts_with("skills install\t") {
+            trimmed["skills install ".len()..].trim_start()
+        } else {
+            trimmed
+        };
+        let next = normalize_plugin_source(next);
+        if next == s {
+            break;
+        }
+        s = next;
+    }
+    s.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_plugin_source, normalize_skill_source};
+
+    #[test]
+    fn normalizes_pi_install_prefixes_and_flags() {
+        assert_eq!(
+            normalize_plugin_source("pi install npm:billion-context"),
+            "npm:billion-context"
+        );
+        assert_eq!(
+            normalize_plugin_source("  $ pi install -l \"npm:@scope/pkg\"  "),
+            "npm:@scope/pkg"
+        );
+        assert_eq!(
+            normalize_plugin_source("PI I --global git:https://github.com/org/repo"),
+            "git:https://github.com/org/repo"
+        );
+        assert_eq!(
+            normalize_plugin_source("npm:billion-context"),
+            "npm:billion-context"
+        );
+    }
+
+    #[test]
+    fn normalizes_npx_skills_add_prefixes() {
+        assert_eq!(
+            normalize_skill_source("npx skills add owner/repo@skill"),
+            "owner/repo@skill"
+        );
+        assert_eq!(
+            normalize_skill_source("$ npx skills add -y owner/repo@skill"),
+            "owner/repo@skill"
+        );
+    }
 }
