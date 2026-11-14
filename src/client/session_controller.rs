@@ -817,6 +817,14 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
                     if let Some(u) = msg_usage {
                         merge_turn_usage(&mut prev.turn_usage, u);
                     }
+                    // If a previous entry in this turn had a transient error and a new entry
+                    // followed (e.g. retry or tool continuation), archive the earlier error
+                    // into process_steps so it stays at its chronological position rather than
+                    // persisting at the bottom of the finished turn.
+                    if let Some(prev_err) = prev.error_message.take() {
+                        prev.process_steps
+                            .push(ProcessStep::Thinking(SharedString::from(format!("⚠️ {prev_err}"))));
+                    }
                     if stop_reason.is_some() {
                         prev.stop_reason = stop_reason;
                     }

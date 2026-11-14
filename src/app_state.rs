@@ -4400,6 +4400,14 @@ impl AppState {
 
                 if let Some(last) = self.messages.last_mut() {
                     last.is_streaming = true;
+                    if matches!(ev_type, "start" | "thinking_start" | "text_start") {
+                        if let Some(prev_err) = last.error_message.take() {
+                            last.process_steps.push(ProcessStep::Thinking(
+                                SharedString::from(format!("⚠️ {prev_err}")),
+                            ));
+                            last.stop_reason = None;
+                        }
+                    }
                     match ev_type {
                         "thinking_start" => {
                             last.process_steps
@@ -4682,7 +4690,8 @@ impl AppState {
                     if last.role == MessageRole::Assistant {
                         // Parse authoritative final assistant message blocks if provided
                         if let Some(msg_val) = message.as_ref() {
-                            if let Some(sr) = msg_val.get("stopReason").and_then(Value::as_str) {
+                            let sr_str = msg_val.get("stopReason").and_then(Value::as_str);
+                            if let Some(sr) = sr_str {
                                 last.stop_reason = Some(SharedString::from(sr.to_string()));
                             }
                             if let Some(em) = msg_val
@@ -4692,6 +4701,12 @@ impl AppState {
                                 .filter(|s| !s.trim().is_empty())
                             {
                                 last.error_message = Some(SharedString::from(em.to_string()));
+                            } else if sr_str != Some("error") {
+                                if let Some(prev_err) = last.error_message.take() {
+                                    last.process_steps.push(ProcessStep::Thinking(
+                                        SharedString::from(format!("⚠️ {prev_err}")),
+                                    ));
+                                }
                             }
                             if let Some(turn_u) = extract_turn_usage(msg_val) {
                                 merge_turn_usage(&mut last.turn_usage, turn_u);
@@ -5182,6 +5197,16 @@ impl AppState {
                 max_attempts,
                 error_message: _,
             } => {
+                if let Some(last) = self.messages.last_mut() {
+                    if last.role == MessageRole::Assistant {
+                        if let Some(prev_err) = last.error_message.take() {
+                            last.process_steps.push(ProcessStep::Thinking(
+                                SharedString::from(format!("⚠️ {prev_err}")),
+                            ));
+                            last.stop_reason = None;
+                        }
+                    }
+                }
                 let att = attempt.unwrap_or(1);
                 let progress = match max_attempts {
                     Some(max) => format!("{att}/{max}"),
@@ -5198,6 +5223,17 @@ impl AppState {
                 if success == Some(false) {
                     if let Some(err) = final_error.or(error_message).filter(|s| !s.trim().is_empty()) {
                         self.record_assistant_error(err);
+                    }
+                } else if success == Some(true) {
+                    if let Some(last) = self.messages.last_mut() {
+                        if last.role == MessageRole::Assistant {
+                            if let Some(prev_err) = last.error_message.take() {
+                                last.process_steps.push(ProcessStep::Thinking(
+                                    SharedString::from(format!("⚠️ {prev_err}")),
+                                ));
+                                last.stop_reason = None;
+                            }
+                        }
                     }
                 }
             }

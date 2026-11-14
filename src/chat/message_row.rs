@@ -1134,7 +1134,7 @@ fn render_assistant_row(
         let err_copy = clean_summary.clone();
         let msg_id = msg.id;
         let is_ctx_limit = is_context_limit_error(err.as_ref()) || is_context_limit_error(&clean_summary);
-        let default_err_open = is_ctx_limit;
+        let default_err_open = is_ctx_limit && is_last_turn;
         let is_err_open = row_cache.error_expanded.unwrap_or(default_err_open);
         let is_compacting = app_state.read(cx).is_compacting;
         let app_cmp = app_state.clone();
