@@ -94,16 +94,27 @@ impl Render for WorkspaceView {
             )
         };
 
-        let center_view = match active_page {
-            WorkspacePage::Chat => self.chat_panel.clone().into_any_element(),
+        let mut chat_view = div().size_full().child(self.chat_panel.clone());
+        if active_page != WorkspacePage::Chat {
+            chat_view = chat_view.hidden();
+        }
+
+        let page_overlay = match active_page {
+            WorkspacePage::Chat => None,
             WorkspacePage::Tasks => {
-                render_tasks_page(&self.app_state, window, cx).into_any_element()
+                Some(render_tasks_page(&self.app_state, window, cx).into_any_element())
             }
-            WorkspacePage::Scheduled => self.scheduled_page.clone().into_any_element(),
+            WorkspacePage::Scheduled => Some(self.scheduled_page.clone().into_any_element()),
             WorkspacePage::Artifacts => {
-                render_artifacts_page(&self.app_state, window, cx).into_any_element()
+                Some(render_artifacts_page(&self.app_state, window, cx).into_any_element())
             }
         };
+
+        let center_view = div()
+            .size_full()
+            .relative()
+            .child(chat_view)
+            .children(page_overlay.map(|p| div().size_full().child(p)));
 
         let sidebar_el = if left_anim_w > 0.5 {
             Some(

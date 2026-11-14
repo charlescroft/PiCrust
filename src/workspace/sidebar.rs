@@ -150,7 +150,7 @@ pub fn render_sidebar(
         .child(build_nav_row(
             "nav-tasks",
             Icon::new(IconName::CircleCheck).small(),
-            format!("{} ({})", tr(locale, "sidebar.tasks"), format_commas(tasks_count)),
+            tr(locale, "sidebar.tasks").to_string(),
             active_page == WorkspacePage::Tasks,
             cx,
             state.has_unread_completed_tasks,
@@ -165,7 +165,7 @@ pub fn render_sidebar(
         .child(build_nav_row(
             "nav-scheduled",
             Icon::new(IconName::Calendar).small(),
-            format!("{} ({})", tr(locale, "sidebar.scheduled"), format_commas(sched_count)),
+            tr(locale, "sidebar.scheduled").to_string(),
             active_page == WorkspacePage::Scheduled,
             cx,
             false,
@@ -180,7 +180,7 @@ pub fn render_sidebar(
         .child(build_nav_row(
             "nav-artifacts",
             Icon::new(IconName::Frame).small(),
-            format!("{} ({})", tr(locale, "sidebar.artifacts"), format_commas(arts_count)),
+            tr(locale, "sidebar.artifacts").to_string(),
             active_page == WorkspacePage::Artifacts,
             cx,
             state.has_unread_artifacts(),
@@ -500,11 +500,7 @@ pub fn render_sidebar(
             let proj_running_count = rows.iter().filter(|r| r.2).count();
             let proj_unread_count = rows.iter().filter(|r| r.3).count();
 
-            let label = if proj_collapsed {
-                SharedString::from(format!("{proj_name} ({})", format_commas(row_count)))
-            } else {
-                SharedString::from(proj_name.clone())
-            };
+            let label = SharedString::from(proj_name.clone());
 
             let app_menu = app_state.clone();
             let app_ctx = app_state.clone();

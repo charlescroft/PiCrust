@@ -112,8 +112,12 @@ pub fn render_artifacts_page(
                                 app_open.update(cx, |s, cx| {
                                     s.mark_artifact_read(&aid_clone, cx);
                                     s.active_artifact_id = Some(aid_clone.clone());
-                                    if let Some(sid) = sid_clone {
-                                        s.select_session(sid, cx);
+                                    if let Some(ref sid) = sid_clone {
+                                        if s.active_session_id.as_deref() != Some(sid.as_str()) {
+                                            s.select_session(sid.clone(), cx);
+                                        } else {
+                                            s.active_page = WorkspacePage::Chat;
+                                        }
                                     } else {
                                         s.active_page = WorkspacePage::Chat;
                                     }
