@@ -9,8 +9,8 @@ use crate::client::session_controller::{
     extract_subagent_session_id, extract_todos_from_jsonl,
     extract_todos_from_payload, extract_turn_usage, flatten_content_text, flatten_tool_args,
     merge_turn_usage, parse_compaction_summary, parse_message_content, parse_session_jsonl_file,
-    parse_session_messages, parse_subagent_async_json_widget, parse_todo_tool_details,
-    parse_todo_widget_lines,
+    parse_session_jsonl_with_siblings, parse_session_messages, parse_subagent_async_json_widget,
+    parse_todo_tool_details, parse_todo_widget_lines,
 };
 use crate::client::sidecar::SidecarProcess;
 use crate::client::sse::{AgentSseEvent, consume_agent_sse};
@@ -72,6 +72,7 @@ pub enum RightPanelTab {
 pub struct AppState {
     pub client: PiDaemonClient,
     pub _sidecar: Option<SidecarProcess>,
+    pub worker_manager: crate::engine::worker_manager::ScaleToZeroWorkerManager,
     pub sidecar_connected: bool,
     pub controller: SessionController,
 
@@ -273,6 +274,7 @@ impl AppState {
         // Seed rich Phase 1 demo state if no local sessions exist yet so the UI
         // immediately showcases Markdown, Math, Mermaid, Diff, and Artifacts.
         let mut messages = Vec::new();
+        let mut initial_siblings = Vec::new();
         let mut artifacts = Vec::new();
         let mut todos = Vec::new();
         let active_session_id;
@@ -353,7 +355,10 @@ impl AppState {
                 active_workspace_kind = first.workspace_kind.unwrap_or(WorkspaceKind::Project);
                 if let Some(ref first_path) = first.path {
                     let p = PathBuf::from(first_path);
-                    messages = parse_session_jsonl_file(&p, &mut ctrl.next_local_msg_id);
+                    let (parsed_msgs, siblings) =
+                        parse_session_jsonl_with_siblings(&p, None, &mut ctrl.next_local_msg_id);
+                    messages = parsed_msgs;
+                    initial_siblings = siblings;
                     initial_stats = compute_stats_from_jsonl(&p, 200_000);
                     todos = extract_todos_from_jsonl(&p);
                     let sid_ref = active_session_id.as_deref();
@@ -433,9 +438,15 @@ impl AppState {
             }
         }).detach();
 
+        let worker_manager = crate::engine::worker_manager::ScaleToZeroWorkerManager::new(
+            port,
+            client.token.clone(),
+            client.instance_id.clone(),
+        );
         let mut state = Self {
             client,
             _sidecar: sidecar,
+            worker_manager,
             sidecar_connected: false,
             controller: ctrl,
             active_page: WorkspacePage::Chat,
@@ -498,7 +509,7 @@ impl AppState {
             renaming_session_id: None,
             active_session_id,
             messages,
-            branch_siblings: Vec::new(),
+            branch_siblings: initial_siblings,
             is_agent_running: false,
             is_compacting: false,
             outbox: Vec::new(),
@@ -558,6 +569,9 @@ impl AppState {
             status_banner: None,
         };
 
+        // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
+        state.load_local_store_snapshot();
+
         // Kick off initial sidecar probe & refresh + lightweight external session watcher
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
@@ -565,6 +579,7 @@ impl AppState {
             let _ = entity.update(cx, |this, cx| {
                 this.refresh_from_sidecar(cx);
                 this.start_external_jsonl_watcher(cx);
+                this.start_native_scheduler_and_worker_reaper(cx);
                 if this.core_mode == "auto" {
                     this.probe_core_candidates(cx);
                 }
@@ -574,6 +589,56 @@ impl AppState {
 
         let _ = &mut state;
         state
+    }
+
+    /// Loads static configuration, models, MCP servers, subagents, scheduled tasks,
+    /// and Git worktrees directly from `~/.pi/agent/` and `<cwd>/.pi/` without RPC.
+    pub fn load_local_store_snapshot(&mut self) {
+        use crate::client::local_store;
+        let cwd_str = self.active_cwd.to_string_lossy().into_owned();
+
+        let models_cfg = local_store::read_models_config_local();
+        self.apply_models_config_response(&models_cfg);
+        self.enrich_thinking_levels_from_config();
+
+        let pi_web = local_store::read_pi_web_settings();
+        if let Some(en) = pi_web.get("artifactsPrompt").and_then(Value::as_bool) {
+            self.artifacts_prompt_enabled = en;
+        }
+        if let Some(en) = pi_web.get("autoTitle").and_then(Value::as_bool) {
+            self.auto_title_enabled = en;
+        }
+        if let Some(np) = pi_web.get("networkProxy").and_then(Value::as_object) {
+            self.network_proxy.enabled = np.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+            self.network_proxy.url = np
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            self.network_proxy.no_proxy = np
+                .get("noProxy")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+        }
+
+        let sub_settings = local_store::read_subagent_settings_local();
+        self.subagent_built_in_enabled = sub_settings.enabled;
+        self.subagent_max_concurrent = sub_settings.max_concurrent;
+        self.subagents = local_store::list_subagent_profiles_local(Some(&cwd_str));
+
+        self.mcp_project_trusted = local_store::is_project_trusted_local(&cwd_str);
+        self.mcp_servers = local_store::read_mcp_servers_local(Some(&cwd_str));
+
+        let local_tasks = local_store::load_scheduled_tasks_local();
+        if !local_tasks.is_empty() || self.scheduled_tasks.is_empty() {
+            self.scheduled_tasks = local_tasks;
+        }
+
+        let wt_snap = local_store::inspect_git_worktrees_local(&cwd_str);
+        if wt_snap.is_git {
+            self.worktrees = wt_snap.worktrees;
+        }
     }
 
     pub fn open_right_tab(&mut self, tab: RightPanelTab, cx: &mut Context<Self>) {
@@ -1083,6 +1148,55 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn navigate_to_branch_entry(&mut self, target_entry_id: &str, cx: &mut Context<Self>) {
+        let Some(sid) = self.active_session_id.clone() else {
+            return;
+        };
+        if let Some(path_str) = self
+            .sessions
+            .iter()
+            .find(|s| s.id == sid)
+            .and_then(|s| s.path.as_deref())
+        {
+            let p = PathBuf::from(path_str);
+            let (parsed, siblings) = parse_session_jsonl_with_siblings(
+                &p,
+                Some(target_entry_id),
+                &mut self.controller.next_local_msg_id,
+            );
+            if !parsed.is_empty() {
+                self.messages = parsed;
+                self.branch_siblings = siblings;
+            }
+        }
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let target = target_entry_id.to_string();
+            let entity = cx.entity().clone();
+            let sid_clone = sid.clone();
+            cx.spawn(async move |_, cx| {
+                let _ = client.navigate_tree(&sid_clone, &target).await;
+                let path = format!("/api/sessions/{sid_clone}/context?leafId={target}");
+                if let Ok(val) = client.get_json_path(&path).await {
+                    let _ = entity.update(cx, |this, cx| {
+                        if this.active_session_id.as_deref() == Some(sid_clone.as_str()) {
+                            let parsed = parse_session_messages(
+                                &val,
+                                &mut this.controller.next_local_msg_id,
+                            );
+                            if !parsed.is_empty() {
+                                this.messages = parsed;
+                            }
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
     pub fn edit_user_message(
         &mut self,
         text: String,
@@ -1091,18 +1205,48 @@ impl AppState {
     ) {
         self.draft_restore_text = Some(text);
         if let Some(eid) = entry_id {
-            if let Some(sid) = self.active_session_id.clone() {
-                if self.sidecar_connected {
-                    let client = self.client.clone();
-                    let target = eid.to_string();
-                    cx.spawn(async move |_, _| {
-                        let _ = client.navigate_tree(&sid, &target).await;
-                    })
-                    .detach();
-                }
-            }
+            self.navigate_to_branch_entry(eid.as_ref(), cx);
+        } else {
+            cx.notify();
         }
-        cx.notify();
+    }
+
+    pub fn fork_session_from_entry(
+        &mut self,
+        id: String,
+        entry_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.sidecar_connected {
+            if let Ok((new_id, _path)) =
+                crate::client::local_store::fork_session_local(&id, Some(&entry_id))
+            {
+                let scanned = scan_local_sessions(&pi_sessions_root());
+                if !scanned.is_empty() {
+                    self.sessions = scanned;
+                }
+                self.select_session(new_id, cx);
+            }
+            return;
+        }
+        let client = self.client.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            if let Ok(val) = client.fork_session(&id, &entry_id).await {
+                let _ = entity.update(cx, |this, cx| {
+                    this.refresh_from_sidecar(cx);
+                    if let Some(new_id) = val
+                        .get("session")
+                        .and_then(|s| s.get("id"))
+                        .or_else(|| val.get("sessionId"))
+                        .and_then(Value::as_str)
+                    {
+                        this.select_session(new_id.to_string(), cx);
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     pub fn active_subagent_runs(&self) -> Vec<SubagentRunInfo> {
@@ -1305,6 +1449,7 @@ impl AppState {
             if !health_ok {
                 let _ = entity.update(cx, |this, cx| {
                     this.sidecar_connected = false;
+                    this.load_local_store_snapshot();
                     cx.notify();
                 });
                 return;
@@ -1698,6 +1843,8 @@ impl AppState {
 
     pub fn refresh_scheduled_tasks(&mut self, cx: &mut Context<Self>) {
         if !self.sidecar_connected {
+            self.scheduled_tasks = crate::client::local_store::load_scheduled_tasks_local();
+            cx.notify();
             return;
         }
         let client = self.client.clone();
@@ -2013,6 +2160,39 @@ impl AppState {
     /// Enables or disables every model of a provider in the enabled-model list.
     pub fn set_provider_enabled(&mut self, provider_id: String, enabled: bool, cx: &mut Context<Self>) {
         if !self.sidecar_connected {
+            let refs: Vec<String> = self
+                .enabled_models_overview
+                .providers
+                .iter()
+                .filter(|p| p.id == provider_id)
+                .flat_map(|p| p.models.iter().map(|m| m.model_ref.clone()))
+                .chain(
+                    self.configured_providers
+                        .iter()
+                        .filter(|p| p.id == provider_id)
+                        .flat_map(|p| p.models.iter().map(|m| format!("{}/{}", p.id, m.id))),
+                )
+                .collect();
+            let _ = crate::client::local_store::update_enabled_models_local(&json!({
+                "op": "provider",
+                "provider": provider_id,
+                "enabled": enabled,
+                "providerModels": refs,
+            }));
+            for prov in &mut self.enabled_models_overview.providers {
+                if prov.id == provider_id {
+                    for m in &mut prov.models {
+                        m.enabled = enabled;
+                    }
+                    prov.enabled_count = if enabled { prov.models.len() } else { 0 };
+                }
+            }
+            for m in &mut self.models {
+                if m.provider == provider_id {
+                    m.enabled = Some(enabled);
+                }
+            }
+            cx.notify();
             return;
         }
         let client = self.client.clone();
@@ -2046,6 +2226,25 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         if !self.sidecar_connected {
+            let _ = crate::client::local_store::update_enabled_models_local(&json!({
+                "op": "model",
+                "ref": model_ref,
+                "enabled": enabled,
+            }));
+            for prov in &mut self.enabled_models_overview.providers {
+                for m in &mut prov.models {
+                    if m.model_ref == model_ref || format!("{}/{}", prov.id, m.id) == model_ref {
+                        m.enabled = enabled;
+                    }
+                }
+                prov.enabled_count = prov.models.iter().filter(|m| m.enabled).count();
+            }
+            for m in &mut self.models {
+                if format!("{}/{}", m.provider, m.id) == model_ref {
+                    m.enabled = Some(enabled);
+                }
+            }
+            cx.notify();
             return;
         }
         let client = self.client.clone();
@@ -2081,9 +2280,6 @@ impl AppState {
         api_key: String,
         cx: &mut Context<Self>,
     ) {
-        if !self.sidecar_connected {
-            return;
-        }
         let mut config = if self.configured_providers_raw.is_object() {
             self.configured_providers_raw.clone()
         } else {
@@ -2114,15 +2310,19 @@ impl AppState {
                 entry.insert("apiKey".to_string(), json!(api_key.trim()));
             }
         }
-        let client = self.client.clone();
-        let entity = cx.entity().clone();
-        cx.spawn(async move |_, cx| {
-            let _ = client.put_models_config(config).await;
-            let _ = entity.update(cx, |s, cx| {
-                s.refresh_from_sidecar(cx);
-            });
-        })
-        .detach();
+        let _ = crate::client::local_store::save_models_config_local(&config);
+        self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                let _ = client.put_models_config(config).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -2135,9 +2335,6 @@ impl AppState {
         model: ConfiguredModelInfo,
         cx: &mut Context<Self>,
     ) {
-        if !self.sidecar_connected {
-            return;
-        }
         let mut config = if self.configured_providers_raw.is_object() {
             self.configured_providers_raw.clone()
         } else {
@@ -2174,22 +2371,23 @@ impl AppState {
                 arr.push(Value::Object(obj));
             }
         }
-        let client = self.client.clone();
-        let entity = cx.entity().clone();
-        cx.spawn(async move |_, cx| {
-            let _ = client.put_models_config(config).await;
-            let _ = entity.update(cx, |s, cx| {
-                s.refresh_from_sidecar(cx);
-            });
-        })
-        .detach();
+        let _ = crate::client::local_store::save_models_config_local(&config);
+        self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                let _ = client.put_models_config(config).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
     pub fn delete_configured_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
-        if !self.sidecar_connected {
-            return;
-        }
         let mut config = if self.configured_providers_raw.is_object() {
             self.configured_providers_raw.clone()
         } else {
@@ -2199,15 +2397,19 @@ impl AppState {
             provs.remove(&provider_id);
         }
         self.expanded_configured_providers.remove(&provider_id);
-        let client = self.client.clone();
-        let entity = cx.entity().clone();
-        cx.spawn(async move |_, cx| {
-            let _ = client.put_models_config(config).await;
-            let _ = entity.update(cx, |s, cx| {
-                s.refresh_from_sidecar(cx);
-            });
-        })
-        .detach();
+        let _ = crate::client::local_store::save_models_config_local(&config);
+        self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                let _ = client.put_models_config(config).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -2217,9 +2419,6 @@ impl AppState {
         model_id: String,
         cx: &mut Context<Self>,
     ) {
-        if !self.sidecar_connected {
-            return;
-        }
         let mut config = if self.configured_providers_raw.is_object() {
             self.configured_providers_raw.clone()
         } else {
@@ -2233,15 +2432,19 @@ impl AppState {
         {
             arr.retain(|m| m.get("id").and_then(Value::as_str) != Some(model_id.as_str()));
         }
-        let client = self.client.clone();
-        let entity = cx.entity().clone();
-        cx.spawn(async move |_, cx| {
-            let _ = client.put_models_config(config).await;
-            let _ = entity.update(cx, |s, cx| {
-                s.refresh_from_sidecar(cx);
-            });
-        })
-        .detach();
+        let _ = crate::client::local_store::save_models_config_local(&config);
+        self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                let _ = client.put_models_config(config).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -2251,7 +2454,7 @@ impl AppState {
         models: Vec<ConfiguredModelInfo>,
         cx: &mut Context<Self>,
     ) {
-        if !self.sidecar_connected || models.is_empty() {
+        if models.is_empty() {
             return;
         }
         let mut config = if self.configured_providers_raw.is_object() {
@@ -2289,15 +2492,19 @@ impl AppState {
             }
         }
         self.expanded_configured_providers.insert(provider_id);
-        let client = self.client.clone();
-        let entity = cx.entity().clone();
-        cx.spawn(async move |_, cx| {
-            let _ = client.put_models_config(config).await;
-            let _ = entity.update(cx, |s, cx| {
-                s.refresh_from_sidecar(cx);
-            });
-        })
-        .detach();
+        let _ = crate::client::local_store::save_models_config_local(&config);
+        self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                let _ = client.put_models_config(config).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -2307,9 +2514,6 @@ impl AppState {
         model: ConfiguredModelInfo,
         cx: &mut Context<Self>,
     ) {
-        if !self.sidecar_connected {
-            return;
-        }
         let mut config = if self.configured_providers_raw.is_object() {
             self.configured_providers_raw.clone()
         } else {
@@ -2344,15 +2548,19 @@ impl AppState {
             }
         }
         self.expanded_configured_providers.insert(provider_id);
-        let client = self.client.clone();
-        let entity = cx.entity().clone();
-        cx.spawn(async move |_, cx| {
-            let _ = client.put_models_config(config).await;
-            let _ = entity.update(cx, |s, cx| {
-                s.refresh_from_sidecar(cx);
-            });
-        })
-        .detach();
+        let _ = crate::client::local_store::save_models_config_local(&config);
+        self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                let _ = client.put_models_config(config).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -2575,6 +2783,71 @@ impl AppState {
                             }
                         }
                     }
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Computes the current `WorkerLivenessState` across foreground turns, subagent runs,
+    /// pending `extension_ui_request` dialogs, and connected MCP servers (§6.3.3).
+    pub fn current_worker_liveness(&self) -> crate::engine::worker_manager::WorkerLivenessState {
+        let active_foreground_runs = if self.is_agent_running { 1 } else { 0 }
+            + self.running_session_ids.len();
+        let active_subagent_runs = self
+            .subagent_runs
+            .iter()
+            .chain(self.tool_subagent_runs.iter())
+            .filter(|r| matches!(r.state.as_str(), "running" | "queued" | "starting"))
+            .count();
+        let pending_ui_requests = usize::from(self.pending_ui_request.is_some())
+            + self.dialog_queue.len();
+        let active_mcp_sessions = self
+            .mcp_servers
+            .iter()
+            .filter(|s| s.status == "connected")
+            .count();
+
+        crate::engine::worker_manager::WorkerLivenessState {
+            active_foreground_runs,
+            active_subagent_runs,
+            pending_ui_requests,
+            active_mcp_sessions,
+        }
+    }
+
+    /// Starts the native Rust cron scheduler and Scale-to-Zero RPC worker reaper loop (§6.3.3).
+    pub fn start_native_scheduler_and_worker_reaper(&mut self, cx: &mut Context<Self>) {
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            loop {
+                smol::Timer::after(std::time::Duration::from_secs(30)).await;
+                let mut alive = false;
+                let _ = entity.update(cx, |this, cx| {
+                    alive = true;
+                    let liveness = this.current_worker_liveness();
+                    this.worker_manager.update_liveness(liveness);
+                    if this.worker_manager.reclaim_if_idle() {
+                        this.sidecar_connected = false;
+                        cx.notify();
+                    }
+
+                    // Native scheduler lease & due-task check when sidecar is not owning scheduler
+                    if !this.sidecar_connected
+                        && crate::engine::scheduler::try_acquire_scheduler_lease(90_000)
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        let due = crate::engine::scheduler::find_due_scheduled_tasks(now_ms);
+                        if !due.is_empty() {
+                            this.refresh_scheduled_tasks(cx);
+                        }
+                    }
+                });
+                if !alive {
+                    break;
                 }
             }
         })
@@ -3323,12 +3596,15 @@ impl AppState {
             .unwrap_or(200_000);
 
         self.messages.clear();
+        self.branch_siblings.clear();
         // Fast local JSONL load so switching sessions is instant and works offline
         if let Some(ref p) = local_jsonl_path {
-            let parsed = parse_session_jsonl_file(p, &mut self.controller.next_local_msg_id);
+            let (parsed, siblings) =
+                parse_session_jsonl_with_siblings(p, None, &mut self.controller.next_local_msg_id);
             if !parsed.is_empty() {
                 self.messages = parsed;
             }
+            self.branch_siblings = siblings;
             self.stats = compute_stats_from_jsonl(p, ctx_win);
             let local_todos = extract_todos_from_jsonl(p);
             if !local_todos.is_empty() {
@@ -3594,6 +3870,20 @@ impl AppState {
                         let _ = entity.update(cx, |this, cx| {
                             if this.active_session_id.as_deref() == Some(sid.as_str()) {
                                 if let Ok(payload) = session_res {
+                                    if let Some(path_str) = this
+                                        .sessions
+                                        .iter()
+                                        .find(|s| s.id == sid)
+                                        .and_then(|s| s.path.as_deref())
+                                    {
+                                        let p = PathBuf::from(path_str);
+                                        let (_, siblings) = parse_session_jsonl_with_siblings(
+                                            &p,
+                                            None,
+                                            &mut this.controller.next_local_msg_id,
+                                        );
+                                        this.branch_siblings = siblings;
+                                    }
                                     let parsed = parse_session_messages(
                                         &payload,
                                         &mut this.controller.next_local_msg_id,
@@ -4718,6 +5008,7 @@ impl AppState {
             sess.name = Some(trimmed.clone());
         }
         self.renaming_session_id = None;
+        let _ = crate::client::local_store::rename_session_local(&id, &trimmed);
         if self.sidecar_connected {
             let client = self.client.clone();
             cx.spawn(async move |_, _| {
@@ -4740,6 +5031,7 @@ impl AppState {
         if self.active_session_id.as_deref() == Some(id.as_str()) {
             self.start_new_composer(self.active_workspace_kind, cx);
         }
+        let _ = crate::client::local_store::delete_session_local(&id);
         if self.sidecar_connected {
             let client = self.client.clone();
             cx.spawn(async move |_, _| {
@@ -4752,8 +5044,15 @@ impl AppState {
 
     pub fn fork_session_by_id(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.sidecar_connected {
-            self.status_banner = Some(SharedString::from("Fork requires active sidecar connection."));
-            cx.notify();
+            if let Ok((new_id, _path)) =
+                crate::client::local_store::fork_session_local(&id, None)
+            {
+                let scanned = scan_local_sessions(&pi_sessions_root());
+                if !scanned.is_empty() {
+                    self.sessions = scanned;
+                }
+                self.select_session(new_id, cx);
+            }
             return;
         }
         let client = self.client.clone();
@@ -4777,17 +5076,21 @@ impl AppState {
         payload: Value,
         cx: &mut Context<Self>,
     ) {
-        if self.sidecar_connected {
-            let client = self.client.clone();
-            let entity = cx.entity().clone();
-            cx.spawn(async move |_, cx| {
-                let _ = client.create_scheduled_task_payload(payload).await;
-                let _ = entity.update(cx, |s, cx| {
-                    s.refresh_scheduled_tasks(cx);
-                });
-            })
-            .detach();
+        if !self.sidecar_connected {
+            let _ = crate::client::local_store::create_scheduled_task_local(&payload);
+            self.scheduled_tasks = crate::client::local_store::load_scheduled_tasks_local();
+            cx.notify();
+            return;
         }
+        let client = self.client.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            let _ = client.create_scheduled_task_payload(payload).await;
+            let _ = entity.update(cx, |s, cx| {
+                s.refresh_scheduled_tasks(cx);
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -5005,13 +5308,335 @@ impl AppState {
             error_message: None,
         });
 
-        // If sidecar is offline, simulate a local mock streaming reply so Phase 1 UI
-        // can be exercised interactively without Node.
+        // If sidecar is offline, attempt native Rust LLM streaming + built-in tool execution
+        // (§6.3.2), falling back to the local preview only when no provider key is configured.
         if !self.sidecar_connected {
             self.controller.send_in_flight = false;
             self.is_agent_running = true;
             let reply_id = self.controller.alloc_msg_id();
             let model_label = self.selected_model.as_ref().map(ModelInfo::display_label);
+
+            let selected_provider_and_model = self
+                .selected_model
+                .as_ref()
+                .map(|m| (m.provider.clone(), m.id.clone()));
+
+            let native_resolved = selected_provider_and_model.and_then(|(prov, mid)| {
+                crate::engine::llm_stream::resolve_provider_endpoint_and_key(&prov)
+                    .ok()
+                    .map(|(kind, base_url, api_key)| (prov, mid, kind, base_url, api_key))
+            });
+
+            if let Some((provider_id, model_id, api_kind, base_url, api_key)) = native_resolved {
+                self.messages.push(ChatMessage {
+                    id: reply_id,
+                    entry_id: None,
+                    role: MessageRole::Assistant,
+                    model_label,
+                    timestamp: SharedString::from("Streaming…"),
+                    thinking: SharedString::default(),
+                    process_steps: Vec::new(),
+                    process_message_count: 1,
+                    thinking_ms: None,
+                    thinking_expanded: false,
+                    content: String::new(),
+                    tool_calls: Vec::new(),
+                    attachments: Vec::new(),
+                    is_streaming: true,
+                    turn_duration_ms: None,
+                    token_summary: None,
+                    turn_usage: None,
+                    stop_reason: None,
+                    error_message: None,
+                });
+
+                let mut history: Vec<crate::engine::llm_stream::NativeChatMessage> = self
+                    .messages
+                    .iter()
+                    .filter(|m| m.id != reply_id)
+                    .filter_map(|m| match m.role {
+                        MessageRole::User => Some(crate::engine::llm_stream::NativeChatMessage {
+                            role: "user".to_string(),
+                            content: m.content.clone(),
+                            tool_call_id: None,
+                            tool_calls: Vec::new(),
+                        }),
+                        MessageRole::Assistant if !m.content.trim().is_empty() => {
+                            Some(crate::engine::llm_stream::NativeChatMessage {
+                                role: "assistant".to_string(),
+                                content: m.content.clone(),
+                                tool_call_id: None,
+                                tool_calls: Vec::new(),
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+
+                let allowed_tools: Vec<String> = self
+                    .tool_preset
+                    .tool_names()
+                    .into_iter()
+                    .map(String::from)
+                    .collect();
+                let mut tool_defs: Vec<crate::engine::llm_stream::NativeToolDefinition> =
+                    crate::engine::native_tools::builtin_tool_definitions()
+                        .into_iter()
+                        .filter(|t| allowed_tools.iter().any(|n| n == &t.name))
+                        .collect();
+                if allowed_tools.iter().any(|n| n == "codemode") {
+                    tool_defs.push(crate::engine::llm_stream::NativeToolDefinition {
+                        name: "codemode".to_string(),
+                        description: "Execute JavaScript in the QuickJS/JavaScriptCore sandbox with pi.read, pi.write, and pi.edit.".to_string(),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "script": { "type": "string", "description": "JavaScript source code to evaluate" }
+                            },
+                            "required": ["script"]
+                        }),
+                    });
+                }
+
+                let cwd = self.active_cwd.clone();
+                let thinking_lvl = Some(self.thinking_level.as_str().to_string());
+                let http_client = self.client.raw_http();
+                let entity = cx.entity().clone();
+                let started_at = std::time::Instant::now();
+
+                cx.spawn(async move |_, cx| {
+                    for _step in 0..8 {
+                        let req = crate::engine::llm_stream::NativeLlmStreamRequest {
+                            provider_id: provider_id.clone(),
+                            model_id: model_id.clone(),
+                            api_kind,
+                            base_url: base_url.clone(),
+                            api_key: api_key.clone(),
+                            system_prompt: Some(format!(
+                                "You are Pi Agent running natively in Rust gpui. Working directory: {}",
+                                cwd.display()
+                            )),
+                            messages: history.clone(),
+                            tools: tool_defs.clone(),
+                            max_tokens: Some(4096),
+                            thinking_level: thinking_lvl.clone(),
+                        };
+
+                        let mut rx = crate::engine::llm_stream::spawn_native_llm_stream(
+                            http_client.clone(),
+                            req,
+                        );
+                        let mut step_text = String::new();
+                        let mut completed_calls = Vec::new();
+                        let mut stream_err = None;
+
+                        while let Some(ev) = rx.recv().await {
+                            match ev {
+                                crate::engine::llm_stream::NativeLlmStreamEvent::TextDelta(delta) => {
+                                    step_text.push_str(&delta);
+                                    let _ = entity.update(cx, |this, cx| {
+                                        if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
+                                            m.content.push_str(&delta);
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                                crate::engine::llm_stream::NativeLlmStreamEvent::ThinkingDelta(delta) => {
+                                    let _ = entity.update(cx, |this, cx| {
+                                        if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
+                                            let mut t = m.thinking.to_string();
+                                            t.push_str(&delta);
+                                            let shared = SharedString::from(t);
+                                            m.thinking = shared.clone();
+                                            if let Some(ProcessStep::Thinking(prev)) = m.process_steps.first_mut() {
+                                                *prev = shared;
+                                            } else {
+                                                m.process_steps.insert(0, ProcessStep::Thinking(shared));
+                                            }
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                                crate::engine::llm_stream::NativeLlmStreamEvent::ToolCallComplete(call) => {
+                                    completed_calls.push(call);
+                                }
+                                crate::engine::llm_stream::NativeLlmStreamEvent::Usage {
+                                    input_tokens,
+                                    output_tokens,
+                                    cache_read_tokens,
+                                } => {
+                                    let _ = entity.update(cx, |this, cx| {
+                                        if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
+                                            m.turn_usage = Some(crate::client::types::TurnUsage {
+                                                input_tokens,
+                                                output_tokens,
+                                                cache_read_tokens,
+                                                cache_write_tokens: 0,
+                                                total_tokens: input_tokens + output_tokens + cache_read_tokens,
+                                                cost_usd: 0.0,
+                                            });
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                                crate::engine::llm_stream::NativeLlmStreamEvent::Error(e) => {
+                                    stream_err = Some(e);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if let Some(err) = stream_err {
+                            let _ = entity.update(cx, |this, cx| {
+                                if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
+                                    m.error_message = Some(SharedString::from(err));
+                                }
+                                cx.notify();
+                            });
+                            break;
+                        }
+
+                        if completed_calls.is_empty() {
+                            break;
+                        }
+
+                        history.push(crate::engine::llm_stream::NativeChatMessage {
+                            role: "assistant".to_string(),
+                            content: step_text,
+                            tool_call_id: None,
+                            tool_calls: completed_calls.clone(),
+                        });
+
+                        for call in completed_calls {
+                            let args_vec: Vec<(SharedString, SharedString)> = call
+                                .arguments
+                                .as_object()
+                                .map(|obj| {
+                                    obj.iter()
+                                        .map(|(k, v)| {
+                                            let val_str = v
+                                                .as_str()
+                                                .map(String::from)
+                                                .unwrap_or_else(|| v.to_string());
+                                            (SharedString::from(k.clone()), SharedString::from(val_str))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            let tc_id = SharedString::from(call.id.clone());
+                            let tc_name = SharedString::from(call.name.clone());
+                            let initial_item = crate::client::types::ToolCallItem {
+                                id: tc_id.clone(),
+                                name: tc_name.clone(),
+                                arguments: args_vec.clone(),
+                                output: SharedString::default(),
+                                diff_patch: None,
+                                subagent_session_id: None,
+                                is_running: true,
+                                is_error: false,
+                                expanded: false,
+                            };
+
+                            let _ = entity.update(cx, |this, cx| {
+                                if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
+                                    m.tool_calls.push(initial_item.clone());
+                                    m.process_steps.push(ProcessStep::ToolCall(initial_item));
+                                }
+                                cx.notify();
+                            });
+
+                            let exec_res = match call.name.as_str() {
+                                "read" => crate::engine::native_tools::execute_read_tool(&cwd, &call.arguments),
+                                "write" => crate::engine::native_tools::execute_write_tool(&cwd, &call.arguments),
+                                "edit" => crate::engine::native_tools::execute_edit_tool(&cwd, &call.arguments),
+                                "bash" => crate::engine::native_tools::execute_bash_tool(&cwd, &call.arguments).await,
+                                "codemode" => {
+                                    let script = call
+                                        .arguments
+                                        .get("script")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let eval = crate::engine::quickjs_sandbox::eval_codemode_script(&cwd, script);
+                                    let res_text = if eval.is_error {
+                                        eval.error_message.unwrap_or_else(|| eval.result.to_string())
+                                    } else {
+                                        eval.result.to_string()
+                                    };
+                                    let out = if eval.logs.is_empty() {
+                                        res_text
+                                    } else {
+                                        format!("{}\n{}", eval.logs.join("\n"), res_text)
+                                    };
+                                    crate::engine::native_tools::NativeToolResult {
+                                        output: out,
+                                        is_error: eval.is_error,
+                                        diff: None,
+                                        details: None,
+                                    }
+                                }
+                                other => crate::engine::native_tools::NativeToolResult {
+                                    output: format!("Unsupported native tool: {other}"),
+                                    is_error: true,
+                                    diff: None,
+                                    details: None,
+                                },
+                            };
+
+                            let out_shared = SharedString::from(exec_res.output.clone());
+                            let diff_shared = exec_res.diff.map(SharedString::from);
+                            let is_err = exec_res.is_error;
+
+                            let _ = entity.update(cx, |this, cx| {
+                                if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
+                                    for tc in &mut m.tool_calls {
+                                        if tc.id == tc_id {
+                                            tc.output = out_shared.clone();
+                                            tc.diff_patch = diff_shared.clone();
+                                            tc.is_running = false;
+                                            tc.is_error = is_err;
+                                        }
+                                    }
+                                    for step in &mut m.process_steps {
+                                        if let ProcessStep::ToolCall(tc) = step
+                                            && tc.id == tc_id
+                                        {
+                                            tc.output = out_shared.clone();
+                                            tc.diff_patch = diff_shared.clone();
+                                            tc.is_running = false;
+                                            tc.is_error = is_err;
+                                        }
+                                    }
+                                }
+                                cx.notify();
+                            });
+
+                            history.push(crate::engine::llm_stream::NativeChatMessage {
+                                role: "tool".to_string(),
+                                content: exec_res.output,
+                                tool_call_id: Some(call.id),
+                                tool_calls: Vec::new(),
+                            });
+                        }
+                    }
+
+                    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                    let _ = entity.update(cx, |this, cx| {
+                        if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
+                            m.is_streaming = false;
+                            m.timestamp = current_local_hhmm();
+                            m.turn_duration_ms = Some(elapsed_ms);
+                        }
+                        this.is_agent_running = false;
+                        cx.notify();
+                    });
+                })
+                .detach();
+                cx.notify();
+                return;
+            }
+
             let think_str = SharedString::from("Preparing response preview (sidecar not connected)...");
             self.messages.push(ChatMessage {
                 id: reply_id,
@@ -5305,6 +5930,7 @@ impl AppState {
             if !health_ok {
                 let _ = entity.update(cx, |this, cx| {
                     this.sidecar_connected = false;
+                    this.load_local_store_snapshot();
                     cx.notify();
                 });
                 return;

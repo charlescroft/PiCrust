@@ -20,12 +20,20 @@ pi-gpui/
     ├── actions.rs              # Global shortcuts & GPUI actions
     ├── app_state.rs            # Shared AppState entity, SSE & sidecar state synchronization
     ├── client/
-    │   ├── mod.rs              # Typed reqwest PiDaemonClient
+    │   ├── mod.rs              # Typed reqwest PiDaemonClient on single-thread Tokio I/O driver
     │   ├── types.rs            # Shared API & UI models
     │   ├── sse.rs              # eventsource-stream SSE consumer
     │   ├── sidecar.rs          # SidecarProcess lifecycle wrapper
-    │   ├── session_controller.rs # Monotonic load_request_id guard, single-send debouncing, artifact extraction
-    │   └── native_index.rs     # Phase 3 native `ignore` + `nucleo-matcher` @file search & JSONL session scanner
+    │   ├── session_controller.rs # SessionTreeIndex (0ms branch nav), monotonic load_request_id, artifact extraction
+    │   ├── native_index.rs     # Phase 3 native `ignore` + `nucleo-matcher` @file search & JSONL session scanner
+    │   └── local_store.rs      # Phase 6.1 atomic local CRUD for sessions, settings, models, tasks, skills, MCP, worktrees
+    ├── engine/
+    │   ├── mod.rs              # Phase 6.2 & 6.3 native execution engine exports
+    │   ├── llm_stream.rs       # Direct Rust reqwest SSE streaming (OpenAI/Anthropic/Google/Responses)
+    │   ├── native_tools.rs     # Native Rust read/write/edit/bash execution & unified diff builder
+    │   ├── quickjs_sandbox.rs  # In-process JavaScriptCore sandbox with pi.read/write/edit host bindings
+    │   ├── scheduler.rs        # Native 5-field cron parser & multi-window scheduler lease lock
+    │   └── worker_manager.rs   # WorkerLivenessState & Scale-to-Zero RPC worker reaper (180s idle TTL)
     ├── workspace/
     │   ├── mod.rs              # TitleBar + Sidebar + DockArea + WorkbenchPanel + StatusBar
     │   ├── title_bar.rs        # Brand, cwd/branch chip, view switcher, theme & panel toggles

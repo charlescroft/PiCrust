@@ -27,6 +27,11 @@ pub fn subagents_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx
                 move |val: bool, cx: &mut App| {
                     app_builtin_write.update(cx, |s, cx| {
                         s.subagent_built_in_enabled = val;
+                        let _ = crate::client::local_store::save_subagent_settings_local(
+                            val,
+                            s.subagent_max_concurrent,
+                            None,
+                        );
                         if s.sidecar_connected {
                             let client = s.client.clone();
                             cx.spawn(async move |_, _| {
@@ -117,9 +122,18 @@ pub fn subagents_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx
                                 {
                                     target.enabled = val;
                                 }
+                                let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                let _ = crate::client::local_store::save_subagent_profile_local(
+                                    Some(&cwd),
+                                    &json!({
+                                        "cwd": cwd,
+                                        "scope": sc,
+                                        "name": n,
+                                        "enabled": val,
+                                    }),
+                                );
                                 if s.sidecar_connected {
                                     let client = s.client.clone();
-                                    let cwd = s.active_cwd.to_string_lossy().into_owned();
                                     cx.spawn(async move |_, _| {
                                         let _ = client
                                             .toggle_subagent_profile(json!({
@@ -263,6 +277,12 @@ pub fn skills_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                                 if let Some(target) = st.skills.iter_mut().find(|x| x.name == n) {
                                                     target.enabled = val;
                                                     target.disable_model_invocation = !val;
+                                                }
+                                                if !fp.is_empty() {
+                                                    let _ = crate::client::local_store::toggle_skill_file_local(
+                                                        std::path::Path::new(&fp),
+                                                        !val,
+                                                    );
                                                 }
                                                 if st.sidecar_connected && !fp.is_empty() {
                                                     let client = st.client.clone();

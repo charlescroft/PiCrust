@@ -442,8 +442,34 @@ impl ScheduledPageView {
         }
 
         let edit_id = self.editing_task_id.clone();
+        let connected = self.app_state.read(cx).sidecar_connected;
         let client = self.app_state.read(cx).client.clone();
         let app_state = self.app_state.clone();
+        if !connected {
+            let local_res = match edit_id {
+                Some(ref id) => crate::client::local_store::update_scheduled_task_local(id, &payload)
+                    .map(|_| id.clone()),
+                None => crate::client::local_store::create_scheduled_task_local(&payload)
+                    .map(|v| {
+                        v.get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string()
+                    }),
+            };
+            match local_res {
+                Ok(tid) => {
+                    app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+                    self.load_run_history(tid.clone(), None, cx);
+                    self.mode = ScheduledViewMode::Detail(tid);
+                }
+                Err(e) => {
+                    self.action_error = Some(e);
+                }
+            }
+            cx.notify();
+            return;
+        }
         self.busy = true;
         self.action_error = None;
         cx.notify();
@@ -489,6 +515,10 @@ impl ScheduledPageView {
             self.runs_error = None;
         }
         if !self.app_state.read(cx).sidecar_connected {
+            self.runs = crate::client::local_store::load_scheduled_task_runs_local(&task_id);
+            self.runs_has_more = false;
+            self.runs_error = None;
+            cx.notify();
             return;
         }
         let client = self.app_state.read(cx).client.clone();
@@ -1735,6 +1765,12 @@ impl ScheduledPageView {
 
     fn toggle_task_enabled(&mut self, id: String, enabled: bool, cx: &mut Context<Self>) {
         if !self.app_state.read(cx).sidecar_connected {
+            let _ = crate::client::local_store::update_scheduled_task_local(
+                &id,
+                &json!({ "enabled": enabled }),
+            );
+            self.app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+            cx.notify();
             return;
         }
         self.busy = true;
@@ -1759,6 +1795,10 @@ impl ScheduledPageView {
 
     fn delete_task_now(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.app_state.read(cx).sidecar_connected {
+            let _ = crate::client::local_store::delete_scheduled_task_local(&id);
+            self.app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+            self.mode = ScheduledViewMode::List;
+            cx.notify();
             return;
         }
         self.busy = true;

@@ -421,7 +421,14 @@ impl SettingsAddDialogView {
         }
 
         let state = self.app_state.read(cx);
-        if !state.sidecar_connected {
+        let connected = state.sidecar_connected;
+        let requires_sidecar = matches!(
+            kind,
+            SettingsAddKind::ProviderApiKey { .. }
+                | SettingsAddKind::Skill
+                | SettingsAddKind::Plugin
+        );
+        if !connected && requires_sidecar {
             self.error = Some("Sidecar disconnected".to_string());
             cx.notify();
             return;
@@ -454,10 +461,7 @@ impl SettingsAddDialogView {
                     if a.is_empty() || b.is_empty() {
                         Err(anyhow::anyhow!("Provider ID and Base URL are required"))
                     } else {
-                        let mut cfg = client
-                            .get_models_config()
-                            .await
-                            .unwrap_or_else(|_| json!({ "providers": {} }));
+                        let mut cfg = crate::client::local_store::read_models_config_local();
                         if cfg.get("providers").and_then(Value::as_object).is_none() {
                             cfg["providers"] = json!({});
                         }
@@ -476,7 +480,14 @@ impl SettingsAddDialogView {
                         if prov_entry.get("models").and_then(Value::as_array).is_none() {
                             prov_entry["models"] = json!([]);
                         }
-                        client.put_models_config(cfg).await.map(|_| ())
+                        if let Err(e) = crate::client::local_store::save_models_config_local(&cfg) {
+                            Err(anyhow::anyhow!(e))
+                        } else {
+                            if connected {
+                                let _ = client.put_models_config(cfg).await;
+                            }
+                            Ok(())
+                        }
                     }
                 }
                 SettingsAddKind::ProviderApiKey { provider_id, .. } => {
@@ -499,7 +510,12 @@ impl SettingsAddDialogView {
                         if !a.is_empty() {
                             body["name"] = json!(a);
                         }
-                        client.mcp_action(body).await.map(|_| ())
+                        if connected {
+                            client.mcp_action(body).await.map(|_| ())
+                        } else {
+                            crate::client::local_store::mutate_mcp_config_local(Some(&cwd), &body)
+                                .map_err(|e| anyhow::anyhow!(e))
+                        }
                     }
                 }
                 SettingsAddKind::SubagentProfile => {
@@ -515,14 +531,19 @@ impl SettingsAddDialogView {
                         if !c.is_empty() {
                             profile["model"] = json!(c);
                         }
-                        client
-                            .save_subagent_profile(json!({
-                                "cwd": cwd,
-                                "scope": scope,
-                                "profile": profile,
-                            }))
-                            .await
-                            .map(|_| ())
+                        let payload = json!({
+                            "cwd": cwd,
+                            "scope": scope,
+                            "profile": profile,
+                        });
+                        if let Err(e) = crate::client::local_store::save_subagent_profile_local(Some(&cwd), &payload) {
+                            Err(anyhow::anyhow!(e))
+                        } else {
+                            if connected {
+                                let _ = client.save_subagent_profile(payload).await;
+                            }
+                            Ok(())
+                        }
                     }
                 }
                 SettingsAddKind::Skill => {

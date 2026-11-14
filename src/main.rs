@@ -4,6 +4,7 @@ mod app_state;
 mod chat;
 mod client;
 mod core_probe;
+pub mod engine;
 mod icons;
 mod i18n;
 mod pages;

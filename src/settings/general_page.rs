@@ -407,6 +407,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                 move |val: bool, cx: &mut App| {
                     app_art_write.update(cx, |s, cx| {
                         s.artifacts_prompt_enabled = val;
+                        let _ = crate::client::local_store::set_artifacts_prompt_local(val);
                         if s.sidecar_connected {
                             let client = s.client.clone();
                             cx.spawn(async move |_, _| {
@@ -426,6 +427,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                 move |val: bool, cx: &mut App| {
                     app_title_write.update(cx, |s, cx| {
                         s.auto_title_enabled = val;
+                        let _ = crate::client::local_store::set_auto_session_title_local(val);
                         if s.sidecar_connected {
                             let client = s.client.clone();
                             cx.spawn(async move |_, _| {
@@ -735,6 +737,11 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                 move |val: bool, cx: &mut App| {
                     app_proxy_write.update(cx, |s, cx| {
                         s.network_proxy.enabled = val;
+                        let _ = crate::client::local_store::save_network_proxy_local(
+                            val,
+                            &s.network_proxy.url,
+                            &s.network_proxy.no_proxy,
+                        );
                         if s.sidecar_connected {
                             let client = s.client.clone();
                             let url = s.network_proxy.url.clone();
@@ -777,6 +784,11 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                 move |val: SharedString, cx: &mut App| {
                     app_proxy_url_write.update(cx, |s, cx| {
                         s.network_proxy.url = val.to_string();
+                        let _ = crate::client::local_store::save_network_proxy_local(
+                            s.network_proxy.enabled,
+                            &s.network_proxy.url,
+                            &s.network_proxy.no_proxy,
+                        );
                         if s.sidecar_connected {
                             let client = s.client.clone();
                             let enabled = s.network_proxy.enabled;

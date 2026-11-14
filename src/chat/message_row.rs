@@ -325,12 +325,7 @@ fn render_user_row(
                     app_fork.update(cx, |s, cx| {
                         if let Some(sid) = s.active_session_id.clone() {
                             if let Some(target_eid) = eid {
-                                let client = s.client.clone();
-                                let target = target_eid.to_string();
-                                cx.spawn(async move |_, _| {
-                                    let _ = client.fork_session(&sid, &target).await;
-                                })
-                                .detach();
+                                s.fork_session_from_entry(sid, target_eid.to_string(), cx);
                             } else {
                                 s.fork_session_by_id(sid, cx);
                             }

@@ -1,3 +1,4 @@
+pub mod local_store;
 pub mod native_index;
 pub mod session_controller;
 pub mod sidecar;
@@ -14,15 +15,22 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use types::*;
 
-pub(crate) fn tokio_runtime() -> &'static tokio::runtime::Runtime {
-    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+pub(crate) fn tokio_runtime() -> &'static tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
     RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("pi-gpui-http")
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("build tokio http runtime")
+            .expect("build single-thread tokio http runtime");
+        let handle = rt.handle().clone();
+        std::thread::Builder::new()
+            .name("pi-gpui-http".to_string())
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                rt.block_on(std::future::pending::<()>());
+            })
+            .expect("spawn single-thread tokio http driver");
+        handle
     })
 }
 

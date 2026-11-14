@@ -379,11 +379,17 @@ impl ComposerView {
                     let after = &text[at_pos + 1..];
                     if !after.contains(char::is_whitespace) {
                         this.at_query = Some(after.to_string());
-                        this.file_picker_open = false;
-                        let q = after.to_string();
-                        app_sub.update(cx, |s, cx| {
-                            s.run_file_fuzzy_search(&q, cx);
-                        });
+                        if after.is_empty() {
+                            this.file_picker_open = true;
+                            this.file_picker_dir.clear();
+                            this.reload_file_browser(cx);
+                        } else {
+                            this.file_picker_open = false;
+                            let q = after.to_string();
+                            app_sub.update(cx, |s, cx| {
+                                s.run_file_fuzzy_search(&q, cx);
+                            });
+                        }
                     } else {
                         this.at_query = None;
                     }
@@ -479,7 +485,7 @@ impl ComposerView {
                 if modal_open || !is_chat_page {
                     return;
                 }
-                let is_dir_browser = this.file_picker_open && this.at_query.is_none();
+                let is_dir_browser = this.is_dir_browser_mode();
                 let len = if is_dir_browser {
                     this.file_picker_entries.len()
                 } else {
@@ -602,6 +608,10 @@ impl ComposerView {
         });
     }
 
+    fn is_dir_browser_mode(&self) -> bool {
+        self.file_picker_open && self.at_query.as_deref().map(str::is_empty).unwrap_or(true)
+    }
+
     fn reload_file_browser(&mut self, cx: &gpui_kit::App) {
         let root = self.app_state.read(cx).active_cwd.clone();
         self.file_picker_entries = list_workspace_directory(&root, &self.file_picker_dir);
@@ -661,11 +671,16 @@ impl ComposerView {
             .unwrap_or(0);
         self.textarea.update(cx, |st, cx| {
             st.set_value(&updated, window, cx);
-            st.set_cursor_position(
-                gpui_kit::component::input::Position::new(line, col),
-                window,
-                cx,
-            );
+        });
+        let textarea = self.textarea.clone();
+        window.defer(cx, move |window, cx| {
+            textarea.update(cx, |st, cx| {
+                st.set_cursor_position(
+                    gpui_kit::component::input::Position::new(line, col),
+                    window,
+                    cx,
+                );
+            });
         });
         self.at_query = None;
         self.file_picker_open = false;
@@ -702,8 +717,24 @@ impl ComposerView {
             .app_state
             .update(cx, |s, _| s.draft_restore_text.take());
         if let Some(restored) = restore {
+            let line = restored.bytes().filter(|&b| b == b'\n').count() as u32;
+            let col = restored
+                .rsplit('\n')
+                .next()
+                .map(|s| s.chars().count() as u32)
+                .unwrap_or(0);
             self.textarea.update(cx, |state, cx| {
                 state.set_value(&restored, window, cx);
+            });
+            let textarea = self.textarea.clone();
+            window.defer(cx, move |window, cx| {
+                textarea.update(cx, |state, cx| {
+                    state.set_cursor_position(
+                        gpui_kit::component::input::Position::new(line, col),
+                        window,
+                        cx,
+                    );
+                });
             });
         }
 
@@ -894,7 +925,7 @@ impl ComposerView {
                     return;
                 }
                 let key = event.keystroke.key.as_str();
-                let is_dir_browser = this.file_picker_open && this.at_query.is_none();
+                let is_dir_browser = this.is_dir_browser_mode();
                 let len = if is_dir_browser {
                     this.file_picker_entries.len()
                 } else {
@@ -1358,7 +1389,7 @@ impl ComposerView {
 
         // 3. Native @file fuzzy popup / "+" root-first directory browser with full keyboard nav
         if self.at_query.is_some() || self.file_picker_open {
-            let is_dir_browser = self.file_picker_open && self.at_query.is_none();
+            let is_dir_browser = self.is_dir_browser_mode();
             let list_len = if is_dir_browser {
                 self.file_picker_entries.len()
             } else {
@@ -1646,7 +1677,7 @@ impl ComposerView {
 
                     // Keyboard navigation when @file or "+" directory picker is open
                     if this.file_picker_open || this.at_query.is_some() {
-                        let is_dir_browser = this.file_picker_open && this.at_query.is_none();
+                        let is_dir_browser = this.is_dir_browser_mode();
                         let len = if is_dir_browser {
                             this.file_picker_entries.len()
                         } else {

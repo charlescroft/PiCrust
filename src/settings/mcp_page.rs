@@ -126,9 +126,18 @@ pub fn mcp_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App
                                                     "disabled".to_string()
                                                 };
                                             }
+                                            let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                            let _ = crate::client::local_store::mutate_mcp_config_local(
+                                                Some(&cwd),
+                                                &json!({
+                                                    "action": if next { "enable" } else { "disable" },
+                                                    "scope": sc,
+                                                    "name": n,
+                                                    "cwd": cwd,
+                                                }),
+                                            );
                                             if s.sidecar_connected {
                                                 let client = s.client.clone();
-                                                let cwd = s.active_cwd.to_string_lossy().into_owned();
                                                 let entity = cx.entity().clone();
                                                 cx.spawn(async move |_, cx| {
                                                     if let Ok(res) = client
@@ -211,6 +220,8 @@ pub fn mcp_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App
                             app_trust_set.update(cx, |s, cx| {
                                 s.mcp_project_trusted = val;
                                 let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                let _ = crate::client::local_store::set_project_trust_local(&cwd, val);
+                                s.mcp_servers = crate::client::local_store::read_mcp_servers_local(Some(&cwd));
                                 if s.sidecar_connected {
                                     let client = s.client.clone();
                                     let entity = cx.entity().clone();

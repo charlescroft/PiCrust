@@ -124,47 +124,111 @@ impl SessionController {
     }
 }
 
-/// Reads a `.jsonl` session file directly on disk, walking the active `parentId` -> `leafId`
-/// branch chain so switched branches are coherent and model changes stay accurate.
-pub fn parse_session_jsonl_file(path: &Path, next_id: &mut u64) -> Vec<ChatMessage> {
-    let Ok(file) = File::open(path) else {
-        return Vec::new();
-    };
-    let reader = BufReader::new(file);
-    let mut entries: Vec<Value> = Vec::new();
+/// Full `.jsonl` tree index for 0ms local branch navigation and sibling resolution (Phase 4.1).
+#[derive(Debug, Clone, Default)]
+pub struct SessionTreeIndex {
+    pub entries: Vec<Value>,
+    pub by_id: std::collections::HashMap<String, usize>,
+    pub children_by_parent: std::collections::HashMap<Option<String>, Vec<String>>,
+    pub latest_leaf_id: Option<String>,
+}
 
-    for line in reader.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+impl SessionTreeIndex {
+    pub fn from_jsonl_file(path: &Path) -> Self {
+        let Ok(file) = File::open(path) else {
+            return Self::default();
+        };
+        let reader = BufReader::new(file);
+        let mut entries = Vec::new();
+        for line in reader.lines().map_while(Result::ok) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                entries.push(val);
+            }
         }
-        if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
-            entries.push(val);
+        Self::from_entries(entries)
+    }
+
+    pub fn from_entries(entries: Vec<Value>) -> Self {
+        let mut by_id = std::collections::HashMap::new();
+        let mut children_by_parent: std::collections::HashMap<Option<String>, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut latest_leaf_id = None;
+
+        for (idx, val) in entries.iter().enumerate() {
+            let entry_type = val.get("type").and_then(Value::as_str).unwrap_or("");
+            if entry_type == "session" || entry_type == "session_info" {
+                continue;
+            }
+            if let Some(eid) = val.get("id").and_then(Value::as_str) {
+                let id_str = eid.to_string();
+                by_id.insert(id_str.clone(), idx);
+                let parent_id = val
+                    .get("parentId")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                children_by_parent
+                    .entry(parent_id)
+                    .or_default()
+                    .push(id_str.clone());
+                latest_leaf_id = Some(id_str);
+            }
+        }
+
+        Self {
+            entries,
+            by_id,
+            children_by_parent,
+            latest_leaf_id,
         }
     }
 
-    if entries.is_empty() {
-        return Vec::new();
-    }
-
-    // Walk active branch from latest entry (or leaf) via parentId
-    let mut by_id: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut last_node_idx: Option<usize> = None;
-    for (idx, val) in entries.iter().enumerate() {
-        if let Some(eid) = val.get("id").and_then(Value::as_str) {
-            by_id.insert(eid.to_string(), idx);
-            last_node_idx = Some(idx);
+    /// Walks down from `start_entry_id` taking the latest child at each fork to reach a leaf.
+    pub fn resolve_leaf_from(&self, start_entry_id: &str) -> String {
+        let mut cur = start_entry_id.to_string();
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(cur.clone()) {
+            let Some(children) = self.children_by_parent.get(&Some(cur.clone())) else {
+                break;
+            };
+            let Some(last_child) = children.last() else {
+                break;
+            };
+            cur = last_child.clone();
         }
+        cur
     }
 
-    let ordered_indices: Vec<usize> = if let Some(mut cur_idx) = last_node_idx {
+    /// Returns the ordered entry index chain from root to `leaf_id`, plus any `BranchSibling`s
+    /// at the most recent fork point along that active branch.
+    pub fn build_branch_chain_and_siblings(
+        &self,
+        target_leaf_id: Option<&str>,
+    ) -> (Vec<usize>, Vec<BranchSibling>) {
+        let leaf_id = target_leaf_id
+            .map(String::from)
+            .or_else(|| self.latest_leaf_id.clone());
+        let Some(leaf_id) = leaf_id else {
+            return ((0..self.entries.len()).collect(), Vec::new());
+        };
+        let Some(&start_idx) = self.by_id.get(&leaf_id) else {
+            return ((0..self.entries.len()).collect(), Vec::new());
+        };
+
         let mut chain = Vec::new();
+        let mut cur_idx = start_idx;
         let mut seen = std::collections::HashSet::new();
         while seen.insert(cur_idx) {
             chain.push(cur_idx);
-            let parent_id = entries[cur_idx].get("parentId").and_then(Value::as_str);
+            let parent_id = self.entries[cur_idx]
+                .get("parentId")
+                .and_then(Value::as_str);
             if let Some(pid) = parent_id {
-                if let Some(&p_idx) = by_id.get(pid) {
+                if let Some(&p_idx) = self.by_id.get(pid) {
                     cur_idx = p_idx;
                     continue;
                 }
@@ -172,54 +236,112 @@ pub fn parse_session_jsonl_file(path: &Path, next_id: &mut u64) -> Vec<ChatMessa
             break;
         }
         chain.reverse();
-        chain
-    } else {
-        (0..entries.len()).collect()
-    };
 
-    let mut messages = Vec::new();
-    let mut entry_ids = Vec::new();
-    let mut current_model: Option<String> = None;
-
-    for idx in ordered_indices {
-        let val = &entries[idx];
-        let entry_type = val.get("type").and_then(Value::as_str).unwrap_or("");
-        if entry_type == "model_change" {
-            if let Some(mid) = val.get("modelId").and_then(Value::as_str) {
-                current_model = Some(mid.to_string());
+        // Find the deepest fork point along this chain where `children_by_parent` has > 1 child
+        let mut siblings = Vec::new();
+        for &idx in chain.iter().rev() {
+            let val = &self.entries[idx];
+            let Some(eid) = val.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let parent_key = val
+                .get("parentId")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            if let Some(child_ids) = self.children_by_parent.get(&parent_key) {
+                if child_ids.len() > 1 {
+                    siblings = child_ids
+                        .iter()
+                        .enumerate()
+                        .map(|(i, cid)| {
+                            let summary = self.entry_preview_label(cid, i + 1);
+                            BranchSibling {
+                                entry_id: cid.clone(),
+                                label: summary,
+                                active: cid == eid,
+                            }
+                        })
+                        .collect();
+                    break;
+                }
             }
-            continue;
         }
-        if entry_type == "compaction" {
-            let summary = val
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let tokens_before = val.get("tokensBefore").and_then(Value::as_u64);
-            let ts = val.get("timestamp").cloned().unwrap_or(Value::Null);
-            let eid = val
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            entry_ids.push(Value::String(eid));
-            messages.push(serde_json::json!({
-                "role": "custom",
-                "customType": "compaction",
-                "content": summary,
-                "details": { "tokensBefore": tokens_before },
-                "timestamp": ts,
-            }));
-            continue;
+
+        (chain, siblings)
+    }
+
+    fn entry_preview_label(&self, entry_id: &str, branch_num: usize) -> String {
+        let Some(&idx) = self.by_id.get(entry_id) else {
+            return format!("Branch {branch_num}");
+        };
+        let val = &self.entries[idx];
+        let ts = format_timestamp_value(val.get("timestamp"));
+        let snippet = val
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| {
+                if let Some(s) = c.as_str() {
+                    Some(s.to_string())
+                } else if let Some(arr) = c.as_array() {
+                    arr.iter().find_map(|part| {
+                        part.get("text")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let clean: String = snippet
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(28)
+            .collect();
+        match (clean.is_empty(), ts.is_empty()) {
+            (false, false) => format!("#{branch_num} · {clean} ({ts})"),
+            (false, true) => format!("#{branch_num} · {clean}"),
+            (true, false) => format!("#{branch_num} ({ts})"),
+            (true, true) => format!("Branch {branch_num}"),
         }
-        if entry_type == "branch_summary" {
-            let summary = val
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if !summary.is_empty() {
+    }
+
+    pub fn extract_messages_for_leaf(
+        &self,
+        target_leaf_id: Option<&str>,
+        next_id: &mut u64,
+    ) -> (Vec<ChatMessage>, Vec<BranchSibling>) {
+        if self.entries.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let resolved_leaf = target_leaf_id.map(|id| self.resolve_leaf_from(id));
+        let (ordered_indices, siblings) =
+            self.build_branch_chain_and_siblings(resolved_leaf.as_deref());
+
+        let mut messages = Vec::new();
+        let mut entry_ids = Vec::new();
+        let mut current_model: Option<String> = None;
+
+        for idx in ordered_indices {
+            let val = &self.entries[idx];
+            let entry_type = val.get("type").and_then(Value::as_str).unwrap_or("");
+            if entry_type == "model_change" {
+                if let Some(mid) = val.get("modelId").and_then(Value::as_str) {
+                    current_model = Some(mid.to_string());
+                }
+                continue;
+            }
+            if entry_type == "compaction" {
+                let summary = val
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let tokens_before = val.get("tokensBefore").and_then(Value::as_u64);
                 let ts = val.get("timestamp").cloned().unwrap_or(Value::Null);
                 let eid = val
                     .get("id")
@@ -229,43 +351,83 @@ pub fn parse_session_jsonl_file(path: &Path, next_id: &mut u64) -> Vec<ChatMessa
                 entry_ids.push(Value::String(eid));
                 messages.push(serde_json::json!({
                     "role": "custom",
-                    "customType": "branch_summary",
+                    "customType": "compaction",
                     "content": summary,
+                    "details": { "tokensBefore": tokens_before },
                     "timestamp": ts,
                 }));
+                continue;
             }
-            continue;
-        }
-        if entry_type == "message" {
-            if let Some(mut msg) = val.get("message").cloned() {
-                if let Some(obj) = msg.as_object_mut() {
-                    if !obj.contains_key("timestamp") {
-                        if let Some(ts) = val.get("timestamp").cloned() {
-                            obj.insert("timestamp".to_string(), ts);
-                        }
-                    }
-                    if !obj.contains_key("model") {
-                        if let Some(ref m) = current_model {
-                            obj.insert("model".to_string(), Value::String(m.clone()));
-                        }
-                    }
-                }
-                let eid = val
-                    .get("id")
+            if entry_type == "branch_summary" {
+                let summary = val
+                    .get("summary")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                entry_ids.push(Value::String(eid));
-                messages.push(msg);
+                if !summary.is_empty() {
+                    let ts = val.get("timestamp").cloned().unwrap_or(Value::Null);
+                    let eid = val
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    entry_ids.push(Value::String(eid));
+                    messages.push(serde_json::json!({
+                        "role": "custom",
+                        "customType": "branch_summary",
+                        "content": summary,
+                        "timestamp": ts,
+                    }));
+                }
+                continue;
+            }
+            if entry_type == "message" {
+                if let Some(mut msg) = val.get("message").cloned() {
+                    if let Some(obj) = msg.as_object_mut() {
+                        if !obj.contains_key("timestamp") {
+                            if let Some(ts) = val.get("timestamp").cloned() {
+                                obj.insert("timestamp".to_string(), ts);
+                            }
+                        }
+                        if !obj.contains_key("model") {
+                            if let Some(ref m) = current_model {
+                                obj.insert("model".to_string(), Value::String(m.clone()));
+                            }
+                        }
+                    }
+                    let eid = val
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    entry_ids.push(Value::String(eid));
+                    messages.push(msg);
+                }
             }
         }
-    }
 
-    let payload = serde_json::json!({
-        "entryIds": entry_ids,
-        "messages": messages,
-    });
-    parse_session_messages(&payload, next_id)
+        let payload = serde_json::json!({
+            "entryIds": entry_ids,
+            "messages": messages,
+        });
+        (parse_session_messages(&payload, next_id), siblings)
+    }
+}
+
+/// Reads a `.jsonl` session file directly on disk, walking the active `parentId` -> `leafId`
+/// branch chain so switched branches are coherent and model changes stay accurate.
+pub fn parse_session_jsonl_file(path: &Path, next_id: &mut u64) -> Vec<ChatMessage> {
+    let index = SessionTreeIndex::from_jsonl_file(path);
+    index.extract_messages_for_leaf(None, next_id).0
+}
+
+pub fn parse_session_jsonl_with_siblings(
+    path: &Path,
+    target_leaf_id: Option<&str>,
+    next_id: &mut u64,
+) -> (Vec<ChatMessage>, Vec<BranchSibling>) {
+    let index = SessionTreeIndex::from_jsonl_file(path);
+    index.extract_messages_for_leaf(target_leaf_id, next_id)
 }
 
 /// Computes cumulative session stats + current post-compaction context usage from a `.jsonl` file.
@@ -1869,6 +2031,71 @@ mod tests {
             .find(|tc| tc.name.as_ref() == "Agent")
             .unwrap();
         assert_eq!(agent_tc.subagent_session_id.as_deref(), Some("child-abc"));
+    }
+
+    #[test]
+    fn session_tree_index_resolves_branches_and_siblings() {
+        let entries = vec![
+            serde_json::json!({ "type": "session", "version": 3, "id": "sess-1" }),
+            serde_json::json!({
+                "type": "message",
+                "id": "u1",
+                "parentId": null,
+                "message": { "role": "user", "content": "Hello world" }
+            }),
+            serde_json::json!({
+                "type": "message",
+                "id": "a1",
+                "parentId": "u1",
+                "message": { "role": "assistant", "content": "Reply 1" }
+            }),
+            serde_json::json!({
+                "type": "message",
+                "id": "u2-branch-a",
+                "parentId": "a1",
+                "message": { "role": "user", "content": "Option A" }
+            }),
+            serde_json::json!({
+                "type": "message",
+                "id": "a2-branch-a",
+                "parentId": "u2-branch-a",
+                "message": { "role": "assistant", "content": "Outcome A" }
+            }),
+            serde_json::json!({
+                "type": "message",
+                "id": "u2-branch-b",
+                "parentId": "a1",
+                "message": { "role": "user", "content": "Option B" }
+            }),
+            serde_json::json!({
+                "type": "message",
+                "id": "a2-branch-b",
+                "parentId": "u2-branch-b",
+                "message": { "role": "assistant", "content": "Outcome B" }
+            }),
+        ];
+
+        let index = SessionTreeIndex::from_entries(entries);
+        assert_eq!(index.resolve_leaf_from("u2-branch-a"), "a2-branch-a");
+        assert_eq!(index.resolve_leaf_from("u2-branch-b"), "a2-branch-b");
+
+        let mut next_id = 1;
+        let (msgs_b, siblings_b) = index.extract_messages_for_leaf(None, &mut next_id);
+        assert_eq!(msgs_b.len(), 4);
+        assert_eq!(msgs_b[2].content.as_str(), "Option B");
+        assert_eq!(msgs_b[3].content.as_str(), "Outcome B");
+        assert_eq!(siblings_b.len(), 2);
+        assert!(!siblings_b[0].active);
+        assert!(siblings_b[1].active);
+
+        let (msgs_a, siblings_a) =
+            index.extract_messages_for_leaf(Some("u2-branch-a"), &mut next_id);
+        assert_eq!(msgs_a.len(), 4);
+        assert_eq!(msgs_a[2].content.as_str(), "Option A");
+        assert_eq!(msgs_a[3].content.as_str(), "Outcome A");
+        assert_eq!(siblings_a.len(), 2);
+        assert!(siblings_a[0].active);
+        assert!(!siblings_a[1].active);
     }
 }
 

@@ -50,13 +50,7 @@ pub fn render_branch_nav(
                         .on_click(move |_, _, cx| {
                             if let Some(target) = prev_id.clone() {
                                 app_prev.update(cx, |s, cx| {
-                                    if let Some(sid) = s.active_session_id.clone() {
-                                        let client = s.client.clone();
-                                        cx.spawn(async move |_, _| {
-                                            let _ = client.navigate_tree(&sid, &target).await;
-                                        })
-                                        .detach();
-                                    }
+                                    s.navigate_to_branch_entry(&target, cx);
                                 });
                             }
                         }),
@@ -70,13 +64,7 @@ pub fn render_branch_nav(
                         .on_click(move |_, _, cx| {
                             if let Some(target) = next_id.clone() {
                                 app_next.update(cx, |s, cx| {
-                                    if let Some(sid) = s.active_session_id.clone() {
-                                        let client = s.client.clone();
-                                        cx.spawn(async move |_, _| {
-                                            let _ = client.navigate_tree(&sid, &target).await;
-                                        })
-                                        .detach();
-                                    }
+                                    s.navigate_to_branch_entry(&target, cx);
                                 });
                             }
                         }),
