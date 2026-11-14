@@ -141,7 +141,7 @@ impl FileViewerView {
         let rel_for_mention = rel_path.clone();
 
         let mut header_actions = h_flex().items_center().gap_1p5();
-        let mut mode_tabs = TabBar::new("fv-mode-tabs").segmented().small();
+        let mut mode_tabs = TabBar::new("fv-mode-tabs").segmented().small().h(px(24.));
         if has_diff {
             mode_tabs = mode_tabs.child(
                 Tab::new()

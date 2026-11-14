@@ -32,6 +32,8 @@ pub struct CachedRowEntities {
     pub last_text_snapshot: String,
     pub diff_states: HashMap<SharedString, Entity<DiffState>>,
     pub compaction_states: HashMap<usize, (String, Entity<TextViewState>)>,
+    pub thinking_states: HashMap<usize, (String, Entity<TextViewState>)>,
+    pub compaction_files_open: HashMap<usize, bool>,
     pub tool_output_editors: HashMap<SharedString, (String, Entity<EditorState>)>,
     pub process_group_open: Option<bool>,
     pub expanded_thinking_steps: HashMap<usize, bool>,
@@ -69,6 +71,8 @@ pub fn render_message_row(
             last_text_snapshot: initial_text,
             diff_states: HashMap::new(),
             compaction_states: HashMap::new(),
+            thinking_states: HashMap::new(),
+            compaction_files_open: HashMap::new(),
             tool_output_editors: HashMap::new(),
             process_group_open: None,
             expanded_thinking_steps: HashMap::new(),
@@ -522,30 +526,127 @@ fn render_compaction_step_card(
         }
 
         if !c.read_files.is_empty() || !c.modified_files.is_empty() {
+            let files_open = row_cache
+                .compaction_files_open
+                .get(&step_idx)
+                .copied()
+                .unwrap_or(false);
+
             let mut meta_parts = Vec::new();
             if !c.modified_files.is_empty() {
-                meta_parts.push(format!(
-                    "{}: {}",
-                    tr(locale, "chat.modifiedFilesLabel"),
-                    c.modified_files.join(", ")
-                ));
+                meta_parts.push(format!("{} modified", c.modified_files.len()));
             }
             if !c.read_files.is_empty() {
-                meta_parts.push(format!(
-                    "{}: {}",
-                    tr(locale, "chat.readFilesLabel"),
-                    c.read_files.join(", ")
-                ));
+                meta_parts.push(format!("{} read", c.read_files.len()));
             }
-            body = body.child(
-                div()
-                    .pt_1()
-                    .border_t_1()
-                    .border_color(cx.theme().border.opacity(0.6))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(meta_parts.join(" · "))),
-            );
+            let files_summary = meta_parts.join(", ");
+
+            let mut files_section = v_flex()
+                .w_full()
+                .pt_2()
+                .border_t_1()
+                .border_color(cx.theme().border.opacity(0.6))
+                .child(
+                    h_flex()
+                        .id(("compact-files-hdr", msg_id * 1000 + step_idx as u64))
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .cursor_pointer()
+                        .p_1()
+                        .rounded_sm()
+                        .hover(|s| s.bg(cx.theme().secondary))
+                        .on_click(cx.listener(move |panel, _, _, cx| {
+                            panel.toggle_compaction_files(msg_id, step_idx, cx);
+                            cx.notify();
+                        }))
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .child(Icon::new(IconName::Folder).xsmall().text_color(cx.theme().muted_foreground))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(cx.theme().foreground)
+                                        .child(format!("{} ({})", tr(locale, "chat.fileContext"), files_summary)),
+                                ),
+                        )
+                        .child(
+                            Icon::new(if files_open {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
+                        ),
+                );
+
+            if files_open {
+                let mut files_body = v_flex().w_full().gap_2().pt_1().pl_4();
+
+                if !c.modified_files.is_empty() {
+                    let mut mod_col = v_flex().gap_1();
+                    mod_col = mod_col.child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().foreground)
+                            .child(format!("{} ({})", tr(locale, "chat.modifiedFiles"), c.modified_files.len())),
+                    );
+                    for f in &c.modified_files {
+                        let f_path = f.clone();
+                        mod_col = mod_col.child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .child(Icon::new(IconName::File).xsmall().text_color(cx.theme().primary))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(SharedString::from(f_path)),
+                                ),
+                        );
+                    }
+                    files_body = files_body.child(mod_col);
+                }
+
+                if !c.read_files.is_empty() {
+                    let mut read_col = v_flex().gap_1();
+                    read_col = read_col.child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().foreground)
+                            .child(format!("{} ({})", tr(locale, "chat.readFiles"), c.read_files.len())),
+                    );
+                    for f in &c.read_files {
+                        let f_path = f.clone();
+                        read_col = read_col.child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .child(Icon::new(IconName::FileText).xsmall().text_color(cx.theme().muted_foreground))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(SharedString::from(f_path)),
+                                ),
+                        );
+                    }
+                    files_body = files_body.child(read_col);
+                }
+
+                files_section = files_section.child(files_body);
+            }
+
+            body = body.child(files_section);
         }
 
         card = card.child(body);
@@ -728,6 +829,26 @@ fn render_assistant_row(
                             .unwrap_or(thinking_expanded_default);
 
                         let think_el = if step_open {
+                            let md = think_text.to_string();
+                            let tv = match row_cache.thinking_states.get_mut(&step_idx) {
+                                Some((prev_md, tv)) if *prev_md != md => {
+                                    tv.update(cx, |state, cx| state.set_text(&md, cx));
+                                    *prev_md = md.clone();
+                                    tv.clone()
+                                }
+                                Some((_, tv)) => tv.clone(),
+                                None => {
+                                    let tv = cx.new(|cx| TextViewState::markdown(&md, cx).selectable(true));
+                                    row_cache.thinking_states.insert(step_idx, (md.clone(), tv.clone()));
+                                    tv
+                                }
+                            };
+                            let mut tv_style = TextViewStyle::default();
+                            tv_style.heading_base_font_size = px((font_px - 1.0).max(11.0));
+                            tv_style.paragraph_gap = rems(0.5);
+                            tv_style.highlight_theme = cx.theme().highlight_theme.clone();
+                            let markdown_view = with_plugins(TextView::new(&tv).style(tv_style).selectable(true));
+
                             h_flex()
                                 .id(("think-step", msg_id * 1000 + step_idx as u64))
                                 .w_full()
@@ -739,11 +860,6 @@ fn render_assistant_row(
                                 .border_1()
                                 .border_color(cx.theme().border)
                                 .bg(cx.theme().background)
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |panel, _, _, cx| {
-                                    panel.toggle_thinking_step(msg_id, step_idx, cx);
-                                    cx.notify();
-                                }))
                                 .child(
                                     div()
                                         .w(px(16.))
@@ -758,15 +874,29 @@ fn render_assistant_row(
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .text_xs()
-                                        .line_height(px(16.))
+                                        .font_family(cx.theme().font_family.clone())
+                                        .text_size(px((font_px - 1.0).max(11.0)))
+                                        .line_height(rems(1.5))
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(think_text),
+                                        .child(markdown_view),
                                 )
                                 .child(
-                                    Icon::new(IconName::ChevronDown)
-                                        .xsmall()
-                                        .text_color(cx.theme().muted_foreground),
+                                    div()
+                                        .id(("think-toggle", msg_id * 1000 + step_idx as u64))
+                                        .flex_shrink_0()
+                                        .cursor_pointer()
+                                        .p_1()
+                                        .hover(|s| s.bg(cx.theme().secondary))
+                                        .rounded_sm()
+                                        .on_click(cx.listener(move |panel, _, _, cx| {
+                                            panel.toggle_thinking_step(msg_id, step_idx, cx);
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            Icon::new(IconName::ChevronDown)
+                                                .xsmall()
+                                                .text_color(cx.theme().muted_foreground),
+                                        ),
                                 )
                         } else {
                             h_flex()

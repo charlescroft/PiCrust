@@ -724,7 +724,7 @@ impl SettingsAddDialogView {
                     .child(
                         TabBar::new("add-dlg-scope-tabs")
                             .segmented()
-                            .small()
+                            .h(px(32.))
                             .child(
                                 Tab::new()
                                     .label(tr(locale, "settings.scopeGlobal"))

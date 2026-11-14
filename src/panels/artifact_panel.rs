@@ -178,6 +178,7 @@ impl ArtifactPanelView {
                 TabBar::new("art-mode-tabs")
                     .segmented()
                     .small()
+                    .h(px(24.))
                     .child(
                         Tab::new()
                             .label(tr(locale, "panel.artifactSource"))

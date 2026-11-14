@@ -122,6 +122,9 @@ pub struct AppState {
     pub running_session_ids: HashSet<String>,
     pub unread_session_ids: HashSet<String>,
     pub read_artifact_ids: HashSet<String>,
+    pub artifacts_page_index: usize,
+    pub has_earlier_messages: bool,
+    pub is_loading_earlier: bool,
     pub collapsed_projects: HashSet<String>,
     pub archived_projects: HashSet<String>,
     pub archived_session_ids: HashSet<String>,
@@ -454,6 +457,9 @@ impl AppState {
             running_session_ids: HashSet::new(),
             unread_session_ids: HashSet::new(),
             read_artifact_ids: HashSet::new(),
+            artifacts_page_index: 0,
+            has_earlier_messages: false,
+            is_loading_earlier: false,
             collapsed_projects: HashSet::new(),
             archived_projects: HashSet::new(),
             archived_session_ids: HashSet::new(),
@@ -2804,6 +2810,8 @@ impl AppState {
         
         
         self.stats = SessionStats::default();
+        self.has_earlier_messages = false;
+        self.is_loading_earlier = false;
         self.subagent_runs.clear();
         self.tool_subagent_runs.clear();
         self.subagent_status_text = None;
@@ -2832,6 +2840,49 @@ impl AppState {
         }
     }
 
+    pub fn set_artifacts_page_index(&mut self, page: usize, cx: &mut Context<Self>) {
+        self.artifacts_page_index = page;
+        cx.notify();
+    }
+
+    pub fn load_earlier_messages(&mut self, cx: &mut Context<Self>) {
+        if self.is_loading_earlier || !self.has_earlier_messages {
+            return;
+        }
+        let Some(sid) = self.active_session_id.clone() else {
+            return;
+        };
+        let earliest_entry_id = self.messages.first().and_then(|m| m.entry_id.as_ref()).map(|s| s.to_string());
+        let Some(before_id) = earliest_entry_id else {
+            self.has_earlier_messages = false;
+            return;
+        };
+        self.is_loading_earlier = true;
+        let client = self.client.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            let path = format!("/api/sessions/{sid}/context?before={before_id}&tail=50&wholeTurns=1");
+            let res = client.get_json_path(&path).await;
+            let _ = entity.update(cx, |this, cx| {
+                this.is_loading_earlier = false;
+                if let Ok(val) = res {
+                    let ctx = val.get("context").unwrap_or(&val);
+                    this.has_earlier_messages = ctx.get("hasEarlierMessages").and_then(Value::as_bool).unwrap_or(false);
+                    let older_msgs = parse_session_messages(ctx, &mut this.controller.next_local_msg_id);
+                    if !older_msgs.is_empty() {
+                        let mut all = older_msgs;
+                        all.extend(std::mem::take(&mut this.messages));
+                        this.messages = all;
+                    }
+                } else {
+                    this.has_earlier_messages = false;
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
     pub fn select_session(&mut self, session_id: String, cx: &mut Context<Self>) {
         let req_id = self.controller.next_load_id();
         self.controller.stop_sse();
@@ -2850,6 +2901,8 @@ impl AppState {
         self.todos.clear();
         self.todos_expanded = false;
         self.stats = SessionStats::default();
+        self.has_earlier_messages = false;
+        self.is_loading_earlier = false;
 
         let mut local_jsonl_path: Option<PathBuf> = None;
         if let Some(summary) = self.sessions.iter().find(|s| s.id == session_id) {
@@ -2911,6 +2964,8 @@ impl AppState {
                     return;
                 }
                 if let Ok(payload) = result {
+                    let ctx_obj = payload.get("context").unwrap_or(&payload);
+                    this.has_earlier_messages = ctx_obj.get("hasEarlierMessages").and_then(Value::as_bool).unwrap_or(false);
                     let parsed =
                         parse_session_messages(&payload, &mut this.controller.next_local_msg_id);
                     if !parsed.is_empty() {

@@ -14,6 +14,7 @@ use crate::chat::questionnaire::QuestionnaireView;
 use crate::client::types::{ChatFontSize, ChatMessage, MessageRole};
 use crate::i18n::{format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -232,6 +233,23 @@ impl ChatPanel {
         self.scroller.update(cx, |s, cx| s.remeasure(cx));
     }
 
+    pub fn toggle_compaction_files(
+        &mut self,
+        msg_id: u64,
+        step_idx: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            let cur = entry
+                .compaction_files_open
+                .get(&step_idx)
+                .copied()
+                .unwrap_or(false);
+            entry.compaction_files_open.insert(step_idx, !cur);
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
     pub fn toggle_tool(&mut self, msg_id: u64, tool_id: SharedString, cx: &mut Context<Self>) {
         if let Some(entry) = self.row_cache.get_mut(&msg_id) {
             let cur = entry.expanded_tools.get(&tool_id).copied().unwrap_or(false);
@@ -415,7 +433,8 @@ impl Render for ChatPanel {
 
         let turns = collect_turn_locations(&messages);
         let top_item_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
-        let active_turn = if self.scroller.read(cx).is_following_tail() && !turns.is_empty() {
+        let is_at_tail = self.scroller.read(cx).is_following_tail() || !self.scroller.read(cx).is_scrolled_up();
+        let active_turn = if is_at_tail && !turns.is_empty() {
             turns.len() - 1
         } else {
             turns
@@ -423,6 +442,11 @@ impl Render for ChatPanel {
                 .rposition(|t| t.msg_index <= top_item_ix)
                 .unwrap_or(0)
         };
+
+        // When reaching the bottom / last turn, restore concise 8 turns mode!
+        if is_at_tail || active_turn + 1 >= turns.len() {
+            self.show_all_turns = false;
+        }
 
         let total_turns = turns.len();
         let (nav_start, nav_end) = if self.show_all_turns || total_turns <= MAX_NAV_TICKS {
@@ -438,14 +462,15 @@ impl Render for ChatPanel {
         };
         let visible_count = nav_end - nav_start;
 
+        // Strictly bounded rail height <= 260px, perfectly vertically centered
+        let max_rail_h = 260.0f32;
         let (tick_h, gap_px) = if visible_count <= 8 {
-            (10.0f32, 8.0f32)
+            (8.0f32, 8.0f32)
         } else {
-            let avail = (f32::from(window.viewport_size().height) - 220.0).max(180.0);
-            let t = ((visible_count - 8) as f32 / 40.0).clamp(0.0, 1.0);
-            let th = 10.0 - (10.0 - 4.0) * t;
+            let t = ((visible_count - 8) as f32 / 32.0).clamp(0.0, 1.0);
+            let th = 8.0 - 4.5 * t; // scales down from 8px to 3.5px
             let needed = visible_count as f32 * th;
-            let rem_space = (avail - needed).max(0.0);
+            let rem_space = (max_rail_h - needed).max(0.0);
             let gap = if visible_count > 1 {
                 (rem_space / (visible_count - 1) as f32).clamp(1.5, 8.0)
             } else {
@@ -453,6 +478,7 @@ impl Render for ChatPanel {
             };
             (th, gap)
         };
+        let actual_rail_h = visible_count as f32 * tick_h + visible_count.saturating_sub(1) as f32 * gap_px;
 
         let hovered_turn = self
             .hovered_turn_idx
@@ -461,14 +487,17 @@ impl Render for ChatPanel {
         let navigator_gutter = if has_gutter_space && turns.len() >= 2 {
             let mut ticks = v_flex()
                 .w(px(32.))
+                .h(px(actual_rail_h))
                 .gap(px(gap_px))
-                .py_2()
+                .justify_center()
                 .items_start();
 
             for (t_idx, turn) in turns.iter().enumerate().skip(nav_start).take(nav_end - nav_start) {
                 let is_active = t_idx == active_turn;
                 let is_hovered = hovered_turn == Some(t_idx);
                 let msg_idx = turn.msg_index;
+                let is_first = t_idx == 0;
+                let is_last = t_idx + 1 == total_turns;
                 let scroller_ref = self.scroller.clone();
 
                 ticks = ticks.child(
@@ -489,13 +518,19 @@ impl Render for ChatPanel {
                         }))
                         .on_click(cx.listener(move |_, _, _, cx| {
                             scroller_ref.update(cx, |s, cx| {
-                                let _ = s.scroll_to_item(msg_idx, cx);
+                                if is_last {
+                                    s.scroll_to_end(cx);
+                                } else if is_first {
+                                    let _ = s.scroll_to_item(0, cx);
+                                } else {
+                                    let _ = s.scroll_to_item(msg_idx, cx);
+                                }
                             });
                             cx.notify();
                         }))
                         .child(
                             div()
-                                .h(if is_active || is_hovered { px((tick_h * 0.45).max(3.0)) } else { px((tick_h * 0.3).max(2.0)) })
+                                .h(if is_active || is_hovered { px((tick_h * 0.55).max(3.0)) } else { px((tick_h * 0.35).max(2.0)) })
                                 .w(if is_active {
                                     px(24.)
                                 } else if is_hovered {
@@ -545,10 +580,10 @@ impl Render for ChatPanel {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground.opacity(0.75))
                             .child(format!(
-                                "{} {} {}",
+                                "{} {} / {}",
                                 tr(locale, "chat.clickJumpTurn"),
                                 format_commas(t_idx + 1),
-                                tr(locale, "chat.turn")
+                                format_commas(total_turns)
                             )),
                     )
             });
@@ -606,11 +641,46 @@ impl Render for ChatPanel {
                         cx,
                     )
                 });
+                let has_earlier = app.read(cx).has_earlier_messages;
+                let is_loading_earlier = app.read(cx).is_loading_earlier;
+                let earlier_banner = if index == 0 && has_earlier {
+                    let app_load = app.clone();
+                    Some(
+                        div()
+                            .id("chat-load-earlier-banner")
+                            .w_full()
+                            .pb_3()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                Button::new("btn-load-earlier-top")
+                                    .ghost()
+                                    .small()
+                                    .h(px(26.))
+                                    .icon(if is_loading_earlier {
+                                        IconName::LoaderCircle
+                                    } else {
+                                        IconName::RotateCw
+                                    })
+                                    .label(tr(locale, "chat.loadEarlier"))
+                                    .disabled(is_loading_earlier)
+                                    .on_click(move |_, _, cx| {
+                                        app_load.update(cx, |s, cx| {
+                                            s.load_earlier_messages(cx);
+                                        });
+                                    }),
+                            ),
+                    )
+                } else {
+                    None
+                };
+
                 div()
                     .w_full()
                     .min_w_0()
                     .pt(if index == 0 { px(12.) } else { px(0.) })
                     .pb(if index + 1 == item_count { px(12.) } else { px(16.) })
+                    .children(earlier_banner)
                     .child(row)
                     .into_any_element()
             })

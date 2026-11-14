@@ -156,6 +156,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                         TabBar::new("theme-mode-tabs")
                             .segmented()
                             .w_full()
+                            .h(px(32.))
                             .child(
                                 Tab::new()
                                     .flex_1()
