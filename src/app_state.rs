@@ -2438,28 +2438,30 @@ impl AppState {
         std::thread::spawn(move || {
             #[cfg(target_os = "macos")]
             {
-                let esc = |s: &str| {
-                    s.replace('\\', "\\\\")
-                        .replace('"', "\\\"")
-                        .replace('\n', " ")
-                };
-                let script = if with_sound {
-                    format!(
-                        "display notification \"{}\" with title \"{}\" sound name \"Glass\"",
-                        esc(&body),
-                        esc(&title)
-                    )
-                } else {
-                    format!(
-                        "display notification \"{}\" with title \"{}\"",
-                        esc(&body),
-                        esc(&title)
-                    )
-                };
-                let _ = std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(script)
-                    .status();
+                if !send_macos_bundle_notification(&title, &body, with_sound) {
+                    let esc = |s: &str| {
+                        s.replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                            .replace('\n', " ")
+                    };
+                    let script = if with_sound {
+                        format!(
+                            "display notification \"{}\" with title \"{}\" sound name \"Glass\"",
+                            esc(&body),
+                            esc(&title)
+                        )
+                    } else {
+                        format!(
+                            "display notification \"{}\" with title \"{}\"",
+                            esc(&body),
+                            esc(&title)
+                        )
+                    };
+                    let _ = std::process::Command::new("osascript")
+                        .arg("-e")
+                        .arg(script)
+                        .status();
+                }
                 if with_sound {
                     let _ = std::process::Command::new("afplay")
                         .arg("/System/Library/Sounds/Glass.aiff")
@@ -5556,6 +5558,177 @@ flowchart LR
     ]
 }
 
+
+/// Sends a native macOS notification via `UNUserNotificationCenter` when running
+/// inside a `.app` bundle (so macOS displays the app's own `icon.icns` instead of
+/// `osascript`'s Script Editor icon). Returns `false` outside a `.app` bundle.
+#[cfg(target_os = "macos")]
+fn send_macos_bundle_notification(title: &str, body: &str, _with_sound: bool) -> bool {
+    use std::ffi::{CString, c_char, c_void};
+    use std::sync::Once;
+
+    #[link(name = "UserNotifications", kind = "framework")]
+    #[link(name = "Foundation", kind = "framework")]
+    unsafe extern "C" {
+        static _NSConcreteGlobalBlock: *const c_void;
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+
+    #[repr(C)]
+    struct BlockDescriptor {
+        reserved: usize,
+        size: usize,
+    }
+    #[repr(C)]
+    struct GlobalBlock {
+        isa: *const c_void,
+        flags: i32,
+        reserved: i32,
+        invoke: *const c_void,
+        descriptor: &'static BlockDescriptor,
+    }
+    unsafe impl Sync for GlobalBlock {}
+
+    unsafe extern "C" fn noop_auth_cb(_block: *mut c_void, _granted: bool, _err: *mut c_void) {}
+    unsafe extern "C" fn noop_add_cb(_block: *mut c_void, _err: *mut c_void) {}
+
+    static DESCRIPTOR: BlockDescriptor = BlockDescriptor {
+        reserved: 0,
+        size: std::mem::size_of::<GlobalBlock>(),
+    };
+
+    #[inline]
+    unsafe fn sel(name: &[u8]) -> *mut c_void {
+        unsafe { sel_registerName(name.as_ptr() as *const c_char) }
+    }
+    #[inline]
+    unsafe fn cls(name: &[u8]) -> *mut c_void {
+        unsafe { objc_getClass(name.as_ptr() as *const c_char) }
+    }
+
+    type Msg0 = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
+    type Msg1Ptr = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
+    type Msg1Cstr = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> *mut c_void;
+    type Msg2UsizePtr =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *mut c_void) -> *mut c_void;
+    type Msg2PtrPtr =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
+    type Msg3Ptr = unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+    ) -> *mut c_void;
+
+    unsafe {
+        let msg0: Msg0 = std::mem::transmute(objc_msgSend as *const c_void);
+        let msg1_ptr: Msg1Ptr = std::mem::transmute(objc_msgSend as *const c_void);
+        let msg1_cstr: Msg1Cstr = std::mem::transmute(objc_msgSend as *const c_void);
+        let msg2_usize_ptr: Msg2UsizePtr = std::mem::transmute(objc_msgSend as *const c_void);
+        let msg2_ptr_ptr: Msg2PtrPtr = std::mem::transmute(objc_msgSend as *const c_void);
+        let msg3_ptr: Msg3Ptr = std::mem::transmute(objc_msgSend as *const c_void);
+
+        let pool_cls = cls(b"NSAutoreleasePool\0");
+        let pool = msg0(msg0(pool_cls, sel(b"alloc\0")), sel(b"init\0"));
+
+        let bundle_cls = cls(b"NSBundle\0");
+        let main_bundle = msg0(bundle_cls, sel(b"mainBundle\0"));
+        let bundle_id = if main_bundle.is_null() {
+            std::ptr::null_mut()
+        } else {
+            msg0(main_bundle, sel(b"bundleIdentifier\0"))
+        };
+        if bundle_id.is_null() {
+            if !pool.is_null() {
+                msg0(pool, sel(b"drain\0"));
+            }
+            return false;
+        }
+
+        let center_cls = cls(b"UNUserNotificationCenter\0");
+        let content_cls = cls(b"UNMutableNotificationContent\0");
+        let req_cls = cls(b"UNNotificationRequest\0");
+        let nsstring_cls = cls(b"NSString\0");
+        if center_cls.is_null() || content_cls.is_null() || req_cls.is_null() || nsstring_cls.is_null() {
+            if !pool.is_null() {
+                msg0(pool, sel(b"drain\0"));
+            }
+            return false;
+        }
+
+        let center = msg0(center_cls, sel(b"currentNotificationCenter\0"));
+        if center.is_null() {
+            if !pool.is_null() {
+                msg0(pool, sel(b"drain\0"));
+            }
+            return false;
+        }
+
+        static AUTH_ONCE: Once = Once::new();
+        AUTH_ONCE.call_once(|| {
+            let block = GlobalBlock {
+                isa: _NSConcreteGlobalBlock,
+                flags: 1 << 28,
+                reserved: 0,
+                invoke: noop_auth_cb as *const c_void,
+                descriptor: &DESCRIPTOR,
+            };
+            // UNAuthorizationOptionAlert (1 << 2) | UNAuthorizationOptionSound (1 << 1) = 6
+            msg2_usize_ptr(
+                center,
+                sel(b"requestAuthorizationWithOptions:completionHandler:\0"),
+                6,
+                (&block as *const GlobalBlock).cast_mut().cast::<c_void>(),
+            );
+        });
+
+        let c_title = CString::new(title.replace('\0', "")).unwrap_or_default();
+        let c_body = CString::new(body.replace('\0', "")).unwrap_or_default();
+        let id_str = format!("pi-gpui-{}", uuid::Uuid::new_v4());
+        let c_id = CString::new(id_str).unwrap_or_default();
+
+        let ns_title = msg1_cstr(nsstring_cls, sel(b"stringWithUTF8String:\0"), c_title.as_ptr());
+        let ns_body = msg1_cstr(nsstring_cls, sel(b"stringWithUTF8String:\0"), c_body.as_ptr());
+        let ns_id = msg1_cstr(nsstring_cls, sel(b"stringWithUTF8String:\0"), c_id.as_ptr());
+
+        let content = msg0(msg0(content_cls, sel(b"alloc\0")), sel(b"init\0"));
+        if !content.is_null() {
+            msg1_ptr(content, sel(b"setTitle:\0"), ns_title);
+            msg1_ptr(content, sel(b"setBody:\0"), ns_body);
+            let req = msg3_ptr(
+                req_cls,
+                sel(b"requestWithIdentifier:content:trigger:\0"),
+                ns_id,
+                content,
+                std::ptr::null_mut(),
+            );
+            if !req.is_null() {
+                let block = GlobalBlock {
+                    isa: _NSConcreteGlobalBlock,
+                    flags: 1 << 28,
+                    reserved: 0,
+                    invoke: noop_add_cb as *const c_void,
+                    descriptor: &DESCRIPTOR,
+                };
+                msg2_ptr_ptr(
+                    center,
+                    sel(b"addNotificationRequest:withCompletionHandler:\0"),
+                    req,
+                    (&block as *const GlobalBlock).cast_mut().cast::<c_void>(),
+                );
+            }
+            msg0(content, sel(b"release\0"));
+        }
+
+        if !pool.is_null() {
+            msg0(pool, sel(b"drain\0"));
+        }
+        true
+    }
+}
 
 /// Whether a configured model should offer the strength ladder when pi reports
 /// only `["off"]`: hidden only when models.json explicitly says non-reasoning.

@@ -535,6 +535,7 @@ impl ComposerView {
         };
         self.textarea.update(cx, |st, cx| {
             st.set_value(&updated, window, cx);
+            st.focus(window, cx);
         });
         self.at_query = None;
         self.file_picker_open = false;
@@ -755,6 +756,7 @@ impl ComposerView {
                 };
                 match key {
                     "up" => {
+                        window.prevent_default();
                         cx.stop_propagation();
                         if len > 0 {
                             this.file_picker_selected_idx = this.file_picker_selected_idx.saturating_sub(1);
@@ -763,6 +765,7 @@ impl ComposerView {
                         }
                     }
                     "down" => {
+                        window.prevent_default();
                         cx.stop_propagation();
                         if len > 0 {
                             this.file_picker_selected_idx = (this.file_picker_selected_idx + 1).min(len - 1);
@@ -773,6 +776,7 @@ impl ComposerView {
                     "right" if is_dir_browser => {
                         if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
                             if entry.is_dir {
+                                window.prevent_default();
                                 cx.stop_propagation();
                                 this.enter_file_picker_dir(entry.relative_path, cx);
                             }
@@ -780,11 +784,13 @@ impl ComposerView {
                     }
                     "left" if is_dir_browser => {
                         if !this.file_picker_dir.is_empty() {
+                            window.prevent_default();
                             cx.stop_propagation();
                             this.exit_file_picker_dir(cx);
                         }
                     }
                     "enter" => {
+                        window.prevent_default();
                         cx.stop_propagation();
                         if is_dir_browser {
                             if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
@@ -792,17 +798,21 @@ impl ComposerView {
                                     this.enter_file_picker_dir(entry.relative_path, cx);
                                 } else {
                                     this.insert_file_reference(&entry.relative_path, window, cx);
+                                    this.textarea.update(cx, |st, cx| st.focus(window, cx));
                                 }
                             }
                         } else if let Some(m) = fm_for_wrapper.get(this.file_picker_selected_idx) {
                             let rel = m.relative_path.clone();
                             this.insert_file_reference(&rel, window, cx);
+                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
                         }
                     }
                     "escape" => {
+                        window.prevent_default();
                         cx.stop_propagation();
                         this.at_query = None;
                         this.file_picker_open = false;
+                        this.textarea.update(cx, |st, cx| st.focus(window, cx));
                         cx.notify();
                     }
                     _ => {}
@@ -1417,9 +1427,10 @@ impl ComposerView {
                                         .h(px(28.))
                                         .w(px(28.))
                                         .icon(IconName::Close)
-                                        .on_click(cx.listener(|this, _, _, cx| {
+                                        .on_click(cx.listener(|this, _, window, cx| {
                                             this.at_query = None;
                                             this.file_picker_open = false;
+                                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
                                             cx.notify();
                                         })),
                                 ),
@@ -1497,6 +1508,7 @@ impl ComposerView {
                         };
                         match key {
                             "up" => {
+                                window.prevent_default();
                                 cx.stop_propagation();
                                 if len > 0 {
                                     this.file_picker_selected_idx = this.file_picker_selected_idx.saturating_sub(1);
@@ -1506,6 +1518,7 @@ impl ComposerView {
                                 return;
                             }
                             "down" => {
+                                window.prevent_default();
                                 cx.stop_propagation();
                                 if len > 0 {
                                     this.file_picker_selected_idx = (this.file_picker_selected_idx + 1).min(len - 1);
@@ -1517,6 +1530,7 @@ impl ComposerView {
                             "right" if is_dir_browser => {
                                 if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
                                     if entry.is_dir {
+                                        window.prevent_default();
                                         cx.stop_propagation();
                                         this.enter_file_picker_dir(entry.relative_path, cx);
                                         return;
@@ -1525,12 +1539,14 @@ impl ComposerView {
                             }
                             "left" if is_dir_browser => {
                                 if !this.file_picker_dir.is_empty() {
+                                    window.prevent_default();
                                     cx.stop_propagation();
                                     this.exit_file_picker_dir(cx);
                                     return;
                                 }
                             }
                             "enter" => {
+                                window.prevent_default();
                                 cx.stop_propagation();
                                 if is_dir_browser {
                                     if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
@@ -1538,18 +1554,22 @@ impl ComposerView {
                                             this.enter_file_picker_dir(entry.relative_path, cx);
                                         } else {
                                             this.insert_file_reference(&entry.relative_path, window, cx);
+                                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
                                         }
                                     }
                                 } else if let Some(m) = fm_keys.get(this.file_picker_selected_idx) {
                                     let rel = m.relative_path.clone();
                                     this.insert_file_reference(&rel, window, cx);
+                                    this.textarea.update(cx, |st, cx| st.focus(window, cx));
                                 }
                                 return;
                             }
                             "escape" => {
+                                window.prevent_default();
                                 cx.stop_propagation();
                                 this.at_query = None;
                                 this.file_picker_open = false;
+                                this.textarea.update(cx, |st, cx| st.focus(window, cx));
                                 cx.notify();
                                 return;
                             }
@@ -1642,6 +1662,8 @@ impl ComposerView {
                             this.at_query = None;
                             this.file_picker_dir.clear();
                             this.reload_file_browser(cx);
+                            window.focus(&this.focus_handle, cx);
+                        } else {
                             this.textarea.update(cx, |st, cx| st.focus(window, cx));
                         }
                         cx.notify();
