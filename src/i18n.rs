@@ -265,6 +265,8 @@ fn en_text(key: &'static str) -> &'static str {
         "subagents.noneRunning" => "No subagents active",
         "subagents.manageProfiles" => "Subagent Settings...",
         "subagents.openSession" => "Open subagent session",
+        "subagents.noticeTitle" => "Subagent Result",
+        "subagents.output" => "Output",
 
         // Tasks
         "tasks.waiting" => "Waiting for Input",
@@ -798,6 +800,8 @@ fn zh_text(key: &'static str) -> &'static str {
         "subagents.noneRunning" => "当前无运行中的子代理",
         "subagents.manageProfiles" => "子代理设置...",
         "subagents.openSession" => "打开子代理会话",
+        "subagents.noticeTitle" => "子 Agent 返回",
+        "subagents.output" => "返回结果",
 
         // Tasks
         "tasks.waiting" => "等待输入",

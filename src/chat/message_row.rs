@@ -35,6 +35,7 @@ pub struct CachedRowEntities {
     pub thinking_states: HashMap<usize, (String, Entity<TextViewState>)>,
     pub compaction_files_open: HashMap<usize, bool>,
     pub tool_output_editors: HashMap<SharedString, (String, Entity<EditorState>)>,
+    pub tool_output_markdowns: HashMap<SharedString, (String, Entity<TextViewState>)>,
     pub process_group_open: Option<bool>,
     pub expanded_thinking_steps: HashMap<usize, bool>,
     pub expanded_compactions: HashMap<usize, bool>,
@@ -43,6 +44,7 @@ pub struct CachedRowEntities {
     pub error_expanded: bool,
     pub error_dismissed: bool,
     pub user_expanded: bool,
+    pub subagent_notice_expanded: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +78,7 @@ pub fn render_message_row(
             thinking_states: HashMap::new(),
             compaction_files_open: HashMap::new(),
             tool_output_editors: HashMap::new(),
+            tool_output_markdowns: HashMap::new(),
             process_group_open: None,
             expanded_thinking_steps: HashMap::new(),
             expanded_compactions: HashMap::new(),
@@ -84,6 +87,7 @@ pub fn render_message_row(
             error_expanded: false,
             error_dismissed: false,
             user_expanded: false,
+            subagent_notice_expanded: None,
         }
     });
     if newly_created && row_cache.text_state.read(cx).rendered_text().source().is_empty() && !row_cache.last_text_snapshot.trim().is_empty() {
@@ -155,22 +159,38 @@ pub fn render_message_row(
         )
     };
 
-    let inner = match msg.role {
-        MessageRole::User => render_user_row(
+    let inner = if matches!(msg.role, MessageRole::User | MessageRole::Notice | MessageRole::System) {
+        if let Some(parsed) = parse_subagent_notice(&msg.content) {
+            render_subagent_notice_card(msg, parsed, row_cache, font_px, locale, cx)
+        } else {
+            match msg.role {
+                MessageRole::User => render_user_row(
+                    msg,
+                    row_cache,
+                    user_collapse_chars,
+                    font_px,
+                    locale,
+                    app_state,
+                    cx,
+                ),
+                MessageRole::System | MessageRole::Notice => {
+                    render_notice_row(msg, row_cache, font_px, locale, cx)
+                }
+                MessageRole::Assistant => unreachable!(),
+            }
+        }
+    } else {
+        render_assistant_row(
             msg,
             row_cache,
-            user_collapse_chars,
             font_px,
+            is_turn_live,
+            is_last_turn,
             locale,
             app_state,
+            window,
             cx,
-        ),
-        MessageRole::System | MessageRole::Notice => {
-            render_notice_row(msg, row_cache, font_px, locale, cx)
-        }
-        MessageRole::Assistant => {
-            render_assistant_row(msg, row_cache, font_px, is_turn_live, is_last_turn, locale, app_state, window, cx)
-        }
+        )
     };
 
     // Exact same max_w(840px) + px_6() container as ComposerView, explicitly inheriting system font
@@ -1713,6 +1733,7 @@ fn render_tool_call_card(
     let is_bash = tc.name.as_ref() == "bash" || tc.name.as_ref() == "bash (local)";
     let is_write = tc.name.as_ref() == "write";
     let is_edit = tc.name.as_ref() == "edit" || tc.name.as_ref() == "apply_patch";
+    let is_subagent = matches!(tc.name.as_ref(), "subagent" | "agent");
 
     let bash_cmd = if is_bash {
         tc.arguments
@@ -1725,6 +1746,25 @@ fn render_tool_call_card(
 
     let preview_summary = if let Some(ref cmd) = bash_cmd {
         SharedString::from(format!("$ {}", cmd.lines().next().unwrap_or("")))
+    } else if is_subagent {
+        let agent_name = tc
+            .arguments
+            .iter()
+            .find(|(k, _)| matches!(k.as_ref(), "agent" | "subagent_type"))
+            .map(|(_, v)| v.as_ref())
+            .unwrap_or("");
+        let task_line = tc
+            .arguments
+            .iter()
+            .find(|(k, _)| matches!(k.as_ref(), "task" | "description" | "prompt"))
+            .and_then(|(_, v)| v.lines().next())
+            .unwrap_or("");
+        match (agent_name.is_empty(), task_line.is_empty()) {
+            (false, false) => SharedString::from(format!("{agent_name} · {task_line}")),
+            (false, true) => SharedString::from(agent_name.to_string()),
+            (true, false) => SharedString::from(task_line.to_string()),
+            (true, true) => SharedString::default(),
+        }
     } else {
         let arg_preview = tc
             .arguments
@@ -1985,6 +2025,71 @@ fn render_tool_call_card(
                     .text_xs()
                     .text_color(cx.theme().danger)
                     .child(SharedString::from(err_line)),
+            );
+        } else if is_subagent && !tc.output.is_empty() {
+            let output_text = tc.output.to_string();
+            let md_state = match row_cache.tool_output_markdowns.get_mut(&tc.id) {
+                Some((prev, tv)) => {
+                    if *prev != output_text {
+                        let text_clone = output_text.clone();
+                        tv.update(cx, |s, cx| s.set_text(&text_clone, cx));
+                        *prev = output_text.clone();
+                    }
+                    tv.clone()
+                }
+                None => {
+                    let tv = cx.new(|cx| TextViewState::markdown(&output_text, cx).selectable(true));
+                    row_cache
+                        .tool_output_markdowns
+                        .insert(tc.id.clone(), (output_text.clone(), tv.clone()));
+                    tv
+                }
+            };
+            let copy_out = output_text;
+            body = body.child(
+                v_flex()
+                    .w_full()
+                    .gap_1p5()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(tr(locale, "subagents.output")),
+                            )
+                            .child(
+                                Button::new(("copy-subagent-out", msg_id * 1000 + idx as u64))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .label(tr(locale, "chat.copy"))
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(copy_out.clone()));
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("subagent-out-scroll", msg_id * 1000 + idx as u64))
+                            .w_full()
+                            .max_h(px(360.))
+                            .overflow_y_scroll()
+                            .p_2p5()
+                            .rounded_sm()
+                            .bg(cx.theme().background)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                TextView::new(&md_state).style(
+                                    TextViewStyle::default().paragraph_gap(rems(0.45)),
+                                ),
+                            ),
+                    ),
             );
         } else {
             // For `write`, display the written `content` inside a height-capped readonly Editor;
@@ -2318,6 +2423,208 @@ impl<T: ParentElement> EntryExt for T {
                 .child(timestamp.clone()),
         )
     }
+}
+
+struct ParsedSubagentNotice {
+    title: String,
+    is_failed: bool,
+    body_markdown: String,
+}
+
+fn parse_subagent_notice(raw: &str) -> Option<ParsedSubagentNotice> {
+    let start = raw.find("<pi_subagents_notice")?;
+    let after_open = raw[start..].find('>')? + start + 1;
+    let end = raw[after_open..].find("</pi_subagents_notice>")? + after_open;
+    let inner = raw[after_open..end].trim();
+    if inner.is_empty() {
+        return None;
+    }
+
+    let mut lines = inner.lines().peekable();
+    let mut title = String::new();
+    while let Some(line) = lines.peek() {
+        let t = line.trim();
+        if t.is_empty() {
+            lines.next();
+            continue;
+        }
+        title = t.replace("**", "");
+        lines.next();
+        break;
+    }
+    let is_failed = {
+        let lower = title.to_lowercase();
+        lower.contains("failed") || lower.contains("error")
+    };
+
+    let mut body_lines: Vec<&str> = Vec::new();
+    for line in lines {
+        let t = line.trim();
+        if t.starts_with("Parent action:") {
+            continue;
+        }
+        body_lines.push(line);
+    }
+    let body_markdown = body_lines.join("\n").trim().to_string();
+    Some(ParsedSubagentNotice {
+        title,
+        is_failed,
+        body_markdown,
+    })
+}
+
+fn render_subagent_notice_card(
+    msg: &ChatMessage,
+    parsed: ParsedSubagentNotice,
+    row_cache: &mut CachedRowEntities,
+    font_px: f32,
+    locale: AppLocale,
+    cx: &mut Context<crate::chat::ChatPanel>,
+) -> AnyElement {
+    let msg_id = msg.id;
+    let expanded = row_cache.subagent_notice_expanded.unwrap_or(true);
+    let key: SharedString = "__subagent_notice".into();
+    let md_state = match row_cache.tool_output_markdowns.get_mut(&key) {
+        Some((prev, tv)) => {
+            if *prev != parsed.body_markdown {
+                let text_clone = parsed.body_markdown.clone();
+                tv.update(cx, |s, cx| s.set_text(&text_clone, cx));
+                *prev = parsed.body_markdown.clone();
+            }
+            tv.clone()
+        }
+        None => {
+            let tv = cx.new(|cx| TextViewState::markdown(&parsed.body_markdown, cx).selectable(true));
+            row_cache
+                .tool_output_markdowns
+                .insert(key, (parsed.body_markdown.clone(), tv.clone()));
+            tv
+        }
+    };
+
+    let copy_body = if parsed.body_markdown.is_empty() {
+        parsed.title.clone()
+    } else {
+        format!("{}\n\n{}", parsed.title, parsed.body_markdown)
+    };
+
+    let mut meta_row = h_flex().flex_shrink_0().items_center().gap_1p5();
+    if !msg.timestamp.is_empty() {
+        meta_row = meta_row.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(msg.timestamp.clone()),
+        );
+    }
+    meta_row = meta_row
+        .child(
+            div()
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    Button::new(("copy-subagent-notice", msg_id))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Copy)
+                        .tooltip(tr(locale, "chat.copy"))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_body.clone()));
+                        }),
+                ),
+        )
+        .child(
+            Icon::new(if expanded {
+                IconName::ChevronUp
+            } else {
+                IconName::ChevronDown
+            })
+            .xsmall(),
+        );
+
+    let header = h_flex()
+        .id(("subagent-notice-hdr", msg_id))
+        .w_full()
+        .items_center()
+        .justify_between()
+        .px_3()
+        .py_2()
+        .gap_2()
+        .cursor_pointer()
+        .hover(|s| s.bg(cx.theme().background.opacity(0.45)))
+        .on_click(cx.listener(move |panel, _, _, cx| {
+            panel.toggle_subagent_notice_expanded(msg_id, cx);
+        }))
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap_2()
+                .child(
+                    Icon::new(if parsed.is_failed {
+                        IconName::CircleX
+                    } else {
+                        IconName::CircleCheck
+                    })
+                    .xsmall()
+                    .text_color(if parsed.is_failed {
+                        cx.theme().danger
+                    } else {
+                        cx.theme().accent
+                    }),
+                )
+                .child(Tag::secondary().small().child(tr(locale, "subagents.noticeTitle")))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(if parsed.is_failed {
+                            cx.theme().danger
+                        } else {
+                            cx.theme().foreground
+                        })
+                        .truncate()
+                        .child(SharedString::from(parsed.title)),
+                ),
+        )
+        .child(meta_row);
+
+    let mut card = v_flex()
+        .id(("subagent-notice-card", msg_id))
+        .w_full()
+        .overflow_hidden()
+        .rounded_md()
+        .border_1()
+        .border_color(if parsed.is_failed {
+            cx.theme().danger.opacity(0.5)
+        } else {
+            cx.theme().border
+        })
+        .bg(cx.theme().secondary)
+        .child(header);
+
+    if expanded && !parsed.body_markdown.is_empty() {
+        card = card.child(
+            div()
+                .id(("subagent-notice-body", msg_id))
+                .w_full()
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .p_3()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .child(
+                    TextView::new(&md_state)
+                        .style(TextViewStyle::default().paragraph_gap(rems(0.5))),
+                ),
+        );
+    }
+
+    card.into_any_element()
 }
 
 #[cfg(test)]

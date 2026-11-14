@@ -3599,7 +3599,18 @@ impl AppState {
                                         &mut this.controller.next_local_msg_id,
                                     );
                                     if !parsed.is_empty() {
-                                        this.messages = parsed;
+                                        let mut merged = parsed;
+                                        for (idx, m) in merged.iter_mut().enumerate() {
+                                            if let Some(prev) = this.messages.get(idx) {
+                                                if prev.role == m.role
+                                                    && (prev.entry_id == m.entry_id
+                                                        || prev.content == m.content)
+                                                {
+                                                    m.id = prev.id;
+                                                }
+                                            }
+                                        }
+                                        this.messages = merged;
                                     }
                                     if let Some(stats_obj) = payload.get("stats") {
                                         if let Some(tok) = stats_obj.get("tokens") {

@@ -32,6 +32,26 @@ use std::ops::Range;
 
 const LIST_OVERDRAW: gpui_kit::Pixels = px(800.);
 
+fn append_scroll_diag_log(msg: &str) {
+    use std::io::Write as _;
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(home).join(".pi/agent/gpui-scroll.log");
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 256 * 1024 {
+            let _ = std::fs::write(&path, "");
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
+
 pub struct ConversationScrollerState {
     list_state: ListState,
     last_scroll_notify_key: (bool, usize),
@@ -68,9 +88,14 @@ impl ConversationScrollerState {
     }
 
     pub fn is_scrolled_up(&self) -> bool {
+        if self.list_state.is_following_tail() {
+            return false;
+        }
+        if self.list_state.logical_scroll_top().item_ix >= self.list_state.item_count() {
+            return false;
+        }
         self.list_state.max_offset_for_scrollbar().y > px(0.)
-            && !self.list_state.is_following_tail()
-            && !self.list_state.is_scrolled_to_end().unwrap_or(false)
+            && self.list_state.is_scrolled_to_end() == Some(false)
     }
 
     pub fn is_following_tail(&self) -> bool {
@@ -82,6 +107,7 @@ impl ConversationScrollerState {
     }
 
     pub fn reset(&mut self, item_count: usize, cx: &mut Context<Self>) {
+        append_scroll_diag_log(&format!("reset item_count={item_count}"));
         self.list_state.reset(item_count);
         self.list_state.set_follow_mode(FollowMode::Tail);
         self.last_scroll_notify_key = (false, item_count);
@@ -92,6 +118,7 @@ impl ConversationScrollerState {
     /// the previous `Rc<RefCell<ListStateInner>>` in place. Required when switching
     /// sessions so previously cached `ListState` handles stay isolated.
     pub fn replace_fresh(&mut self, item_count: usize, cx: &mut Context<Self>) {
+        append_scroll_diag_log(&format!("replace_fresh item_count={item_count}"));
         self.list_state = Self::build_list_state(item_count, cx);
         self.last_scroll_notify_key = (false, item_count);
         cx.notify();
@@ -107,6 +134,10 @@ impl ConversationScrollerState {
         if old_range.start > old_range.end || old_range.end > item_count {
             return false;
         }
+        append_scroll_diag_log(&format!(
+            "splice range={}..{} count={count} prev_items={item_count}",
+            old_range.start, old_range.end
+        ));
         self.list_state.splice(old_range, count);
         cx.notify();
         true
@@ -136,6 +167,7 @@ impl ConversationScrollerState {
         if index >= self.list_state.item_count() {
             return false;
         }
+        append_scroll_diag_log(&format!("scroll_to_item index={index}"));
         self.list_state.scroll_to(ListOffset {
             item_ix: index,
             offset_in_item: px(0.),
@@ -146,12 +178,17 @@ impl ConversationScrollerState {
 
     /// Restores an exact reading position without re-entering tail follow.
     pub fn scroll_to_offset(&mut self, offset: ListOffset, cx: &mut Context<Self>) {
+        append_scroll_diag_log(&format!(
+            "scroll_to_offset item_ix={} offset_px={:?}",
+            offset.item_ix, offset.offset_in_item
+        ));
         self.list_state.set_follow_mode(FollowMode::Normal);
         self.list_state.scroll_to(offset);
         cx.notify();
     }
 
     pub fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
+        append_scroll_diag_log("scroll_to_end");
         self.list_state.set_follow_mode(FollowMode::Tail);
         self.list_state.scroll_to_end();
         cx.notify();
@@ -327,6 +364,14 @@ impl ChatPanel {
     pub fn toggle_user_expanded(&mut self, msg_id: u64, cx: &mut Context<Self>) {
         if let Some(entry) = self.row_cache.get_mut(&msg_id) {
             entry.user_expanded = !entry.user_expanded;
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    pub fn toggle_subagent_notice_expanded(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        if let Some(entry) = self.row_cache.get_mut(&msg_id) {
+            let cur = entry.subagent_notice_expanded.unwrap_or(true);
+            entry.subagent_notice_expanded = Some(!cur);
         }
         self.scroller.update(cx, |s, cx| s.remeasure(cx));
     }

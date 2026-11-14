@@ -653,9 +653,19 @@ impl ComposerView {
             };
             format!("{cur}{sep}@{rel} ")
         };
+        let line = updated.bytes().filter(|&b| b == b'\n').count() as u32;
+        let col = updated
+            .rsplit('\n')
+            .next()
+            .map(|s| s.chars().count() as u32)
+            .unwrap_or(0);
         self.textarea.update(cx, |st, cx| {
             st.set_value(&updated, window, cx);
-            st.focus(window, cx);
+            st.set_cursor_position(
+                gpui_kit::component::input::Position::new(line, col),
+                window,
+                cx,
+            );
         });
         self.at_query = None;
         self.file_picker_open = false;
@@ -709,8 +719,19 @@ impl ComposerView {
                 " "
             };
             let updated = format!("{cur}{sep}{mention} ");
+            let line = updated.bytes().filter(|&b| b == b'\n').count() as u32;
+            let col = updated
+                .rsplit('\n')
+                .next()
+                .map(|s| s.chars().count() as u32)
+                .unwrap_or(0);
             self.textarea.update(cx, |state, cx| {
                 state.set_value(&updated, window, cx);
+                state.set_cursor_position(
+                    gpui_kit::component::input::Position::new(line, col),
+                    window,
+                    cx,
+                );
             });
         }
 
