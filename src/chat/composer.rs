@@ -1415,9 +1415,9 @@ impl ComposerView {
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground.opacity(0.75))
                                         .child(if is_dir_browser {
-                                            "↑↓ · ←/→ · Enter"
+                                            "↑↓ · ←/→ · Enter · Esc"
                                         } else {
-                                            "↑↓ · Enter"
+                                            "↑↓ · Enter · Esc"
                                         }),
                                 )
                                 .child(

@@ -1,4 +1,4 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, WorkspacePage};
 use crate::client::types::{ArtifactKind, ArtifactRecord};
 use crate::i18n::{format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -126,7 +126,7 @@ impl ArtifactPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (locale, active_art, preview_font_sz) = {
+        let (locale, active_art, preview_font_sz, cwd_root) = {
             let state = self.app_state.read(cx);
             let active_art = state
                 .active_artifact_id
@@ -134,7 +134,12 @@ impl ArtifactPanelView {
                 .and_then(|id| state.artifacts.iter().find(|a| &a.identifier == id))
                 .or_else(|| state.artifacts.first())
                 .cloned();
-            (state.locale, active_art, state.preview_font_size)
+            (
+                state.locale,
+                active_art,
+                state.preview_font_size,
+                state.active_cwd.clone(),
+            )
         };
 
         let Some(art) = active_art else {
@@ -158,6 +163,12 @@ impl ArtifactPanelView {
 
         self.sync_artifact(&art, window, cx);
 
+        let mention_ref = std::path::Path::new(&art.identifier)
+            .strip_prefix(&cwd_root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| art.identifier.clone());
+        let app_mention = self.app_state.clone();
+
         let header = h_flex()
             .px_3()
             .py_1p5()
@@ -165,8 +176,10 @@ impl ArtifactPanelView {
             .border_color(cx.theme().border)
             .justify_between()
             .items_center()
+            .gap_2()
             .child(
                 v_flex()
+                    .flex_1()
                     .min_w_0()
                     .child(
                         div()
@@ -183,27 +196,49 @@ impl ArtifactPanelView {
                     ),
             )
             .child(
-                TabBar::new("art-mode-tabs")
-                    .segmented()
-                    .small()
-                    .h(px(24.))
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
                     .child(
-                        Tab::new()
-                            .label(tr(locale, "panel.artifactSource"))
-                            .selected(self.mode == ArtifactViewMode::Source)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.mode = ArtifactViewMode::Source;
-                                cx.notify();
-                            })),
+                        TabBar::new("art-mode-tabs")
+                            .segmented()
+                            .small()
+                            .h(px(24.))
+                            .child(
+                                Tab::new()
+                                    .label(tr(locale, "panel.artifactSource"))
+                                    .selected(self.mode == ArtifactViewMode::Source)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.mode = ArtifactViewMode::Source;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Tab::new()
+                                    .label(tr(locale, "panel.artifactDiff"))
+                                    .selected(self.mode == ArtifactViewMode::Diff)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.mode = ArtifactViewMode::Diff;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(
-                        Tab::new()
-                            .label(tr(locale, "panel.artifactDiff"))
-                            .selected(self.mode == ArtifactViewMode::Diff)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.mode = ArtifactViewMode::Diff;
-                                cx.notify();
-                            })),
+                        Button::new("art-mention")
+                            .outline()
+                            .xsmall()
+                            .h(px(24.))
+                            .label(tr(locale, "panel.mention"))
+                            .tooltip(tr(locale, "panel.mentionTooltip"))
+                            .on_click(move |_, _, cx| {
+                                app_mention.update(cx, |s, cx| {
+                                    s.insert_composer_mention(&mention_ref, cx);
+                                    if s.active_page != WorkspacePage::Chat {
+                                        s.active_page = WorkspacePage::Chat;
+                                        cx.notify();
+                                    }
+                                });
+                            }),
                     ),
             );
 
