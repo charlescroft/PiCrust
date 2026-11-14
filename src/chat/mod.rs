@@ -40,8 +40,7 @@ pub struct ConversationScrollerState {
 
 impl ConversationScrollerState {
     pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
-        let list_state = ListState::new(item_count, ListAlignment::Top, LIST_OVERDRAW)
-            .with_uniform_item_height(UNIFORM_ROW_HEIGHT_HINT);
+        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW);
         list_state.set_follow_mode(FollowMode::Tail);
 
         let weak_state = cx.weak_entity();
@@ -70,8 +69,7 @@ impl ConversationScrollerState {
     }
 
     pub fn reset(&mut self, item_count: usize, cx: &mut Context<Self>) {
-        self.list_state
-            .reset_with_uniform_height(item_count, UNIFORM_ROW_HEIGHT_HINT);
+        self.list_state.reset(item_count);
         self.list_state.set_follow_mode(FollowMode::Tail);
         cx.notify();
     }
