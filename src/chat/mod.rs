@@ -930,6 +930,7 @@ impl Render for ChatPanel {
         let subagent_dropdown = subagent_btn.dropdown_menu_with_anchor(
             Anchor::BottomLeft,
             move |mut menu, _, _| {
+                menu = menu.min_w(px(280.)).max_w(px(380.));
                 let header = if active_subagents > 0 {
                     format!(
                         "{} · {} {}",
@@ -947,7 +948,19 @@ impl Render for ChatPanel {
                 menu = menu.label(header);
                 if let Some(ref status_line) = subagent_status_text {
                     if !status_line.trim().is_empty() {
-                        menu = menu.item(PopupMenuItem::new(status_line.clone()).disabled(true));
+                        let status_text = status_line.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, cx| {
+                                div()
+                                    .max_w(px(340.))
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(status_text.clone())
+                            })
+                            .disabled(true),
+                        );
                     }
                 }
                 if subagent_runs.is_empty() {
@@ -996,16 +1009,31 @@ impl Render for ChatPanel {
                         if let Some(child_sid) = run.session_id.clone() {
                             let app_open = app_for_subagents.clone();
                             menu = menu.item(
-                                PopupMenuItem::new(line)
-                                    .icon(IconName::ExternalLink)
-                                    .on_click(move |_, _, cx| {
-                                        app_open.update(cx, |s, cx| {
-                                            s.select_session(child_sid.clone(), cx);
-                                        });
-                                    }),
+                                PopupMenuItem::element(move |_, _| {
+                                    div()
+                                        .max_w(px(316.))
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(line.clone())
+                                })
+                                .icon(IconName::ExternalLink)
+                                .on_click(move |_, _, cx| {
+                                    app_open.update(cx, |s, cx| {
+                                        s.select_session(child_sid.clone(), cx);
+                                    });
+                                }),
                             );
                         } else {
-                            menu = menu.item(PopupMenuItem::new(line).disabled(true));
+                            menu = menu.item(
+                                PopupMenuItem::element(move |_, _| {
+                                    div()
+                                        .max_w(px(340.))
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(line.clone())
+                                })
+                                .disabled(true),
+                            );
                         }
                         for child in &run.children {
                             let c_glyph = match child.state.as_str() {
@@ -1022,9 +1050,16 @@ impl Render for ChatPanel {
                                 .map(|t| format!(" · tool: {t}"))
                                 .or_else(|| child.progress_text.as_ref().map(|p| format!(" · {p}")))
                                 .unwrap_or_else(|| format!(" · {}", child.state));
+                            let c_line = format!("   {c_glyph} {c_name}{c_extra}");
                             menu = menu.item(
-                                PopupMenuItem::new(format!("   {c_glyph} {c_name}{c_extra}"))
-                                    .disabled(true),
+                                PopupMenuItem::element(move |_, _| {
+                                    div()
+                                        .max_w(px(340.))
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(c_line.clone())
+                                })
+                                .disabled(true),
                             );
                         }
                     }
