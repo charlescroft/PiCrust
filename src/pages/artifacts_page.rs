@@ -1,4 +1,5 @@
 use crate::app_state::{AppState, RightPanelTab, WorkspacePage};
+use crate::client::session_controller::format_compact_relative_time;
 use crate::client::types::ArtifactKind;
 use crate::i18n::{format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -7,9 +8,10 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::Disableable as _;
-use gpui_kit::component::Selectable as _;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _, h_flex, v_flex,
+};
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
@@ -21,11 +23,17 @@ pub fn render_artifacts_page(
     _window: &mut Window,
     cx: &mut Context<crate::workspace::WorkspaceView>,
 ) -> impl IntoElement {
-    let state = app_state.read(cx);
-    let all_artifacts = state.artifacts.clone();
-    let locale = state.locale;
-    let search_query = state.artifacts_search_query.trim().to_lowercase();
-    let type_filter = state.artifacts_type_filter.clone();
+    let (all_artifacts, sessions, locale, search_query, type_filter, page_index) = {
+        let state = app_state.read(cx);
+        (
+            state.artifacts.clone(),
+            state.sessions.clone(),
+            state.locale,
+            state.artifacts_search_query.trim().to_lowercase(),
+            state.artifacts_type_filter.clone(),
+            state.artifacts_page_index,
+        )
+    };
 
     let filtered_artifacts: Vec<_> = all_artifacts
         .into_iter()
@@ -67,7 +75,7 @@ pub fn render_artifacts_page(
             div()
                 .flex_1()
                 .max_w(px(360.))
-                .child(Input::new(search_input).small()),
+                .child(Input::new(search_input).h(px(32.))),
         )
         .child(
             TabBar::new("art-type-tabs")
@@ -123,30 +131,28 @@ pub fn render_artifacts_page(
                 ),
         );
 
-    let mut page = v_flex()
+    let mut inner = v_flex()
         .size_full()
-        .p_6()
-        .gap_3()
+        .max_w(px(900.))
+        .mx_auto()
+        .gap_4()
         .child(
             h_flex()
                 .justify_between()
                 .items_center()
                 .child(div().text_lg().font_semibold().child(tr(locale, "page.artifactsTitle")))
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!(
-                            "{} {}",
-                            format_commas(filtered_artifacts.len()),
-                            tr(locale, "page.artifactsItems")
-                        )),
+                    Tag::secondary().small().child(format!(
+                        "{} {}",
+                        format_commas(filtered_artifacts.len()),
+                        tr(locale, "page.artifactsItems")
+                    )),
                 ),
         )
         .child(filter_bar);
 
     if filtered_artifacts.is_empty() {
-        page = page.child(
+        inner = inner.child(
             div().flex_1().flex().items_center().justify_center().child(
                 Empty::new().header(
                     EmptyHeader::new()
@@ -160,12 +166,18 @@ pub fn render_artifacts_page(
         const PAGE_SIZE: usize = 8;
         let total_count = filtered_artifacts.len();
         let total_pages = (total_count + PAGE_SIZE - 1) / PAGE_SIZE;
-        let current_page = state.artifacts_page_index.min(total_pages.saturating_sub(1));
+        let current_page = page_index.min(total_pages.saturating_sub(1));
         let start_ix = current_page * PAGE_SIZE;
         let end_ix = (start_ix + PAGE_SIZE).min(total_count);
         let page_items = &filtered_artifacts[start_ix..end_ix];
 
-        let mut grid = v_flex().id("art-page-grid").flex_1().min_h_0().overflow_y_scroll().gap_2();
+        let mut grid = v_flex()
+            .id("art-page-grid")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .gap_2p5();
+
         for (page_offset, art) in page_items.iter().enumerate() {
             let global_idx = start_ix + page_offset;
             let aid = art.identifier.clone();
@@ -177,41 +189,70 @@ pub fn render_artifacts_page(
                 ArtifactKind::Code | ArtifactKind::Mermaid => IconName::File,
             };
 
+            let session_title = sid_opt
+                .as_deref()
+                .and_then(|sid| sessions.iter().find(|s| s.id == sid))
+                .map(|s| s.display_title().to_string());
+            let rel_time = format_compact_relative_time(art.updated_at.as_deref());
+
+            let mut meta_parts = vec![
+                art.identifier.clone(),
+                format!("v{}", format_commas(art.version)),
+            ];
+            if let Some(st) = session_title {
+                if !st.is_empty() {
+                    meta_parts.push(st);
+                }
+            }
+            if !rel_time.is_empty() {
+                meta_parts.push(rel_time.to_string());
+            }
+
             grid = grid.child(
                 h_flex()
-                    .p_3()
-                    .rounded_md()
+                    .w_full()
+                    .p_3p5()
+                    .rounded_xl()
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
+                    .bg(cx.theme().background)
+                    .hover(|s| s.bg(cx.theme().secondary.opacity(0.45)))
                     .justify_between()
                     .items_center()
+                    .gap_4()
                     .child(
                         v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_1()
                             .child(
                                 h_flex()
                                     .gap_2()
                                     .items_center()
                                     .child(Icon::new(type_icon).small().text_color(cx.theme().primary))
-                                    .child(div().text_sm().font_medium().child(SharedString::from(art.title.clone())))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_medium()
+                                            .truncate()
+                                            .text_color(cx.theme().foreground)
+                                            .child(SharedString::from(art.title.clone())),
+                                    )
                                     .child(Tag::secondary().small().child(art.kind.label())),
                             )
                             .child(
                                 div()
                                     .text_xs()
+                                    .truncate()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(format!(
-                                        "{} · v{}",
-                                        art.identifier,
-                                        format_commas(art.version)
-                                    ))),
+                                    .child(SharedString::from(meta_parts.join(" · "))),
                             ),
                     )
                     .child(
                         Button::new(("art-page-open", global_idx))
                             .outline()
                             .small()
+                            .h(px(28.))
                             .label(tr(locale, "chat.preview"))
                             .on_click(move |_, _, cx| {
                                 let aid_clone = aid.clone();
@@ -233,14 +274,14 @@ pub fn render_artifacts_page(
                     ),
             );
         }
-        page = page.child(grid);
+        inner = inner.child(grid);
 
         if total_pages > 1 {
             let app_page_prev = app_state.clone();
             let app_page_next = app_state.clone();
             let pagination = h_flex()
                 .w_full()
-                .py_2()
+                .pt_3()
                 .border_t_1()
                 .border_color(cx.theme().border)
                 .justify_between()
@@ -295,9 +336,9 @@ pub fn render_artifacts_page(
                                 }),
                         ),
                 );
-            page = page.child(pagination);
+            inner = inner.child(pagination);
         }
     }
 
-    page
+    div().size_full().p_6().child(inner)
 }

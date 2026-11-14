@@ -113,10 +113,10 @@ impl Render for WorkspaceView {
             )
         };
 
-        let mut chat_view = div().size_full().child(self.chat_panel.clone());
-        if active_page != WorkspacePage::Chat {
-            chat_view = chat_view.hidden();
-        }
+        let chat_view = div()
+            .absolute()
+            .inset_0()
+            .child(self.chat_panel.clone());
 
         let page_overlay = match active_page {
             WorkspacePage::Chat => None,
@@ -132,8 +132,16 @@ impl Render for WorkspaceView {
         let center_view = div()
             .size_full()
             .relative()
+            .overflow_hidden()
             .child(chat_view)
-            .children(page_overlay.map(|p| div().size_full().child(p)));
+            .children(page_overlay.map(|p| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(cx.theme().background)
+                    .occlude()
+                    .child(p)
+            }));
 
         let sidebar_el = if left_anim_w > 0.5 {
             Some(

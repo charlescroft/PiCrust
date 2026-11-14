@@ -18,11 +18,62 @@ use gpui_kit::component::{
     StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    Anchor, MouseButton, AnyElement, App, AppContext as _, Context, Entity, Focusable as _, Font,
-    InteractiveElement as _, IntoElement, ParentElement, SharedString,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, Focusable as _, Font,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, Task, TextRun, Window, div, px,
 };
+use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+
+#[derive(Clone, Debug)]
+struct FileBrowserEntry {
+    name: String,
+    relative_path: String,
+    is_dir: bool,
+}
+
+fn list_workspace_directory(root: &Path, rel_dir: &str) -> Vec<FileBrowserEntry> {
+    let target = if rel_dir.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_dir)
+    };
+    let Ok(rd) = std::fs::read_dir(&target) else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if matches!(
+            name.as_str(),
+            ".git" | "node_modules" | "target" | ".next" | ".next-desktop" | "dist" | ".DS_Store"
+        ) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        let relative_path = if rel_dir.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_dir}/{name}")
+        };
+        let item = FileBrowserEntry {
+            name,
+            relative_path,
+            is_dir,
+        };
+        if is_dir {
+            dirs.push(item);
+        } else {
+            files.push(item);
+        }
+    }
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.extend(files);
+    dirs
+}
 
 struct SlashCommandEntry {
     name: &'static str,
@@ -244,6 +295,10 @@ pub struct ComposerView {
     is_promoted: bool,
     at_query: Option<String>,
     file_picker_open: bool,
+    file_picker_dir: String,
+    file_picker_entries: Vec<FileBrowserEntry>,
+    file_picker_selected_idx: usize,
+    file_picker_scroll: ScrollHandle,
     slash_query: Option<String>,
     session_drafts: HashMap<Option<String>, String>,
     last_rendered_session_id: Option<String>,
@@ -399,6 +454,10 @@ impl ComposerView {
             is_promoted: false,
             at_query: None,
             file_picker_open: false,
+            file_picker_dir: String::new(),
+            file_picker_entries: Vec::new(),
+            file_picker_selected_idx: 0,
+            file_picker_scroll: ScrollHandle::new(),
             slash_query: None,
             session_drafts: HashMap::new(),
             last_rendered_session_id: None,
@@ -419,6 +478,65 @@ impl ComposerView {
         self.app_state.update(cx, |s, cx| {
             s.submit_prompt(text, cx);
         });
+    }
+
+    fn reload_file_browser(&mut self, cx: &gpui_kit::App) {
+        let root = self.app_state.read(cx).active_cwd.clone();
+        self.file_picker_entries = list_workspace_directory(&root, &self.file_picker_dir);
+        self.file_picker_selected_idx = 0;
+    }
+
+    fn enter_file_picker_dir(&mut self, rel_dir: String, cx: &mut Context<Self>) {
+        self.file_picker_dir = rel_dir;
+        self.reload_file_browser(cx);
+        self.file_picker_scroll.scroll_to_item(0);
+        cx.notify();
+    }
+
+    fn exit_file_picker_dir(&mut self, cx: &mut Context<Self>) {
+        if self.file_picker_dir.is_empty() {
+            return;
+        }
+        let prev_dir = self.file_picker_dir.clone();
+        if let Some(slash) = self.file_picker_dir.rfind('/') {
+            self.file_picker_dir = self.file_picker_dir[..slash].to_string();
+        } else {
+            self.file_picker_dir.clear();
+        }
+        self.reload_file_browser(cx);
+        if let Some(pos) = self
+            .file_picker_entries
+            .iter()
+            .position(|e| e.relative_path == prev_dir)
+        {
+            self.file_picker_selected_idx = pos;
+            self.file_picker_scroll.scroll_to_item(pos);
+        }
+        cx.notify();
+    }
+
+    fn insert_file_reference(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let cur = self.textarea.read(cx).value().to_string();
+        let updated = if self.at_query.is_some() {
+            if let Some(pos) = cur.rfind('@') {
+                format!("{}@{} ", &cur[..pos], rel)
+            } else {
+                format!("{cur}@{rel} ")
+            }
+        } else {
+            let sep = if cur.is_empty() || cur.ends_with(char::is_whitespace) {
+                ""
+            } else {
+                " "
+            };
+            format!("{cur}{sep}@{rel} ")
+        };
+        self.textarea.update(cx, |st, cx| {
+            st.set_value(&updated, window, cx);
+        });
+        self.at_query = None;
+        self.file_picker_open = false;
+        cx.notify();
     }
 
     pub fn render_composer(
@@ -1012,16 +1130,27 @@ impl ComposerView {
             wrapper = wrapper.child(popup);
         }
 
-        // 3. Native @file fuzzy popup with real vertical scroll; "+" opens without injecting "@" prematurely
+        // 3. Native @file fuzzy popup / "+" root-first directory browser with full keyboard nav
         if self.at_query.is_some() || self.file_picker_open {
+            let is_dir_browser = self.file_picker_open && self.at_query.is_none();
+            let list_len = if is_dir_browser {
+                self.file_picker_entries.len()
+            } else {
+                file_matches.len().min(40)
+            };
+            if list_len > 0 && self.file_picker_selected_idx >= list_len {
+                self.file_picker_selected_idx = list_len - 1;
+            }
+
             let mut list_scroll = v_flex()
                 .id("at-file-scroll")
+                .track_scroll(&self.file_picker_scroll)
                 .w_full()
-                .max_h(px(190.))
+                .max_h(px(210.))
                 .overflow_y_scroll()
                 .gap_0p5();
 
-            if file_matches.is_empty() {
+            if list_len == 0 {
                 list_scroll = list_scroll.child(
                     div()
                         .px_2p5()
@@ -1030,8 +1159,80 @@ impl ComposerView {
                         .text_color(cx.theme().muted_foreground)
                         .child(tr(locale, "chat.noFiles")),
                 );
+            } else if is_dir_browser {
+                let entries = self.file_picker_entries.clone();
+                let selected_ix = self.file_picker_selected_idx;
+                for (idx, entry) in entries.into_iter().enumerate() {
+                    let is_selected = idx == selected_ix;
+                    let rel = entry.relative_path.clone();
+                    let is_dir = entry.is_dir;
+                    list_scroll = list_scroll.child(
+                        h_flex()
+                            .id(("at-file-row", idx))
+                            .w_full()
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .px_2p5()
+                            .py_1p5()
+                            .gap_2()
+                            .items_center()
+                            .justify_between()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .bg(if is_selected {
+                                cx.theme().secondary
+                            } else {
+                                cx.theme().transparent
+                            })
+                            .hover(|s| s.bg(cx.theme().secondary))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if is_dir {
+                                    this.enter_file_picker_dir(rel.clone(), cx);
+                                } else {
+                                    this.insert_file_reference(&rel, window, cx);
+                                }
+                            }))
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        Icon::new(if is_dir {
+                                            IconName::Folder
+                                        } else {
+                                            IconName::FileText
+                                        })
+                                        .xsmall()
+                                        .text_color(if is_dir {
+                                            cx.theme().primary
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(cx.theme().foreground)
+                                            .truncate()
+                                            .child(SharedString::from(entry.name)),
+                                    ),
+                            )
+                            .children(is_dir.then(|| {
+                                Icon::new(IconName::ChevronRight)
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground)
+                            })),
+                    );
+                }
             } else {
+                let selected_ix = self.file_picker_selected_idx;
                 for (idx, m) in file_matches.iter().take(40).enumerate() {
+                    let is_selected = idx == selected_ix;
                     let rel = m.relative_path.clone();
                     list_scroll = list_scroll.child(
                         h_flex()
@@ -1046,29 +1247,14 @@ impl ComposerView {
                             .justify_start()
                             .rounded_md()
                             .cursor_pointer()
+                            .bg(if is_selected {
+                                cx.theme().secondary
+                            } else {
+                                cx.theme().transparent
+                            })
                             .hover(|s| s.bg(cx.theme().secondary))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                let cur = this.textarea.read(cx).value().to_string();
-                                let updated = if this.at_query.is_some() {
-                                    if let Some(pos) = cur.rfind('@') {
-                                        format!("{}@{} ", &cur[..pos], rel)
-                                    } else {
-                                        format!("{cur}@{rel} ")
-                                    }
-                                } else {
-                                    let sep = if cur.is_empty() || cur.ends_with(char::is_whitespace) {
-                                        ""
-                                    } else {
-                                        " "
-                                    };
-                                    format!("{cur}{sep}@{rel} ")
-                                };
-                                this.textarea.update(cx, |st, cx| {
-                                    st.set_value(&updated, window, cx);
-                                });
-                                this.at_query = None;
-                                this.file_picker_open = false;
-                                cx.notify();
+                                this.insert_file_reference(&rel, window, cx);
                             }))
                             .child(Icon::new(IconName::FileText).xsmall())
                             .child(
@@ -1084,6 +1270,16 @@ impl ComposerView {
                 }
             }
 
+            let header_title = if is_dir_browser {
+                if self.file_picker_dir.is_empty() {
+                    "/".to_string()
+                } else {
+                    format!("/{}", self.file_picker_dir)
+                }
+            } else {
+                tr(locale, "chat.projectFiles").to_string()
+            };
+
             let popup = v_flex()
                 .w_full()
                 .overflow_hidden()
@@ -1095,29 +1291,68 @@ impl ComposerView {
                 .bg(cx.theme().popover)
                 .child(
                     h_flex()
-                        .px_2p5()
+                        .px_2()
                         .py_1()
                         .justify_between()
                         .items_center()
+                        .gap_2()
                         .border_b_1()
                         .border_color(cx.theme().border)
                         .child(
-                            div()
-                                .text_xs()
-                                .font_medium()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(tr(locale, "chat.projectFiles")),
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .items_center()
+                                .gap_1p5()
+                                .children((is_dir_browser && !self.file_picker_dir.is_empty()).then(|| {
+                                    Button::new("file-picker-back")
+                                        .ghost()
+                                        .small()
+                                        .h(px(26.))
+                                        .w(px(26.))
+                                        .icon(IconName::ChevronLeft)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.exit_file_picker_dir(cx);
+                                        }))
+                                }))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(SharedString::from(header_title)),
+                                ),
                         )
                         .child(
-                            Button::new("close-at-popup")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.at_query = None;
-                                    this.file_picker_open = false;
-                                    cx.notify();
-                                })),
+                            h_flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground.opacity(0.75))
+                                        .child(if is_dir_browser {
+                                            "↑↓ · ←/→ · Enter"
+                                        } else {
+                                            "↑↓ · Enter"
+                                        }),
+                                )
+                                .child(
+                                    Button::new("close-at-popup")
+                                        .ghost()
+                                        .small()
+                                        .h(px(28.))
+                                        .w(px(28.))
+                                        .icon(IconName::Close)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.at_query = None;
+                                            this.file_picker_open = false;
+                                            cx.notify();
+                                        })),
+                                ),
                         ),
                 )
                 .child(list_scroll);
@@ -1173,12 +1408,85 @@ impl ComposerView {
                 .into_any_element()
         };
 
+        let file_matches_for_keys = file_matches.clone();
         let build_active_textarea = || {
+            let fm_keys = file_matches_for_keys.clone();
             div()
                 .w_full()
                 .min_w_0()
-                .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                .capture_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     let key = event.keystroke.key.as_str();
+
+                    // Keyboard navigation when @file or "+" directory picker is open
+                    if this.file_picker_open || this.at_query.is_some() {
+                        let is_dir_browser = this.file_picker_open && this.at_query.is_none();
+                        let len = if is_dir_browser {
+                            this.file_picker_entries.len()
+                        } else {
+                            fm_keys.len().min(40)
+                        };
+                        match key {
+                            "up" => {
+                                cx.stop_propagation();
+                                if len > 0 {
+                                    this.file_picker_selected_idx = this.file_picker_selected_idx.saturating_sub(1);
+                                    this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
+                                    cx.notify();
+                                }
+                                return;
+                            }
+                            "down" => {
+                                cx.stop_propagation();
+                                if len > 0 {
+                                    this.file_picker_selected_idx = (this.file_picker_selected_idx + 1).min(len - 1);
+                                    this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
+                                    cx.notify();
+                                }
+                                return;
+                            }
+                            "right" if is_dir_browser => {
+                                if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
+                                    if entry.is_dir {
+                                        cx.stop_propagation();
+                                        this.enter_file_picker_dir(entry.relative_path, cx);
+                                        return;
+                                    }
+                                }
+                            }
+                            "left" if is_dir_browser => {
+                                if !this.file_picker_dir.is_empty() {
+                                    cx.stop_propagation();
+                                    this.exit_file_picker_dir(cx);
+                                    return;
+                                }
+                            }
+                            "enter" => {
+                                cx.stop_propagation();
+                                if is_dir_browser {
+                                    if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
+                                        if entry.is_dir {
+                                            this.enter_file_picker_dir(entry.relative_path, cx);
+                                        } else {
+                                            this.insert_file_reference(&entry.relative_path, window, cx);
+                                        }
+                                    }
+                                } else if let Some(m) = fm_keys.get(this.file_picker_selected_idx) {
+                                    let rel = m.relative_path.clone();
+                                    this.insert_file_reference(&rel, window, cx);
+                                }
+                                return;
+                            }
+                            "escape" => {
+                                cx.stop_propagation();
+                                this.at_query = None;
+                                this.file_picker_open = false;
+                                cx.notify();
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+
                     if key == "enter" {
                         let sc = this.app_state.read(cx).send_shortcut;
                         let sec = event.keystroke.modifiers.secondary(cx);
@@ -1258,11 +1566,13 @@ impl ComposerView {
                     .flex_shrink_0()
                     .icon(IconName::Plus)
                     .tooltip(tr(locale, "chat.referenceFiles"))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.file_picker_open = !this.file_picker_open;
                         if this.file_picker_open {
-                            this.app_state
-                                .update(cx, |s, cx| s.run_file_fuzzy_search("", cx));
+                            this.at_query = None;
+                            this.file_picker_dir.clear();
+                            this.reload_file_browser(cx);
+                            this.textarea.read(cx).focus_handle(cx).focus(window, cx);
                         }
                         cx.notify();
                     })),

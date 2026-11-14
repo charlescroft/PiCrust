@@ -187,6 +187,7 @@ pub fn render_sidebar(
             move |_, _, cx| {
                 app_arts.update(cx, |s, cx| {
                     s.active_page = WorkspacePage::Artifacts;
+                    s.refresh_artifacts_from_sidecar(cx);
                     cx.notify();
                 });
             },

@@ -1689,9 +1689,37 @@ impl AppState {
                 favorite,
             });
         }
+        // Preserve already-fetched content/previous_content when refreshing metadata list
+        for art in &mut parsed {
+            if let Some(prev) = self.artifacts.iter().find(|a| a.identifier == art.identifier) {
+                if art.content.is_empty() && !prev.content.is_empty() {
+                    art.content = prev.content.clone();
+                }
+                if art.previous_content.is_none() && prev.previous_content.is_some() {
+                    art.previous_content = prev.previous_content.clone();
+                }
+            }
+        }
         if !parsed.is_empty() {
             self.artifacts = parsed;
         }
+    }
+
+    pub fn refresh_artifacts_from_sidecar(&mut self, cx: &mut Context<Self>) {
+        if !self.sidecar_connected {
+            return;
+        }
+        let client = self.client.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            if let Ok(val) = client.get_artifacts(None).await {
+                let _ = entity.update(cx, |this, cx| {
+                    this.apply_artifacts_response(&val);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     pub fn apply_models_config_response(&mut self, val: &Value) {
@@ -3065,6 +3093,7 @@ impl AppState {
             .and_then(|m| m.context_window)
             .unwrap_or(200_000);
 
+        self.messages.clear();
         // Fast local JSONL load so switching sessions is instant and works offline
         if let Some(ref p) = local_jsonl_path {
             let parsed = parse_session_jsonl_file(p, &mut self.controller.next_local_msg_id);
@@ -3085,6 +3114,7 @@ impl AppState {
             }
             self.clamp_thinking_level_to_model();
         }
+        cx.notify();
 
         if self.sidecar_connected {
             self.connect_session_sse(session_id.clone(), cx);
@@ -3158,16 +3188,32 @@ impl AppState {
                             ((ctx_tok as f64 / window as f64) * 100.0).clamp(0.0, 100.0) as f32;
                         this.stats.has_context_usage = true;
                     }
-                    this.artifacts.clear();
+                    // Merge any newly extracted inline artifacts into the cross-session library
+                    // without wiping historical artifacts from other sessions.
                     for msg in &this.messages {
-                        this.artifacts.extend(extract_artifacts_from_markdown(
-                            &msg.content,
-                            Some(&session_id),
-                        ));
+                        for art in extract_artifacts_from_markdown(&msg.content, Some(&session_id)) {
+                            if let Some(existing) = this
+                                .artifacts
+                                .iter_mut()
+                                .find(|a| a.identifier == art.identifier && a.session_id.as_deref() == Some(session_id.as_str()))
+                            {
+                                if existing.content != art.content {
+                                    existing.previous_content = Some(existing.content.clone());
+                                    existing.content = art.content;
+                                    existing.version += 1;
+                                }
+                            } else {
+                                this.artifacts.push(art);
+                            }
+                        }
                     }
                     if this.active_artifact_id.is_none() {
-                        this.active_artifact_id =
-                            this.artifacts.first().map(|a| a.identifier.clone());
+                        this.active_artifact_id = this
+                            .artifacts
+                            .iter()
+                            .find(|a| a.session_id.as_deref() == Some(session_id.as_str()))
+                            .or_else(|| this.artifacts.first())
+                            .map(|a| a.identifier.clone());
                     }
                     if this.controller.sse_task.is_none() {
                         this.connect_session_sse(session_id, cx);
