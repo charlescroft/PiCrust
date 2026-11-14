@@ -10,10 +10,35 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement, PathPromptOptions, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, div, px,
+    ParentElement, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
+    Styled, Window, div, px,
 };
 use std::path::PathBuf;
+
+#[derive(Clone)]
+struct DragProjectGroup {
+    name: String,
+}
+
+impl Render for DragProjectGroup {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .px_3()
+            .py_1p5()
+            .gap_2()
+            .items_center()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().primary)
+            .bg(cx.theme().popover)
+            .shadow_md()
+            .text_xs()
+            .font_medium()
+            .text_color(cx.theme().foreground)
+            .child(Icon::new(IconName::Folder).xsmall().text_color(cx.theme().primary))
+            .child(SharedString::from(self.name.clone()))
+    }
+}
 
 pub struct InlineRenameState {
     pub session_id: String,
@@ -99,7 +124,7 @@ pub fn render_sidebar(
         .collect();
 
     let grouped = state.grouped_project_sessions();
-    let project_groups: Vec<(
+    let mut project_groups: Vec<(
         String,
         bool,
         Option<PathBuf>,
@@ -124,6 +149,14 @@ pub fn render_sidebar(
             (proj, is_proj_collapsed, proj_cwd, rows)
         })
         .collect();
+    if !state.project_order.is_empty() {
+        let order = &state.project_order;
+        project_groups.sort_by(|a, b| {
+            let pos_a = order.iter().position(|n| n == &a.0).unwrap_or(usize::MAX);
+            let pos_b = order.iter().position(|n| n == &b.0).unwrap_or(usize::MAX);
+            pos_a.cmp(&pos_b).then_with(|| a.0.cmp(&b.0))
+        });
+    }
 
     let app_new_proj = app_state.clone();
     let app_tasks = app_state.clone();
@@ -505,6 +538,9 @@ pub fn render_sidebar(
 
             let app_menu = app_state.clone();
             let app_ctx = app_state.clone();
+            let app_drop = app_state.clone();
+            let proj_for_drag = proj_name.clone();
+            let proj_for_drop = proj_name.clone();
             let proj_for_menu = proj_name.clone();
             let proj_for_ctx = proj_name.clone();
             let cwd_for_menu = proj_cwd.clone();
@@ -525,6 +561,20 @@ pub fn render_sidebar(
                 .cursor_pointer()
                 .hover(|s| s.bg(cx.theme().sidebar_accent.opacity(0.6)))
                 .group(proj_group.clone())
+                .on_drag(DragProjectGroup { name: proj_for_drag }, |drag, _, _, cx| {
+                    let d = drag.clone();
+                    cx.new(|_| d)
+                })
+                .drag_over::<DragProjectGroup>(|style, _, _, cx| {
+                    style.border_t_2().border_color(cx.theme().primary)
+                })
+                .on_drop(move |drag: &DragProjectGroup, _, cx| {
+                    let from_name = drag.name.clone();
+                    let to_name = proj_for_drop.clone();
+                    app_drop.update(cx, |s, cx| {
+                        s.reorder_project_group(&from_name, &to_name, cx);
+                    });
+                })
                 .on_click(move |_, _, cx| {
                     app_toggle.update(cx, |s, cx| {
                         if s.collapsed_projects.contains(&proj_key) {

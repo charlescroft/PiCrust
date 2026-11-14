@@ -159,6 +159,18 @@ pub struct ChatPanel {
     nav_window_start: usize,
     show_all_turns: bool,
     cached_turns: Vec<TurnLocation>,
+    session_caches: HashMap<
+        String,
+        (
+            HashMap<u64, CachedRowEntities>,
+            ListState,
+            Vec<TurnLocation>,
+            usize,
+            Option<(u64, usize, usize, usize, bool)>,
+            f32,
+        ),
+    >,
+    session_cache_order: Vec<String>,
 }
 
 impl Focusable for ChatPanel {
@@ -200,6 +212,8 @@ impl ChatPanel {
             nav_window_start: 0,
             show_all_turns: false,
             cached_turns: Vec::new(),
+            session_caches: HashMap::new(),
+            session_cache_order: Vec::new(),
         }
     }
 
@@ -348,12 +362,67 @@ impl ChatPanel {
         }
 
         if sid != self.last_session_id {
-            self.last_session_id = sid;
+            // Save outgoing session's row_cache + measured ListState (bounded to 6 recent sessions)
+            if let Some(prev_sid) = self.last_session_id.take() {
+                let prev_list_state = self.scroller.read(cx).list_state.clone();
+                let prev_rows = std::mem::take(&mut self.row_cache);
+                let prev_turns = std::mem::take(&mut self.cached_turns);
+                self.session_caches.insert(
+                    prev_sid.clone(),
+                    (
+                        prev_rows,
+                        prev_list_state,
+                        prev_turns,
+                        self.last_message_count,
+                        self.last_tail_sig,
+                        self.last_font_size,
+                    ),
+                );
+                self.session_cache_order.retain(|s| s != &prev_sid);
+                self.session_cache_order.push(prev_sid);
+                while self.session_cache_order.len() > 6 {
+                    let evicted = self.session_cache_order.remove(0);
+                    self.session_caches.remove(&evicted);
+                }
+            }
+
+            self.last_session_id = sid.clone();
+            self.nav_window_start = usize::MAX;
+            self.show_all_turns = false;
+
+            // Restore if previously visited and message count matches, for 0ms jitter-free switch!
+            if let Some(ref next_sid) = sid {
+                if let Some((
+                    cached_rows,
+                    cached_list,
+                    cached_turns,
+                    cached_count,
+                    cached_sig,
+                    cached_font,
+                )) = self.session_caches.remove(next_sid)
+                {
+                    if cached_count == new_count {
+                        self.row_cache = cached_rows;
+                        self.cached_turns = cached_turns;
+                        self.last_message_count = cached_count;
+                        self.last_tail_sig = cached_sig;
+                        self.scroller.update(cx, |s, cx| {
+                            s.list_state = cached_list;
+                            s.last_scroll_notify_key = (s.is_scrolled_up(), s.logical_scroll_top().item_ix);
+                            if cached_font != font_sz {
+                                s.remeasure(cx);
+                            } else {
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                }
+            }
+
             self.row_cache.clear();
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
-            self.nav_window_start = usize::MAX;
-            self.show_all_turns = false;
             if let Some(t) = next_turns {
                 self.cached_turns = t;
             }
@@ -420,6 +489,9 @@ impl ChatPanel {
 
 impl Render for ChatPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let app_for_sync = self.app_state.clone();
+        self.sync_scroller_with_messages(&app_for_sync, cx);
+
         // Sync pending ExtensionUiRequest -> QuestionnaireView
         let pending_req = self.app_state.read(cx).pending_ui_request.clone();
         match (pending_req, &self.questionnaire) {

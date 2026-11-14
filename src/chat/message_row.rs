@@ -850,7 +850,93 @@ fn render_assistant_row(
                             .copied()
                             .unwrap_or(thinking_expanded_default);
 
-                        let think_el = if step_open {
+                        let non_empty_lines: Vec<&str> = think_text
+                            .lines()
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        let first_line = non_empty_lines.first().copied().unwrap_or("");
+                        let mut chars = first_line.chars();
+                        let head: String = chars.by_ref().take(80).collect();
+                        let is_truncated = chars.next().is_some() || non_empty_lines.len() > 1;
+                        let think_preview = if head.is_empty() {
+                            tr(locale, "chat.thinkingLabel").to_string()
+                        } else if is_truncated {
+                            format!("{head}…")
+                        } else {
+                            head
+                        };
+
+                        let header_bar = h_flex()
+                            .id(("think-step", msg_id * 1000 + step_idx as u64))
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .px_2p5()
+                            .py_1p5()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(cx.theme().secondary))
+                            .on_click(cx.listener(move |panel, _, _, cx| {
+                                panel.toggle_thinking_step(msg_id, step_idx, cx);
+                                cx.notify();
+                            }))
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(Icon::new(IconName::Bot).xsmall()),
+                                    )
+                                    .child(if step_open {
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .line_height(px(16.))
+                                            .text_color(cx.theme().foreground)
+                                            .child(tr(locale, "chat.thinkingLabel"))
+                                            .into_any_element()
+                                    } else {
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .line_height(px(16.))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(SharedString::from(think_preview))
+                                            .into_any_element()
+                                    }),
+                            )
+                            .child(
+                                Icon::new(if step_open {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .xsmall()
+                                .text_color(cx.theme().muted_foreground),
+                            );
+
+                        let mut think_card = v_flex()
+                            .w_full()
+                            .overflow_hidden()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .child(header_bar);
+
+                        if step_open {
                             let md = think_text.to_string();
                             let tv = match row_cache.thinking_states.get_mut(&step_idx) {
                                 Some((prev_md, tv)) if *prev_md != md => {
@@ -871,113 +957,23 @@ fn render_assistant_row(
                             tv_style.highlight_theme = cx.theme().highlight_theme.clone();
                             let markdown_view = with_plugins(TextView::new(&tv).style(tv_style).selectable(true));
 
-                            h_flex()
-                                .id(("think-step", msg_id * 1000 + step_idx as u64))
-                                .w_full()
-                                .items_start()
-                                .gap_2()
-                                .px_2p5()
-                                .py_1p5()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().background)
-                                .child(
-                                    div()
-                                        .w(px(16.))
-                                        .h(px(16.))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(Icon::new(IconName::Bot).xsmall()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .font_family(cx.theme().font_family.clone())
-                                        .text_size(px((font_px - 1.0).max(11.0)))
-                                        .line_height(rems(1.5))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(markdown_view),
-                                )
-                                .child(
-                                    div()
-                                        .id(("think-toggle", msg_id * 1000 + step_idx as u64))
-                                        .flex_shrink_0()
-                                        .cursor_pointer()
-                                        .p_1()
-                                        .hover(|s| s.bg(cx.theme().secondary))
-                                        .rounded_sm()
-                                        .on_click(cx.listener(move |panel, _, _, cx| {
-                                            panel.toggle_thinking_step(msg_id, step_idx, cx);
-                                            cx.notify();
-                                        }))
-                                        .child(
-                                            Icon::new(IconName::ChevronDown)
-                                                .xsmall()
-                                                .text_color(cx.theme().muted_foreground),
-                                        ),
-                                )
-                        } else {
-                            let think_preview: String = think_text
-                                .lines()
-                                .map(str::trim)
-                                .find(|l| !l.is_empty())
-                                .unwrap_or("")
-                                .chars()
-                                .take(80)
-                                .collect();
-                            let think_label = if think_preview.is_empty() {
-                                tr(locale, "chat.thinkingLabel").to_string()
-                            } else {
-                                think_preview
-                            };
+                            think_card = think_card.child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .px_3()
+                                    .py_2()
+                                    .border_t_1()
+                                    .border_color(cx.theme().border)
+                                    .font_family(cx.theme().font_family.clone())
+                                    .text_size(px((font_px - 1.0).max(11.0)))
+                                    .line_height(rems(1.5))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(markdown_view),
+                            );
+                        }
 
-                            h_flex()
-                                .id(("think-step", msg_id * 1000 + step_idx as u64))
-                                .w_full()
-                                .items_center()
-                                .gap_2()
-                                .px_2p5()
-                                .py_1p5()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().background)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().secondary))
-                                .on_click(cx.listener(move |panel, _, _, cx| {
-                                    panel.toggle_thinking_step(msg_id, step_idx, cx);
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .w(px(16.))
-                                        .h(px(16.))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(Icon::new(IconName::Bot).xsmall()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_xs()
-                                        .line_height(px(16.))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(SharedString::from(think_label)),
-                                )
-                                .child(
-                                    Icon::new(IconName::ChevronRight)
-                                        .xsmall()
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                        };
+                        let think_el = think_card;
                         steps_stack = steps_stack.child(if is_pre_compaction {
                             div().w_full().opacity(0.75).child(think_el).into_any_element()
                         } else {

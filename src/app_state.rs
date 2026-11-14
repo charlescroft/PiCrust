@@ -132,6 +132,7 @@ pub struct AppState {
     pub archived_projects: HashSet<String>,
     pub archived_session_ids: HashSet<String>,
     pub extra_projects: Vec<PathBuf>,
+    pub project_order: Vec<String>,
     pub projects_section_collapsed: bool,
     pub chats_section_collapsed: bool,
     pub renaming_session_id: Option<String>,
@@ -485,6 +486,7 @@ impl AppState {
             archived_projects: HashSet::new(),
             archived_session_ids: HashSet::new(),
             extra_projects: Vec::new(),
+            project_order: crate::app_settings::load_app_settings().chat.project_order,
             projects_section_collapsed: false,
             chats_section_collapsed: false,
             renaming_session_id: None,
@@ -737,6 +739,36 @@ impl AppState {
             self.archived_session_ids.insert(session_id);
         }
         cx.notify();
+    }
+
+    pub fn reorder_project_group(&mut self, from_name: &str, to_name: &str, cx: &mut Context<Self>) {
+        if from_name == to_name {
+            return;
+        }
+        let grouped = self.grouped_project_sessions();
+        let mut names: Vec<String> = Vec::new();
+        // Start with existing saved order for present groups
+        for p in &self.project_order {
+            if grouped.contains_key(p) && !names.contains(p) {
+                names.push(p.clone());
+            }
+        }
+        // Append any remaining present groups alphabetically
+        for k in grouped.keys() {
+            if !names.contains(k) {
+                names.push(k.clone());
+            }
+        }
+        if let Some(from_idx) = names.iter().position(|n| n == from_name) {
+            let item = names.remove(from_idx);
+            let to_idx = names.iter().position(|n| n == to_name).unwrap_or(names.len());
+            names.insert(to_idx, item);
+            self.project_order = names.clone();
+            crate::app_settings::update_app_settings(|s| {
+                s.chat.project_order = names;
+            });
+            cx.notify();
+        }
     }
 
     pub fn add_project_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -3135,7 +3167,11 @@ impl AppState {
                     this.has_earlier_messages = ctx_obj.get("hasEarlierMessages").and_then(Value::as_bool).unwrap_or(false);
                     let parsed =
                         parse_session_messages(&payload, &mut this.controller.next_local_msg_id);
-                    if !parsed.is_empty() {
+                    if !parsed.is_empty()
+                        && (this.messages.is_empty()
+                            || this.is_agent_running
+                            || parsed.len() > this.messages.len())
+                    {
                         let same_messages = parsed.len() == this.messages.len()
                             && parsed.iter().zip(this.messages.iter()).all(|(a, b)| {
                                 a.role == b.role

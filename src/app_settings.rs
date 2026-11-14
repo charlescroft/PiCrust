@@ -114,6 +114,8 @@ pub struct ChatSettings {
     pub chat_content_width: f32,
     #[serde(default)]
     pub todos_hidden: bool,
+    #[serde(default)]
+    pub project_order: Vec<String>,
 }
 
 impl Default for ChatSettings {
@@ -125,6 +127,7 @@ impl Default for ChatSettings {
             diff_view_mode: default_diff_view_mode(),
             chat_content_width: default_chat_content_width(),
             todos_hidden: false,
+            project_order: Vec::new(),
         }
     }
 }
