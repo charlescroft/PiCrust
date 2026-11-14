@@ -155,9 +155,10 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                     .child(
                         TabBar::new("theme-mode-tabs")
                             .segmented()
-                            .small()
+                            .w_full()
                             .child(
                                 Tab::new()
+                                    .flex_1()
                                     .label(tr(locale, "settings.themeDark"))
                                     .selected(current_mode == "dark")
                                     .on_click(move |_, _, cx| {
@@ -166,6 +167,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                             )
                             .child(
                                 Tab::new()
+                                    .flex_1()
                                     .label(tr(locale, "settings.themeLight"))
                                     .selected(current_mode == "light")
                                     .on_click(move |_, _, cx| {
@@ -174,6 +176,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                             )
                             .child(
                                 Tab::new()
+                                    .flex_1()
                                     .label(tr(locale, "settings.themeSystem"))
                                     .selected(current_mode == "system")
                                     .on_click(move |_, _, cx| {

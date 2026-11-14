@@ -51,6 +51,8 @@ pub fn render_artifacts_page(
         let mut grid = v_flex().gap_2();
         for (idx, art) in artifacts.iter().enumerate() {
             let aid = art.identifier.clone();
+            let sid_opt = art.session_id.clone();
+            let is_unread = state.is_artifact_unread(art);
             let app_open = app_state.clone();
             grid = grid.child(
                 h_flex()
@@ -68,6 +70,12 @@ pub fn render_artifacts_page(
                                 h_flex()
                                     .gap_2()
                                     .items_center()
+                                    .children((is_unread).then(|| {
+                                        div()
+                                            .size_2()
+                                            .rounded_full()
+                                            .bg(cx.theme().primary)
+                                    }))
                                     .child(div().text_sm().font_medium().child(SharedString::from(art.title.clone())))
                                     .child(Tag::secondary().small().child(art.kind.label())),
                             )
@@ -88,9 +96,16 @@ pub fn render_artifacts_page(
                             .small()
                             .label(tr(locale, "chat.preview"))
                             .on_click(move |_, _, cx| {
+                                let aid_clone = aid.clone();
+                                let sid_clone = sid_opt.clone();
                                 app_open.update(cx, |s, cx| {
-                                    s.active_artifact_id = Some(aid.clone());
-                                    s.active_page = WorkspacePage::Chat;
+                                    s.mark_artifact_read(&aid_clone, cx);
+                                    s.active_artifact_id = Some(aid_clone.clone());
+                                    if let Some(sid) = sid_clone {
+                                        s.select_session(sid, cx);
+                                    } else {
+                                        s.active_page = WorkspacePage::Chat;
+                                    }
                                     s.open_right_tab(RightPanelTab::Artifact, cx);
                                 });
                             }),

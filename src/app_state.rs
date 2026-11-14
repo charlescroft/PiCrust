@@ -121,6 +121,7 @@ pub struct AppState {
     pub sessions: Vec<SessionSummary>,
     pub running_session_ids: HashSet<String>,
     pub unread_session_ids: HashSet<String>,
+    pub read_artifact_ids: HashSet<String>,
     pub collapsed_projects: HashSet<String>,
     pub archived_projects: HashSet<String>,
     pub archived_session_ids: HashSet<String>,
@@ -452,6 +453,7 @@ impl AppState {
             sessions,
             running_session_ids: HashSet::new(),
             unread_session_ids: HashSet::new(),
+            read_artifact_ids: HashSet::new(),
             collapsed_projects: HashSet::new(),
             archived_projects: HashSet::new(),
             archived_session_ids: HashSet::new(),
@@ -2809,6 +2811,27 @@ impl AppState {
     }
 
     /// Monotonic request_id guarded session selection (per AGENTS.md hard rule).
+    pub fn is_artifact_unread(&self, artifact: &ArtifactRecord) -> bool {
+        if self.read_artifact_ids.contains(&artifact.identifier) {
+            return false;
+        }
+        if let Some(sid) = &artifact.session_id {
+            self.unread_session_ids.contains(sid)
+        } else {
+            false
+        }
+    }
+
+    pub fn has_unread_artifacts(&self) -> bool {
+        self.artifacts.iter().any(|art| self.is_artifact_unread(art))
+    }
+
+    pub fn mark_artifact_read(&mut self, identifier: &str, cx: &mut Context<Self>) {
+        if self.read_artifact_ids.insert(identifier.to_string()) {
+            cx.notify();
+        }
+    }
+
     pub fn select_session(&mut self, session_id: String, cx: &mut Context<Self>) {
         let req_id = self.controller.next_load_id();
         self.controller.stop_sse();

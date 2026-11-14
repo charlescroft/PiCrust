@@ -183,7 +183,7 @@ pub fn render_sidebar(
             format!("{} ({})", tr(locale, "sidebar.artifacts"), format_commas(arts_count)),
             active_page == WorkspacePage::Artifacts,
             cx,
-            false,
+            state.has_unread_artifacts(),
             move |_, _, cx| {
                 app_arts.update(cx, |s, cx| {
                     s.active_page = WorkspacePage::Artifacts;
