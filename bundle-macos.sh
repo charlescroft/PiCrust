@@ -25,11 +25,12 @@ elif [[ -f "$REPO_ROOT/src-tauri/icons/icon.icns" ]]; then
   cp "$REPO_ROOT/src-tauri/icons/icon.icns" "$RESOURCES_DIR/icon.icns"
 fi
 
-if [[ -f "$SCRIPT_DIR/dist-sidecar/server.cjs" ]]; then
+if [[ -f "$SCRIPT_DIR/dist-sidecar/server.mjs" || -f "$SCRIPT_DIR/dist-sidecar/server.cjs" ]]; then
   mkdir -p "$RESOURCES_DIR/sidecar"
   cp "$SCRIPT_DIR/sidecar/api-sidecar.mjs" "$RESOURCES_DIR/sidecar/"
   cp "$SCRIPT_DIR/sidecar/router-utils.mjs" "$RESOURCES_DIR/sidecar/"
-  cp "$SCRIPT_DIR/dist-sidecar/server.cjs" "$RESOURCES_DIR/sidecar/"
+  [[ -f "$SCRIPT_DIR/dist-sidecar/server.mjs" ]] && cp "$SCRIPT_DIR/dist-sidecar/server.mjs" "$RESOURCES_DIR/sidecar/"
+  [[ -f "$SCRIPT_DIR/dist-sidecar/server.cjs" ]] && cp "$SCRIPT_DIR/dist-sidecar/server.cjs" "$RESOURCES_DIR/sidecar/"
 fi
 
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'

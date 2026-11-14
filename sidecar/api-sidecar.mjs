@@ -29,11 +29,20 @@ const PORT = Number(process.env.PI_SIDECAR_PORT || "38471");
 const EXPECTED_TOKEN = process.env.PI_DESKTOP_API_TOKEN || "";
 const INSTANCE_ID = process.env.PI_DESKTOP_INSTANCE_ID || "";
 
-function loadSidecarBundle() {
+async function loadSidecarBundle() {
+  const mjsCandidate = join(piGpuiDir, "dist-sidecar", "server.mjs");
+  if (existsSync(mjsCandidate)) {
+    const { pathToFileURL } = await import("node:url");
+    return await import(pathToFileURL(mjsCandidate).href);
+  }
   if (!existsSync(bundlePath)) {
     throw new Error(
       `Sidecar bundle not found at ${bundlePath}. Run: node pi-gpui/sidecar/build-sidecar.mjs`,
     );
+  }
+  if (bundlePath.endsWith(".mjs")) {
+    const { pathToFileURL } = await import("node:url");
+    return await import(pathToFileURL(bundlePath).href);
   }
   const require = createRequire(import.meta.url);
   return require(bundlePath);
@@ -106,7 +115,7 @@ function isAuthorizedDesktopRequest(req) {
 }
 
 async function start() {
-  const { routes, registerNodeInstrumentation } = loadSidecarBundle();
+  const { routes, registerNodeInstrumentation } = await loadSidecarBundle();
   if (typeof registerNodeInstrumentation === "function") {
     registerNodeInstrumentation();
   }

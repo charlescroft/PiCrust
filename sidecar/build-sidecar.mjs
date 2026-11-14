@@ -145,11 +145,14 @@ async function main() {
   try {
     await esbuild.build({
       entryPoints: [generatedEntry],
-      outfile: join(distDir, "server.cjs"),
+      outfile: join(distDir, "server.mjs"),
       bundle: true,
       platform: "node",
       target: "node22",
-      format: "cjs",
+      format: "esm",
+      banner: {
+        js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+      },
       sourcemap: false,
       logLevel: "info",
       absWorkingDir: repoRoot,
@@ -158,6 +161,11 @@ async function main() {
         "next/server": nextShimPath,
         "next/server.js": nextShimPath,
       },
+      nodePaths: [
+        "/tmp/pi-esbuild/node_modules",
+        join(piGpuiDir, "node_modules"),
+        "/Applications/Pi Agent.app/Contents/Resources/resources/server/node_modules",
+      ],
       external: [
         "@earendil-works/*",
         "jiti",
@@ -166,14 +174,9 @@ async function main() {
         "proper-lockfile",
         "undici",
         "ws",
-        "mammoth",
-        "js-yaml",
-        "croner",
         "semver",
         "typebox",
         "web-push",
-        "qrcode-generator",
-        "esbuild",
       ],
       define: {
         "process.env.NEXT_RUNTIME": '"nodejs"',

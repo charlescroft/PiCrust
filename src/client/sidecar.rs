@@ -76,6 +76,19 @@ fn resolve_node_binary() -> PathBuf {
 }
 
 fn locate_sidecar() -> Option<(PathBuf, PathBuf, PathBuf)> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent().and_then(Path::parent) {
+            let res_dir = contents.join("Resources").join("sidecar");
+            let script = res_dir.join("api-sidecar.mjs");
+            let mjs = res_dir.join("server.mjs");
+            let cjs = res_dir.join("server.cjs");
+            let bundle = if mjs.exists() { mjs } else { cjs };
+            if script.exists() && bundle.exists() {
+                return Some((script, bundle, res_dir));
+            }
+        }
+    }
+
     let cwd = std::env::current_dir().ok()?;
     let candidates = [
         cwd.join("pi-gpui"),
@@ -85,8 +98,10 @@ fn locate_sidecar() -> Option<(PathBuf, PathBuf, PathBuf)> {
 
     for dir in candidates {
         let script = dir.join("sidecar").join("api-sidecar.mjs");
-        let bundle = dir.join("dist-sidecar").join("server.cjs");
-        if script.exists() {
+        let mjs = dir.join("dist-sidecar").join("server.mjs");
+        let cjs = dir.join("dist-sidecar").join("server.cjs");
+        let bundle = if mjs.exists() { mjs } else { cjs };
+        if script.exists() && bundle.exists() {
             let repo_root = dir.parent().map(Path::to_path_buf).unwrap_or(cwd.clone());
             return Some((script, bundle, repo_root));
         }
