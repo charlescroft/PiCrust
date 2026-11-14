@@ -238,9 +238,18 @@ pub fn apply_appearance(
         theme.dark_theme = Rc::new(dark_cfg);
     });
     Theme::change(target_mode, None, cx);
-    // Keep system UI font (e.g. .AppleSystemUIFont on macOS) across all themes
+    // Keep system UI font (e.g. .AppleSystemUIFont on macOS) and configured rem size across all themes
+    let ui_font_px = load_appearance_prefs().ui_font_size.clamp(5.0, 21.0);
     Theme::update(cx, |theme| {
         theme.font_family = platform_system_font();
+        theme.font_size = gpui_kit::px(ui_font_px);
+    });
+}
+
+pub fn apply_ui_font_size(size: f32, cx: &mut App) {
+    let clamped = size.clamp(5.0, 21.0);
+    Theme::update(cx, |theme| {
+        theme.font_size = gpui_kit::px(clamped);
     });
 }
 

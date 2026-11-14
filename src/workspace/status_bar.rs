@@ -31,6 +31,8 @@ pub fn render_status_bar(
 
     let status_color = if sidecar_ok || is_running {
         cx.theme().success
+    } else if state.selected_model.is_some() {
+        cx.theme().accent
     } else {
         cx.theme().danger
     };
@@ -38,6 +40,8 @@ pub fn render_status_bar(
         tr(locale, "status.running")
     } else if sidecar_ok {
         tr(locale, "status.connected")
+    } else if state.selected_model.is_some() {
+        "Native Rust Engine"
     } else {
         tr(locale, "status.disconnected")
     };

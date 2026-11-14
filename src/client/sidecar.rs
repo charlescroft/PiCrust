@@ -15,7 +15,8 @@ impl SidecarProcess {
             return None;
         }
 
-        let mut cmd = Command::new("node");
+        let node_bin = resolve_node_binary();
+        let mut cmd = Command::new(node_bin);
         cmd.arg(&sidecar_script)
             .current_dir(&repo_root)
             .env("PI_SIDECAR_HOST", "127.0.0.1")
@@ -49,6 +50,29 @@ impl Drop for SidecarProcess {
             let _ = child.wait();
         }
     }
+}
+
+fn resolve_node_binary() -> PathBuf {
+    let candidates = [
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/Applications/Pi Agent.app/Contents/Resources/resources/Pi Agent Server.app/Contents/MacOS/node",
+    ];
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let p = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    for c in candidates {
+        let p = PathBuf::from(c);
+        if p.is_file() {
+            return p;
+        }
+    }
+    PathBuf::from("node")
 }
 
 fn locate_sidecar() -> Option<(PathBuf, PathBuf, PathBuf)> {

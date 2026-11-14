@@ -599,7 +599,232 @@ impl AppState {
 
         let models_cfg = local_store::read_models_config_local();
         self.apply_models_config_response(&models_cfg);
+
+        // Synthesize `self.models`, `self.enabled_models_overview`, `self.auth_providers`, and
+        // `self.selected_model` directly from `~/.pi/agent/{models.json, auth.json, settings.json}`
+        // so the model picker and native Rust LLM engine work with 0 Node processes.
+        let global_settings = local_store::read_global_settings();
+        let enabled_patterns: Vec<String> = global_settings
+            .get("enabledModels")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let all_enabled = enabled_patterns.is_empty();
+
+        let auth_map = local_store::read_json_object_or_empty(
+            &local_store::pi_agent_dir().join("auth.json"),
+        );
+
+        let mut local_models: Vec<ModelInfo> = Vec::new();
+        let mut overview_providers: Vec<EnabledProviderGroup> = Vec::new();
+
+        for cp in &self.configured_providers {
+            let prov_name = cp.display_name.clone().unwrap_or_else(|| cp.id.clone());
+            let mut prov_items = Vec::new();
+            let mut enabled_cnt = 0usize;
+            for cm in &cp.models {
+                let model_ref = format!("{}/{}", cp.id, cm.id);
+                let is_enabled = all_enabled
+                    || enabled_patterns
+                        .iter()
+                        .any(|pat| pat == &model_ref || pat == &format!("{}/*", cp.id));
+                if is_enabled {
+                    enabled_cnt += 1;
+                }
+                let levels = if cm.reasoning {
+                    vec![
+                        "off".to_string(),
+                        "low".to_string(),
+                        "medium".to_string(),
+                        "high".to_string(),
+                    ]
+                } else {
+                    vec!["off".to_string()]
+                };
+                local_models.push(ModelInfo {
+                    provider: cp.id.clone(),
+                    id: cm.id.clone(),
+                    name: cm.name.clone(),
+                    provider_name: Some(prov_name.clone()),
+                    reasoning: cm.reasoning,
+                    context_window: cm.context_window,
+                    enabled: Some(is_enabled),
+                    thinking_levels: levels,
+                    thinking_level_map: cm
+                        .thinking_level_map
+                        .iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect(),
+                });
+                prov_items.push(EnabledModelItem {
+                    id: cm.id.clone(),
+                    name: cm.name.clone().unwrap_or_else(|| cm.id.clone()),
+                    model_ref,
+                    enabled: is_enabled,
+                    context_window: cm.context_window,
+                });
+            }
+            overview_providers.push(EnabledProviderGroup {
+                id: cp.id.clone(),
+                name: prov_name,
+                kind: "custom".to_string(),
+                enabled_count: enabled_cnt,
+                models: prov_items,
+            });
+        }
+
+        // Include built-in providers that have credentials in auth.json or env vars
+        let builtin_catalog: &[(&str, &str, &str, &[(&str, &str, bool, u64)])] = &[
+            (
+                "anthropic",
+                "Anthropic",
+                "ANTHROPIC_API_KEY",
+                &[
+                    ("claude-sonnet-4-6", "Claude Sonnet 4.6", true, 200_000),
+                    ("claude-opus-4-6", "Claude Opus 4.6", true, 200_000),
+                    ("claude-haiku-4-5", "Claude Haiku 4.5", true, 200_000),
+                ],
+            ),
+            (
+                "openai",
+                "OpenAI",
+                "OPENAI_API_KEY",
+                &[
+                    ("gpt-4o", "GPT-4o", false, 128_000),
+                    ("o3", "o3", true, 200_000),
+                ],
+            ),
+            (
+                "google",
+                "Google Gemini",
+                "GEMINI_API_KEY",
+                &[("gemini-2.5-pro", "Gemini 2.5 Pro", true, 1_000_000)],
+            ),
+        ];
+
+        let mut local_auth = Vec::new();
+        for (pid, pname, env_var, defaults) in builtin_catalog {
+            let has_auth = auth_map.contains_key(*pid)
+                || std::env::var(env_var)
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false);
+            local_auth.push(((*pid).to_string(), (*pname).to_string(), has_auth));
+            if has_auth && !self.configured_providers.iter().any(|cp| cp.id == *pid) {
+                let mut prov_items = Vec::new();
+                let mut enabled_cnt = 0usize;
+                for (mid, mname, reasoning, cw) in *defaults {
+                    let model_ref = format!("{pid}/{mid}");
+                    let is_enabled = all_enabled
+                        || enabled_patterns
+                            .iter()
+                            .any(|pat| pat == &model_ref || pat == &format!("{pid}/*"));
+                    if is_enabled {
+                        enabled_cnt += 1;
+                    }
+                    local_models.push(ModelInfo {
+                        provider: (*pid).to_string(),
+                        id: (*mid).to_string(),
+                        name: Some((*mname).to_string()),
+                        provider_name: Some((*pname).to_string()),
+                        reasoning: *reasoning,
+                        context_window: Some(*cw),
+                        enabled: Some(is_enabled),
+                        thinking_levels: if *reasoning {
+                            vec![
+                                "off".into(),
+                                "low".into(),
+                                "medium".into(),
+                                "high".into(),
+                            ]
+                        } else {
+                            vec!["off".into()]
+                        },
+                        thinking_level_map: HashMap::new(),
+                    });
+                    prov_items.push(EnabledModelItem {
+                        id: (*mid).to_string(),
+                        name: (*mname).to_string(),
+                        model_ref,
+                        enabled: is_enabled,
+                        context_window: Some(*cw),
+                    });
+                }
+                overview_providers.push(EnabledProviderGroup {
+                    id: (*pid).to_string(),
+                    name: (*pname).to_string(),
+                    kind: "builtin".to_string(),
+                    enabled_count: enabled_cnt,
+                    models: prov_items,
+                });
+            }
+        }
+
+        if self.auth_providers.is_empty() {
+            self.auth_providers = local_auth;
+        }
+
+        if !local_models.is_empty() && (self.models.is_empty() || !self.sidecar_connected) {
+            let enabled_total = local_models
+                .iter()
+                .filter(|m| m.enabled.unwrap_or(true))
+                .count();
+            let available_total = local_models.len();
+            self.models = local_models;
+            self.enabled_models_overview = EnabledModelsOverview {
+                all_enabled,
+                enabled_total,
+                available_total,
+                scope: "global".to_string(),
+                settings_path: local_store::global_settings_path()
+                    .to_string_lossy()
+                    .into_owned(),
+                editable: true,
+                providers: overview_providers,
+            };
+        }
+
         self.enrich_thinking_levels_from_config();
+
+        if self.selected_model.is_none() && !self.models.is_empty() {
+            let def_prov = global_settings
+                .get("defaultProvider")
+                .and_then(Value::as_str);
+            let def_model = global_settings
+                .get("defaultModel")
+                .and_then(Value::as_str);
+            if let (Some(dp), Some(dm)) = (def_prov, def_model) {
+                if let Some(found) = self
+                    .models
+                    .iter()
+                    .find(|m| m.provider == dp && m.id == dm)
+                    .cloned()
+                {
+                    self.selected_model = Some(found);
+                }
+            }
+            if self.selected_model.is_none() {
+                self.selected_model = self
+                    .models
+                    .iter()
+                    .find(|m| m.enabled.unwrap_or(true))
+                    .or_else(|| self.models.first())
+                    .cloned();
+            }
+            if let Some(tl) = global_settings
+                .get("defaultThinkingLevel")
+                .and_then(Value::as_str)
+            {
+                if let Some(parsed) = parse_thinking_level_str(tl) {
+                    self.thinking_level = parsed;
+                }
+            }
+            self.clamp_thinking_level_to_model();
+        }
 
         let pi_web = local_store::read_pi_web_settings();
         if let Some(en) = pi_web.get("artifactsPrompt").and_then(Value::as_bool) {
@@ -1098,6 +1323,7 @@ impl AppState {
 
     pub fn set_ui_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
         self.ui_font_size = size.clamp(5.0, 21.0);
+        crate::themes::apply_ui_font_size(self.ui_font_size, cx);
         self.persist_appearance_only();
         cx.notify();
     }
