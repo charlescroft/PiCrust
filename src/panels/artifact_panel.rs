@@ -26,7 +26,7 @@ pub enum ArtifactViewMode {
 pub struct ArtifactPanelView {
     app_state: Entity<AppState>,
     mode: ArtifactViewMode,
-    loaded_key: Option<(String, usize, ArtifactViewMode)>,
+    loaded_key: Option<(String, usize, ArtifactViewMode, usize, usize)>,
     code_editor: Entity<EditorState>,
     /// Lazily built only while the Diff tab shows a version with a predecessor.
     diff_states: HashMap<String, Entity<DiffState>>,
@@ -41,6 +41,7 @@ impl gpui_kit::Render for ArtifactPanelView {
 impl ArtifactPanelView {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let code_editor = cx.new(|cx| EditorState::new(window, cx));
+        cx.observe(&app_state, |_, _, cx| cx.notify()).detach();
         Self {
             app_state,
             mode: ArtifactViewMode::Source,
@@ -56,11 +57,25 @@ impl ArtifactPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let key = (art.identifier.clone(), art.version, self.mode);
+        let prev_len = art.previous_content.as_ref().map_or(0, |s| s.len());
+        let key = (art.identifier.clone(), art.version, self.mode, art.content.len(), prev_len);
         if self.loaded_key.as_ref() == Some(&key) {
             return;
         }
         self.loaded_key = Some(key);
+
+        if art.content.is_empty() || (art.version > 1 && art.previous_content.is_none()) {
+            if let Some(ref sid) = art.session_id {
+                let app = self.app_state.clone();
+                let sid_c = sid.clone();
+                let aid_c = art.identifier.clone();
+                cx.defer(move |cx| {
+                    app.update(cx, |s, cx| {
+                        s.load_artifact_versions(&sid_c, &aid_c, cx);
+                    });
+                });
+            }
+        }
 
         if self.mode == ArtifactViewMode::Source {
             let lang = art
@@ -83,26 +98,13 @@ impl ArtifactPanelView {
             return;
         }
 
-        // Diff tab: build (or rebuild) the patch for this revision only.
-        let cache_key = format!("{}:{}", art.identifier, art.version);
+        // Diff tab: build (or rebuild) the patch for this revision.
+        let cache_key = format!("{}:{}:{}:{}", art.identifier, art.version, art.content.len(), prev_len);
         if self.diff_states.contains_key(&cache_key) {
             self.diff_states.retain(|k, _| k == &cache_key);
             return;
         }
         self.diff_states.clear();
-
-        if art.version > 1 && art.previous_content.is_none() {
-            if let Some(ref sid) = art.session_id {
-                let app = self.app_state.clone();
-                let sid_c = sid.clone();
-                let aid_c = art.identifier.clone();
-                cx.defer(move |cx| {
-                    app.update(cx, |s, cx| {
-                        s.load_artifact_versions(&sid_c, &aid_c, cx);
-                    });
-                });
-            }
-        }
 
         let previous = art.previous_content.as_deref().unwrap_or("");
         if !art.content.trim().is_empty() {
@@ -205,25 +207,35 @@ impl ArtifactPanelView {
                     ),
             );
 
+        let prev_len = art.previous_content.as_ref().map_or(0, |s| s.len());
         let content = if self.mode == ArtifactViewMode::Source {
             div()
                 .flex_1()
                 .min_h_0()
-                .child(Editor::new(&self.code_editor).readonly(true).appearance(false).bordered(false).size_full())
+                .size_full()
+                .child(
+                    Editor::new(&self.code_editor)
+                        .readonly(true)
+                        .appearance(false)
+                        .bordered(false)
+                        .text_size(px(preview_font_sz))
+                        .size_full(),
+                )
                 .into_any_element()
         } else {
-            let cache_key = format!("{}:{}", art.identifier, art.version);
+            let cache_key = format!("{}:{}:{}:{}", art.identifier, art.version, art.content.len(), prev_len);
             match self.diff_states.get(&cache_key) {
                 Some(diff_state) => div()
                     .flex_1()
                     .min_h_0()
-                    .w_full()
+                    .size_full()
                     // Match the Editor's 6px content padding so the Source and Diff
                     // tabs put their line numbers in the same column.
                     .child(
                         Diff::new(diff_state)
                             .header_visible(false)
                             .line_number(true)
+                            .text_size(px(preview_font_sz))
                             .size_full(),
                     )
                     .into_any_element(),
@@ -243,7 +255,9 @@ impl ArtifactPanelView {
             .child(header)
             .child(
                 div()
-                    .size_full()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
                     .text_size(px(preview_font_sz))
                     .child(content),
             )
@@ -254,6 +268,26 @@ impl ArtifactPanelView {
 /// Builds a single-file unified diff (`--- a/<title>` / `+++ b/<title>`) from two
 /// revisions, using a small LCS so only real line changes appear.
 fn build_unified_patch(title: &str, previous: &str, current: &str) -> String {
+    let safe_title: String = title
+        .chars()
+        .map(|c| if c.is_whitespace() || c == '\0' { '_' } else { c })
+        .collect();
+    let safe_title = if safe_title.is_empty() { "artifact".to_string() } else { safe_title };
+
+    if previous.is_empty() {
+        let lines: Vec<&str> = current.lines().collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+        let mut out = format!("--- /dev/null\n+++ b/{safe_title}\n@@ -0,0 +1,{} @@\n", lines.len());
+        for line in lines {
+            out.push('+');
+            out.push_str(line);
+            out.push('\n');
+        }
+        return out;
+    }
+
     let a: Vec<&str> = previous.lines().collect();
     let b: Vec<&str> = current.lines().collect();
 
@@ -326,5 +360,5 @@ fn build_unified_patch(title: &str, previous: &str, current: &str) -> String {
     if body.is_empty() {
         return String::new();
     }
-    format!("--- a/{title}\n+++ b/{title}\n{body}")
+    format!("--- a/{safe_title}\n+++ b/{safe_title}\n{body}")
 }

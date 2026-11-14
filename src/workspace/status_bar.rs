@@ -143,46 +143,54 @@ pub fn render_status_bar(
 
                 // 1. Current Branch Card
                 let cur = current_branch.clone();
-                menu = menu.item(PopupMenuItem::element(move |_, cx| {
-                    v_flex()
-                        .w_full()
-                        .p_2p5()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
-                        .gap_1p5()
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    h_flex()
-                                        .gap_1p5()
-                                        .items_center()
-                                        .child(
-                                            Icon::new(crate::icons::GitBranchIcon)
-                                                .small()
-                                                .text_color(cx.theme().primary),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(tr(locale, "status.currentBranch")),
-                                        ),
-                                )
-                                .child(Tag::primary().small().child("HEAD")),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_semibold()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_color(cx.theme().foreground)
-                                .child(SharedString::from(cur.clone())),
-                        )
-                }));
+                menu = menu.item(
+                    PopupMenuItem::element(move |_, cx| {
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .w_full()
+                            .p_2p5()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().secondary)
+                            .gap_1p5()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(
+                                                Icon::new(crate::icons::GitBranchIcon)
+                                                    .small()
+                                                    .text_color(cx.theme().primary),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(tr(locale, "status.currentBranch")),
+                                            ),
+                                    )
+                                    .child(Tag::primary().small().child("HEAD")),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(cx.theme().foreground)
+                                    .child(SharedString::from(cur.clone())),
+                            )
+                    })
+                    .disabled(true),
+                );
 
                 menu = menu.separator();
                 menu = menu.label(tr(locale, "status.branchesHeading"));

@@ -88,8 +88,14 @@ pub fn render_message_row(
     });
     if newly_created && row_cache.text_state.read(cx).rendered_text().source().is_empty() && !row_cache.last_text_snapshot.trim().is_empty() {
         let tv = row_cache.text_state.clone();
-        cx.observe(&tv, |panel, _, cx| {
-            panel.scroller.update(cx, |s, cx| s.remeasure(cx));
+        let app_for_obs = app_state.clone();
+        cx.observe(&tv, move |panel, _, cx| {
+            let idx_opt = app_for_obs.read(cx).messages.iter().position(|m| m.id == msg_id);
+            if let Some(idx) = idx_opt {
+                panel.scroller.update(cx, |s, cx| {
+                    let _ = s.remeasure_items(idx..idx + 1, cx);
+                });
+            }
             cx.notify();
         })
         .detach();

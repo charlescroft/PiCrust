@@ -957,18 +957,32 @@ impl AppState {
         cx.spawn(async move |_, cx| {
             if let Ok(val) = client.get_artifact_item(&sid, &aid).await {
                 if let Some(versions) = val.get("versions").and_then(Value::as_array) {
-                    if versions.len() >= 2 {
-                        let prev_content = versions[versions.len() - 2]
+                    let latest_content = versions
+                        .last()
+                        .and_then(|v| v.get("content"))
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                    let prev_content = if versions.len() >= 2 {
+                        versions[versions.len() - 2]
                             .get("content")
                             .and_then(Value::as_str)
-                            .map(String::from);
-                        let _ = entity.update(cx, |this, cx| {
-                            if let Some(art) = this.artifacts.iter_mut().find(|a| a.identifier == aid) {
+                            .map(String::from)
+                    } else {
+                        None
+                    };
+                    let _ = entity.update(cx, |this, cx| {
+                        if let Some(art) = this.artifacts.iter_mut().find(|a| a.identifier == aid) {
+                            if art.content.is_empty() {
+                                if let Some(c) = latest_content {
+                                    art.content = c;
+                                }
+                            }
+                            if prev_content.is_some() {
                                 art.previous_content = prev_content;
                             }
-                            cx.notify();
-                        });
-                    }
+                        }
+                        cx.notify();
+                    });
                 }
             }
         })

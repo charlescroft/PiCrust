@@ -299,11 +299,11 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                     .gap_2p5()
                     .child(
                         div()
-                            .w(px(56.))
+                            .w(px(48.))
                             .text_xs()
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_color(cx.theme().foreground)
-                            .child(format!("{val:.1}px")),
+                            .child(format!("{val:.0}px")),
                     )
                     .child(div().flex_1().child(Slider::new(&slider)))
                     .child(

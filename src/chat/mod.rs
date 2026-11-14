@@ -36,22 +36,32 @@ const LIST_OVERDRAW: gpui_kit::Pixels = px(400.);
 
 pub struct ConversationScrollerState {
     list_state: ListState,
+    last_scroll_notify_key: (bool, usize),
 }
 
 impl ConversationScrollerState {
     pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
-        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW);
+        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW).measure_all();
         list_state.set_follow_mode(FollowMode::Tail);
 
         let weak_state = cx.weak_entity();
         list_state.set_scroll_handler(move |_, _, cx| {
             let weak_state = weak_state.clone();
             cx.defer(move |cx| {
-                let _ = weak_state.update(cx, |_, cx| cx.notify());
+                let _ = weak_state.update(cx, |this, cx| {
+                    let key = (this.is_scrolled_up(), this.logical_scroll_top().item_ix);
+                    if key != this.last_scroll_notify_key {
+                        this.last_scroll_notify_key = key;
+                        cx.notify();
+                    }
+                });
             });
         });
 
-        Self { list_state }
+        Self {
+            list_state,
+            last_scroll_notify_key: (false, item_count),
+        }
     }
 
     pub fn is_scrolled_up(&self) -> bool {

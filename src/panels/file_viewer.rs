@@ -192,6 +192,7 @@ impl FileViewerView {
                         Diff::new(ds)
                             .header_visible(false)
                             .line_number(true)
+                            .text_size(px(preview_font_sz))
                             .size_full(),
                     )
                     .into_any_element()
@@ -239,7 +240,14 @@ impl FileViewerView {
                 .flex_1()
                 .min_h_0()
                 .size_full()
-                .child(Editor::new(&self.editor).readonly(true).appearance(false).bordered(false).size_full())
+                .child(
+                    Editor::new(&self.editor)
+                        .readonly(true)
+                        .appearance(false)
+                        .bordered(false)
+                        .text_size(px(preview_font_sz))
+                        .size_full(),
+                )
                 .into_any_element()
         };
 
@@ -266,7 +274,9 @@ impl FileViewerView {
             )
             .child(
                 div()
-                    .size_full()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
                     .text_size(px(preview_font_sz))
                     .child(body),
             )
