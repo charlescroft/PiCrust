@@ -5561,12 +5561,12 @@ flowchart LR
 #[cfg(target_os = "macos")]
 fn send_macos_bundle_notification(title: &str, body: &str, _with_sound: bool) -> bool {
     use std::ffi::{CString, c_char, c_void};
-    use std::sync::Once;
+    use std::sync::{Once, OnceLock};
 
     #[link(name = "UserNotifications", kind = "framework")]
     #[link(name = "Foundation", kind = "framework")]
     unsafe extern "C" {
-        static _NSConcreteGlobalBlock: *const c_void;
+        static _NSConcreteGlobalBlock: [usize; 32];
         fn objc_getClass(name: *const c_char) -> *mut c_void;
         fn sel_registerName(name: *const c_char) -> *mut c_void;
         fn objc_msgSend();
@@ -5586,6 +5586,7 @@ fn send_macos_bundle_notification(title: &str, body: &str, _with_sound: bool) ->
         descriptor: &'static BlockDescriptor,
     }
     unsafe impl Sync for GlobalBlock {}
+    unsafe impl Send for GlobalBlock {}
 
     unsafe extern "C" fn noop_auth_cb(_block: *mut c_void, _granted: bool, _err: *mut c_void) {}
     unsafe extern "C" fn noop_add_cb(_block: *mut c_void, _err: *mut c_void) {}
@@ -5594,6 +5595,8 @@ fn send_macos_bundle_notification(title: &str, body: &str, _with_sound: bool) ->
         reserved: 0,
         size: std::mem::size_of::<GlobalBlock>(),
     };
+    static AUTH_BLOCK: OnceLock<GlobalBlock> = OnceLock::new();
+    static ADD_BLOCK: OnceLock<GlobalBlock> = OnceLock::new();
 
     #[inline]
     unsafe fn sel(name: &[u8]) -> *mut c_void {
@@ -5665,19 +5668,19 @@ fn send_macos_bundle_notification(title: &str, body: &str, _with_sound: bool) ->
 
         static AUTH_ONCE: Once = Once::new();
         AUTH_ONCE.call_once(|| {
-            let block = GlobalBlock {
-                isa: _NSConcreteGlobalBlock,
+            let block = AUTH_BLOCK.get_or_init(|| GlobalBlock {
+                isa: (&raw const _NSConcreteGlobalBlock).cast::<c_void>(),
                 flags: 1 << 28,
                 reserved: 0,
                 invoke: noop_auth_cb as *const c_void,
                 descriptor: &DESCRIPTOR,
-            };
+            });
             // UNAuthorizationOptionAlert (1 << 2) | UNAuthorizationOptionSound (1 << 1) = 6
             msg2_usize_ptr(
                 center,
                 sel(b"requestAuthorizationWithOptions:completionHandler:\0"),
                 6,
-                (&block as *const GlobalBlock).cast_mut().cast::<c_void>(),
+                (block as *const GlobalBlock).cast_mut().cast::<c_void>(),
             );
         });
 
@@ -5702,18 +5705,18 @@ fn send_macos_bundle_notification(title: &str, body: &str, _with_sound: bool) ->
                 std::ptr::null_mut(),
             );
             if !req.is_null() {
-                let block = GlobalBlock {
-                    isa: _NSConcreteGlobalBlock,
+                let block = ADD_BLOCK.get_or_init(|| GlobalBlock {
+                    isa: (&raw const _NSConcreteGlobalBlock).cast::<c_void>(),
                     flags: 1 << 28,
                     reserved: 0,
                     invoke: noop_add_cb as *const c_void,
                     descriptor: &DESCRIPTOR,
-                };
+                });
                 msg2_ptr_ptr(
                     center,
                     sel(b"addNotificationRequest:withCompletionHandler:\0"),
                     req,
-                    (&block as *const GlobalBlock).cast_mut().cast::<c_void>(),
+                    (block as *const GlobalBlock).cast_mut().cast::<c_void>(),
                 );
             }
             msg0(content, sel(b"release\0"));
