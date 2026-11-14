@@ -8,7 +8,6 @@ use gpui_kit::component::attachment::{Attachment, AttachmentContent, AttachmentT
 use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message::{Message, MessageAlignment, MessageContent, MessageFooter};
@@ -30,6 +29,8 @@ pub struct CachedRowEntities {
     pub text_state: Entity<TextViewState>,
     pub last_text_len: usize,
     pub last_text_snapshot: String,
+    pub last_raw_content: String,
+    pub last_find_query: String,
     pub diff_states: HashMap<SharedString, Entity<DiffState>>,
     pub compaction_states: HashMap<usize, (String, Entity<TextViewState>)>,
     pub thinking_states: HashMap<usize, (String, Entity<TextViewState>)>,
@@ -73,6 +74,8 @@ pub fn render_message_row(
             text_state,
             last_text_len: initial_text.len(),
             last_text_snapshot: initial_text,
+            last_raw_content: msg.content.clone(),
+            last_find_query: String::new(),
             diff_states: HashMap::new(),
             compaction_states: HashMap::new(),
             thinking_states: HashMap::new(),
@@ -105,13 +108,16 @@ pub fn render_message_row(
         .detach();
     }
 
-    // Incremental update of retained TextViewState (fast path when no artifacts & unchanged)
-    if !newly_created && (msg.content.len() != row_cache.last_text_len || msg.content.contains(":::artifact")) {
+    // Incremental update of retained TextViewState (fast path when unchanged)
+    let content_changed = msg.content.len() != row_cache.last_text_len
+        || (msg.content.contains(":::artifact") && msg.content != row_cache.last_raw_content);
+    if !newly_created && content_changed {
         let display_md = if msg.content.contains(":::artifact") {
             strip_artifact_blocks(&msg.content)
         } else {
             msg.content.clone()
         };
+        row_cache.last_raw_content = msg.content.clone();
         if display_md != row_cache.last_text_snapshot {
             let prev = &row_cache.last_text_snapshot;
             let is_append = display_md.starts_with(prev.as_str());
@@ -132,19 +138,26 @@ pub fn render_message_row(
         }
     }
 
-    // Apply ConversationFind highlights only if query is active
-    if !find_query.is_empty() {
-        let warn_bg = cx.theme().warning.opacity(0.35);
-        row_cache.text_state.update(cx, |state, cx| {
-            let rendered = state.rendered_text();
-            let lower = rendered.as_str().to_lowercase();
+    // Apply ConversationFind highlights only when query changes
+    if row_cache.last_find_query != find_query {
+        row_cache.last_find_query = find_query.to_string();
+        if !find_query.is_empty() {
+            let warn_bg = cx.theme().warning.opacity(0.35);
             let q_lower = find_query.to_lowercase();
-            let ranges: Vec<RangeHighlight> = lower
-                .match_indices(&q_lower)
-                .map(|(start, found)| RangeHighlight::new(start..start + found.len(), warn_bg))
-                .collect();
-            let _ = state.set_range_highlights(ranges, cx);
-        });
+            row_cache.text_state.update(cx, |state, cx| {
+                let rendered = state.rendered_text();
+                let lower = rendered.as_str().to_lowercase();
+                let ranges: Vec<RangeHighlight> = lower
+                    .match_indices(&q_lower)
+                    .map(|(start, found)| RangeHighlight::new(start..start + found.len(), warn_bg))
+                    .collect();
+                let _ = state.set_range_highlights(ranges, cx);
+            });
+        } else {
+            row_cache.text_state.update(cx, |state, cx| {
+                let _ = state.set_range_highlights(Vec::new(), cx);
+            });
+        }
     }
 
     let (is_turn_live, is_last_turn, font_px, locale, user_collapse_chars) = {
@@ -548,7 +561,11 @@ fn render_compaction_step_card(
             tv_style.heading_base_font_size = px((font_px - 1.0).max(11.0));
             tv_style.paragraph_gap = rems(0.75);
             tv_style.highlight_theme = cx.theme().highlight_theme.clone();
-            let view = with_plugins(TextView::new(tv).style(tv_style).selectable(true));
+            let view = if c.summary_markdown.contains('$') || c.summary_markdown.contains("mermaid") {
+                with_plugins(TextView::new(tv).style(tv_style).selectable(true))
+            } else {
+                TextView::new(tv).style(tv_style).selectable(true)
+            };
             body = body.child(
                 div()
                     .w_full()
@@ -970,7 +987,11 @@ fn render_assistant_row(
                             tv_style.heading_base_font_size = px((font_px - 1.0).max(11.0));
                             tv_style.paragraph_gap = rems(0.5);
                             tv_style.highlight_theme = cx.theme().highlight_theme.clone();
-                            let markdown_view = with_plugins(TextView::new(&tv).style(tv_style).selectable(true));
+                            let markdown_view = if think_text.contains('$') || think_text.contains("mermaid") {
+                                with_plugins(TextView::new(&tv).style(tv_style).selectable(true))
+                            } else {
+                                TextView::new(&tv).style(tv_style).selectable(true)
+                            };
 
                             think_card = think_card.child(
                                 div()
@@ -1066,7 +1087,11 @@ fn render_assistant_row(
                             }),
                     )
             });
-        let view = with_plugins(view);
+        let view = if msg.content.contains('$') || msg.content.contains("mermaid") {
+            with_plugins(view)
+        } else {
+            view
+        };
         let parse_pending = row_cache.text_state.read(cx).rendered_text().source().is_empty()
             && !row_cache.last_text_snapshot.trim().is_empty();
         let body_content = if parse_pending {

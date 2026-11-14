@@ -11,7 +11,7 @@ use crate::chat::composer::ComposerView;
 use crate::chat::find_bar::ConversationCommandPalette;
 use crate::chat::message_row::{CachedRowEntities, render_message_row};
 use crate::chat::questionnaire::QuestionnaireView;
-use crate::client::types::{ChatFontSize, ChatMessage, MessageRole};
+use crate::client::types::{ChatMessage, MessageRole};
 use crate::i18n::{format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::Disableable as _;
@@ -27,79 +27,82 @@ use gpui_kit::{
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, list, px,
     rems,
 };
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 const LIST_OVERDRAW: gpui_kit::Pixels = px(800.);
 
-fn append_scroll_diag_log(msg: &str) {
-    use std::io::Write as _;
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
-    };
-    let path = std::path::PathBuf::from(home).join(".pi/agent/gpui-scroll.log");
-    if let Ok(meta) = std::fs::metadata(&path) {
-        if meta.len() > 256 * 1024 {
-            let _ = std::fs::write(&path, "");
-        }
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = writeln!(f, "[{ts}] {msg}");
-    }
-}
-
 pub struct ConversationScrollerState {
     list_state: ListState,
+    pub visible_top_ix: usize,
+    pub is_scrolled_up: bool,
     last_scroll_notify_key: (bool, usize),
+    last_scroll_key_cell: Rc<Cell<(bool, usize)>>,
+    total_items_cell: Rc<Cell<usize>>,
 }
 
 impl ConversationScrollerState {
-    fn build_list_state(item_count: usize, cx: &mut Context<Self>) -> ListState {
+    fn build_list_state(
+        item_count: usize,
+        cx: &mut Context<Self>,
+    ) -> (
+        ListState,
+        Rc<Cell<(bool, usize)>>,
+        Rc<Cell<usize>>,
+    ) {
         let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW);
         list_state.set_follow_mode(FollowMode::Tail);
 
+        let init_key = (false, item_count.saturating_sub(1));
+        let last_key_cell = Rc::new(Cell::new(init_key));
+        let total_items_cell = Rc::new(Cell::new(item_count));
+
         let weak_state = cx.weak_entity();
-        list_state.set_scroll_handler(move |_, _, cx| {
-            let weak_state = weak_state.clone();
-            cx.defer(move |cx| {
-                let _ = weak_state.update(cx, |this, cx| {
-                    let key = (this.is_scrolled_up(), this.logical_scroll_top().item_ix);
-                    if key != this.last_scroll_notify_key {
+        let last_key_for_handler = last_key_cell.clone();
+        let total_for_handler = total_items_cell.clone();
+
+        list_state.set_scroll_handler(move |event, _, cx| {
+            let is_following = event.is_following_tail;
+            let top_ix = event.visible_range.start;
+            let total = total_for_handler.get();
+            let is_scrolled = !is_following && total > 1;
+            let key = (is_scrolled, top_ix);
+            if key != last_key_for_handler.get() {
+                last_key_for_handler.set(key);
+                let weak_state = weak_state.clone();
+                cx.defer(move |cx| {
+                    let _ = weak_state.update(cx, |this, cx| {
+                        this.visible_top_ix = top_ix;
+                        this.is_scrolled_up = is_scrolled;
                         this.last_scroll_notify_key = key;
                         cx.notify();
-                    }
+                    });
                 });
-            });
+            }
         });
-        list_state
+
+        (list_state, last_key_cell, total_items_cell)
     }
 
     pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
-        let list_state = Self::build_list_state(item_count, cx);
-
+        let (list_state, last_scroll_key_cell, total_items_cell) =
+            Self::build_list_state(item_count, cx);
+        let last_ix = item_count.saturating_sub(1);
         Self {
             list_state,
-            last_scroll_notify_key: (false, item_count),
+            visible_top_ix: last_ix,
+            is_scrolled_up: false,
+            last_scroll_notify_key: (false, last_ix),
+            last_scroll_key_cell,
+            total_items_cell,
         }
     }
 
+    #[inline]
     pub fn is_scrolled_up(&self) -> bool {
-        if self.list_state.is_following_tail() {
-            return false;
-        }
-        if self.list_state.is_scrolled_to_end() == Some(true) {
-            return false;
-        }
-        let count = self.list_state.item_count();
-        if count <= 1 {
-            return false;
-        }
-        self.list_state.max_offset_for_scrollbar().y > px(0.)
-            || self.list_state.logical_scroll_top().item_ix < count.saturating_sub(1)
+        self.is_scrolled_up
     }
 
     pub fn is_following_tail(&self) -> bool {
@@ -111,10 +114,14 @@ impl ConversationScrollerState {
     }
 
     pub fn reset(&mut self, item_count: usize, cx: &mut Context<Self>) {
-        append_scroll_diag_log(&format!("reset item_count={item_count}"));
         self.list_state.reset(item_count);
         self.list_state.set_follow_mode(FollowMode::Tail);
-        self.last_scroll_notify_key = (false, item_count);
+        self.total_items_cell.set(item_count);
+        let last_ix = item_count.saturating_sub(1);
+        self.visible_top_ix = last_ix;
+        self.is_scrolled_up = false;
+        self.last_scroll_notify_key = (false, last_ix);
+        self.last_scroll_key_cell.set((false, last_ix));
         cx.notify();
     }
 
@@ -122,9 +129,15 @@ impl ConversationScrollerState {
     /// the previous `Rc<RefCell<ListStateInner>>` in place. Required when switching
     /// sessions so previously cached `ListState` handles stay isolated.
     pub fn replace_fresh(&mut self, item_count: usize, cx: &mut Context<Self>) {
-        append_scroll_diag_log(&format!("replace_fresh item_count={item_count}"));
-        self.list_state = Self::build_list_state(item_count, cx);
-        self.last_scroll_notify_key = (false, item_count);
+        let (list_state, last_key_cell, total_items_cell) =
+            Self::build_list_state(item_count, cx);
+        self.list_state = list_state;
+        self.last_scroll_key_cell = last_key_cell;
+        self.total_items_cell = total_items_cell;
+        let last_ix = item_count.saturating_sub(1);
+        self.visible_top_ix = last_ix;
+        self.is_scrolled_up = false;
+        self.last_scroll_notify_key = (false, last_ix);
         cx.notify();
     }
 
@@ -138,11 +151,8 @@ impl ConversationScrollerState {
         if old_range.start > old_range.end || old_range.end > item_count {
             return false;
         }
-        append_scroll_diag_log(&format!(
-            "splice range={}..{} count={count} prev_items={item_count}",
-            old_range.start, old_range.end
-        ));
         self.list_state.splice(old_range, count);
+        self.total_items_cell.set(self.list_state.item_count());
         cx.notify();
         true
     }
@@ -168,33 +178,45 @@ impl ConversationScrollerState {
     }
 
     pub fn scroll_to_item(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
-        if index >= self.list_state.item_count() {
+        let count = self.list_state.item_count();
+        if index >= count {
             return false;
         }
-        append_scroll_diag_log(&format!("scroll_to_item index={index}"));
+        self.list_state.set_follow_mode(FollowMode::Normal);
         self.list_state.scroll_to(ListOffset {
             item_ix: index,
             offset_in_item: px(0.),
         });
+        self.visible_top_ix = index;
+        self.is_scrolled_up = count > 1 && index + 1 < count;
+        let key = (self.is_scrolled_up, index);
+        self.last_scroll_notify_key = key;
+        self.last_scroll_key_cell.set(key);
         cx.notify();
         true
     }
 
     /// Restores an exact reading position without re-entering tail follow.
     pub fn scroll_to_offset(&mut self, offset: ListOffset, cx: &mut Context<Self>) {
-        append_scroll_diag_log(&format!(
-            "scroll_to_offset item_ix={} offset_px={:?}",
-            offset.item_ix, offset.offset_in_item
-        ));
+        let count = self.list_state.item_count();
         self.list_state.set_follow_mode(FollowMode::Normal);
         self.list_state.scroll_to(offset);
+        self.visible_top_ix = offset.item_ix;
+        self.is_scrolled_up = count > 1 && offset.item_ix + 1 < count;
+        let key = (self.is_scrolled_up, offset.item_ix);
+        self.last_scroll_notify_key = key;
+        self.last_scroll_key_cell.set(key);
         cx.notify();
     }
 
     pub fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
-        append_scroll_diag_log("scroll_to_end");
         self.list_state.set_follow_mode(FollowMode::Tail);
         self.list_state.scroll_to_end();
+        let last_ix = self.list_state.item_count().saturating_sub(1);
+        self.visible_top_ix = last_ix;
+        self.is_scrolled_up = false;
+        self.last_scroll_notify_key = (false, last_ix);
+        self.last_scroll_key_cell.set((false, last_ix));
         cx.notify();
     }
 }
@@ -397,7 +419,7 @@ impl ChatPanel {
                 )
             });
 
-            let top_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
+            let top_ix = self.scroller.read(cx).visible_top_ix;
             let keep_ids: Option<std::collections::HashSet<u64>> = (self.row_cache.len() > 300).then(|| {
                 let mut ids = std::collections::HashSet::new();
                 let tail_from = state.messages.len().saturating_sub(60);
@@ -491,8 +513,12 @@ impl ChatPanel {
                         self.last_tail_sig = cached.tail_sig;
                         self.scroller.update(cx, |s, cx| {
                             s.list_state = cached.list_state;
-                            s.last_scroll_notify_key =
-                                (s.is_scrolled_up(), s.logical_scroll_top().item_ix);
+                            let count = s.list_state.item_count();
+                            s.total_items_cell.set(count);
+                            s.visible_top_ix = count.saturating_sub(1);
+                            s.is_scrolled_up = false;
+                            s.last_scroll_notify_key = (false, s.visible_top_ix);
+                            s.last_scroll_key_cell.set((false, s.visible_top_ix));
                             if cached.font_size != font_sz {
                                 s.remeasure(cx);
                             } else {
@@ -630,8 +656,8 @@ impl Render for ChatPanel {
         } else {
             self.cached_turns.clone()
         };
-        let top_item_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
-        let is_at_tail = self.scroller.read(cx).is_following_tail() || !self.scroller.read(cx).is_scrolled_up();
+        let top_item_ix = self.scroller.read(cx).visible_top_ix;
+        let is_at_tail = !self.scroller.read(cx).is_scrolled_up;
         let active_turn = if is_at_tail && !turns.is_empty() {
             turns.len() - 1
         } else {
@@ -1268,6 +1294,7 @@ const MAX_NAV_TICKS: usize = 8;
 /// - Shows at most 8 ticks
 /// - When scrolling up to/past the top tick (or down to the 8th tick), shifts the window
 ///   so the active turn becomes the 8th (last) tick and earlier turns load above it.
+#[allow(dead_code)]
 fn compute_nav_window(total: usize, active_turn: usize, prev_start: usize) -> (usize, usize) {
     if total <= MAX_NAV_TICKS {
         return (0, total);
