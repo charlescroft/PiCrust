@@ -2972,7 +2972,26 @@ impl AppState {
                     let parsed =
                         parse_session_messages(&payload, &mut this.controller.next_local_msg_id);
                     if !parsed.is_empty() {
-                        this.messages = parsed;
+                        let same_messages = parsed.len() == this.messages.len()
+                            && parsed.iter().zip(this.messages.iter()).all(|(a, b)| {
+                                a.role == b.role
+                                    && a.content == b.content
+                                    && a.process_steps.len() == b.process_steps.len()
+                                    && a.tool_calls.len() == b.tool_calls.len()
+                            });
+                        if !same_messages {
+                            let mut merged = parsed;
+                            for (idx, m) in merged.iter_mut().enumerate() {
+                                if let Some(prev) = this.messages.get(idx) {
+                                    if prev.role == m.role
+                                        && (prev.entry_id == m.entry_id || prev.content == m.content)
+                                    {
+                                        m.id = prev.id;
+                                    }
+                                }
+                            }
+                            this.messages = merged;
+                        }
                     }
                     if let Some(payload_todos) = extract_todos_from_payload(&payload) {
                         this.set_todos(payload_todos);

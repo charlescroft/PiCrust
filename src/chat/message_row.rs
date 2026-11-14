@@ -62,7 +62,9 @@ pub fn render_message_row(
     cx: &mut Context<crate::chat::ChatPanel>,
 ) -> AnyElement {
     let msg_id = msg.id;
+    let mut newly_created = false;
     let row_cache = cache.entry(msg_id).or_insert_with(|| {
+        newly_created = true;
         let initial_text = strip_artifact_blocks(&msg.content);
         let text_state = cx.new(|cx| TextViewState::markdown(&initial_text, cx).selectable(true));
         CachedRowEntities {
@@ -84,6 +86,14 @@ pub fn render_message_row(
             user_expanded: false,
         }
     });
+    if newly_created && row_cache.last_text_len > 4096 {
+        let tv = row_cache.text_state.clone();
+        cx.observe(&tv, |panel, _, cx| {
+            panel.scroller.update(cx, |s, cx| s.remeasure(cx));
+            cx.notify();
+        })
+        .detach();
+    }
 
     // Incremental update of retained TextViewState for streaming fade
     let display_md = strip_artifact_blocks(&msg.content);
@@ -1060,6 +1070,17 @@ fn render_assistant_row(
                     )
             });
         let view = with_plugins(view);
+        let parse_pending = row_cache.text_state.read(cx).list_state().item_count() == 0
+            && !row_cache.last_text_snapshot.trim().is_empty();
+        let body_content = if parse_pending {
+            div()
+                .w_full()
+                .whitespace_normal()
+                .child(SharedString::from(row_cache.last_text_snapshot.clone()))
+                .into_any_element()
+        } else {
+            view.into_any_element()
+        };
         stack = stack.child(
             div()
                 .w_full()
@@ -1067,7 +1088,7 @@ fn render_assistant_row(
                 .font_family(cx.theme().font_family.clone())
                 .text_size(px(font_px))
                 .line_height(rems(1.65))
-                .child(view),
+                .child(body_content),
         );
     }
 

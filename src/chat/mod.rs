@@ -40,7 +40,7 @@ pub struct ConversationScrollerState {
 
 impl ConversationScrollerState {
     pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
-        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW);
+        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW).measure_all();
         list_state.set_follow_mode(FollowMode::Tail);
 
         let weak_state = cx.weak_entity();
@@ -138,7 +138,7 @@ impl ConversationScrollerState {
 pub struct ChatPanel {
     focus_handle: FocusHandle,
     app_state: Entity<AppState>,
-    scroller: Entity<ConversationScrollerState>,
+    pub(crate) scroller: Entity<ConversationScrollerState>,
     composer: Entity<ComposerView>,
     palette: Entity<ConversationCommandPalette>,
     questionnaire: Option<Entity<QuestionnaireView>>,
@@ -341,7 +341,9 @@ impl ChatPanel {
             return;
         }
 
+        let mut mutated = false;
         if new_count > self.last_message_count {
+            mutated = true;
             let added = new_count - self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
@@ -349,6 +351,7 @@ impl ChatPanel {
                 let _ = s.append(added, cx);
             });
         } else if new_count < self.last_message_count {
+            mutated = true;
             let old_count = self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
@@ -360,6 +363,7 @@ impl ChatPanel {
                 }
             });
         } else if new_count > 0 && tail_sig != self.last_tail_sig {
+            mutated = true;
             self.last_tail_sig = tail_sig;
             let idx = new_count - 1;
             self.scroller.update(cx, |s, cx| {
@@ -372,13 +376,15 @@ impl ChatPanel {
             self.row_cache.retain(|id, _| ids.contains(id));
         }
 
-        if let Some(offset) = pinned_offset {
-            let moved = {
-                let s = self.scroller.read(cx);
-                s.logical_scroll_top() != offset || s.is_following_tail()
-            };
-            if moved {
-                self.scroller.update(cx, |s, cx| s.scroll_to_offset(offset, cx));
+        if mutated {
+            if let Some(offset) = pinned_offset {
+                let moved = {
+                    let s = self.scroller.read(cx);
+                    s.logical_scroll_top() != offset || s.is_following_tail()
+                };
+                if moved {
+                    self.scroller.update(cx, |s, cx| s.scroll_to_offset(offset, cx));
+                }
             }
         }
     }
