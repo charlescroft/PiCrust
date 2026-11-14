@@ -3742,6 +3742,14 @@ impl AppState {
         self.controller.stop_sse();
         self.active_session_id = None;
         self.active_workspace_kind = workspace_kind;
+        self.active_branch = if workspace_kind == WorkspaceKind::Chat {
+            None
+        } else {
+            resolve_git_branch(&self.active_cwd)
+        };
+        if self.active_branch.is_none() && self.right_panel_tab == RightPanelTab::GitGraph {
+            self.close_right_tab(RightPanelTab::GitGraph, cx);
+        }
         self.active_page = WorkspacePage::Chat;
         self.messages.clear();
         self.branch_siblings.clear();
@@ -3865,12 +3873,19 @@ impl AppState {
         if let Some(summary) = self.sessions.iter().find(|s| s.id == session_id) {
             if let Some(cwd) = &summary.cwd {
                 self.active_cwd = PathBuf::from(cwd);
-                self.active_branch = resolve_git_branch(&self.active_cwd);
             }
             if let Some(p) = &summary.path {
                 local_jsonl_path = Some(PathBuf::from(p));
             }
             self.active_workspace_kind = summary.workspace_kind.unwrap_or(WorkspaceKind::Project);
+        }
+        self.active_branch = if self.active_workspace_kind == WorkspaceKind::Chat {
+            None
+        } else {
+            resolve_git_branch(&self.active_cwd)
+        };
+        if self.active_branch.is_none() && self.right_panel_tab == RightPanelTab::GitGraph {
+            self.close_right_tab(RightPanelTab::GitGraph, cx);
         }
 
         if session_id == "demo-welcome-session" {
