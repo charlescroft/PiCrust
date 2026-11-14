@@ -86,7 +86,7 @@ pub fn render_message_row(
             user_expanded: false,
         }
     });
-    if newly_created && row_cache.last_text_len > 4096 {
+    if newly_created && row_cache.text_state.read(cx).rendered_text().source().is_empty() && !row_cache.last_text_snapshot.trim().is_empty() {
         let tv = row_cache.text_state.clone();
         cx.observe(&tv, |panel, _, cx| {
             panel.scroller.update(cx, |s, cx| s.remeasure(cx));
@@ -1070,7 +1070,7 @@ fn render_assistant_row(
                     )
             });
         let view = with_plugins(view);
-        let parse_pending = row_cache.text_state.read(cx).list_state().item_count() == 0
+        let parse_pending = row_cache.text_state.read(cx).rendered_text().source().is_empty()
             && !row_cache.last_text_snapshot.trim().is_empty();
         let body_content = if parse_pending {
             div()
@@ -1352,10 +1352,10 @@ fn render_assistant_row(
         );
     }
 
-    // 5. Modified files summary card: shown as soon as this turn stopped streaming,
-    //    independent of any app-wide running flag.
+    // 5. Modified files summary card: shown ONLY when the entire turn has settled (!is_turn_live),
+    //    not mid-turn between individual write/edit tool calls.
     let modified_files = collect_modified_files(&msg.tool_calls);
-    if !msg.is_streaming && !modified_files.is_empty() {
+    if !is_turn_live && !modified_files.is_empty() {
         let mf_open = row_cache.modified_files_open;
         let msg_id = msg.id;
         let count = modified_files.len();
@@ -1535,7 +1535,7 @@ fn render_assistant_row(
     // 6. Full-width Separator + Footer:
     //    - Shown ONLY when the entire turn has settled (!is_turn_live) AND has answer text
     //    - Timestamp shows the real parsed/recorded time without hardcoded "Just now"
-    if !msg.is_streaming && has_answer_text {
+    if !is_turn_live && has_answer_text {
         let mut left_actions = h_flex().items_center().gap_2p5();
         let copy_md = msg.content.clone();
         left_actions = left_actions.child(

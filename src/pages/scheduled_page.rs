@@ -2,15 +2,18 @@ use crate::app_state::AppState;
 use crate::client::session_controller::format_compact_relative_time;
 use crate::client::types::{ScheduledRunView, ScheduledTask, TaskScheduleSpec};
 use crate::i18n::{AppLocale, format_commas, tr};
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, Timelike};
 use gpui_kit::component::badge::Badge;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
+use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants as _};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tag::Tag;
+use gpui_kit::component::time_field::{TimeField, TimeFieldEvent, TimeFieldState, TimePrecision};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     StyledExt as _, h_flex, v_flex,
@@ -97,6 +100,8 @@ pub struct ScheduledPageView {
     tool_preset: String,
     execution_target: String,
     start_date_input: Entity<InputState>,
+    start_date_picker: Entity<DatePickerState>,
+    start_time_field: Entity<TimeFieldState>,
     timezone_input: Entity<InputState>,
     acknowledged_writes: bool,
     cron_preview_runs: Vec<String>,
@@ -126,6 +131,39 @@ impl ScheduledPageView {
         });
         let max_duration_input = cx.new(|cx| InputState::new(window, cx).default_value("30"));
         let start_date_input = cx.new(|cx| InputState::new(window, cx).default_value("2026-05-01"));
+        let start_date_picker = cx.new(|cx| {
+            let mut st = DatePickerState::new(window, cx).date_format("%Y-%m-%d");
+            st.set_date(Local::now().date_naive(), window, cx);
+            st
+        });
+        let start_time_field = cx.new(|cx| {
+            let mut st = TimeFieldState::new(window, cx).precision(TimePrecision::Minute);
+            if let Some(t) = NaiveTime::from_hms_opt(9, 0, 0) {
+                st.set_time(t, window, cx);
+            }
+            st
+        });
+        let time_in_sync = time_input.clone();
+        cx.subscribe(&start_time_field, move |_, st, ev: &TimeFieldEvent, cx| {
+            if matches!(ev, TimeFieldEvent::Change(_)) {
+                let formatted = st.read(cx).time().format("%H:%M").to_string();
+                let _ = time_in_sync.update(cx, |inp, cx| {
+                    // Keep string fallback synced for cron generation
+                    let _ = formatted;
+                    let _ = inp;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+        let date_in_sync = start_date_input.clone();
+        cx.subscribe(&start_date_picker, move |_, _st, ev: &DatePickerEvent, cx| {
+            if matches!(ev, DatePickerEvent::Change(_)) {
+                let _ = &date_in_sync;
+                cx.notify();
+            }
+        })
+        .detach();
         let timezone_input = cx.new(|cx| InputState::new(window, cx).default_value(&local_timezone_name()));
 
         Self {
@@ -155,6 +193,8 @@ impl ScheduledPageView {
             tool_preset: "default".to_string(),
             execution_target: "new".to_string(),
             start_date_input,
+            start_date_picker,
+            start_time_field,
             timezone_input,
             acknowledged_writes: false,
             cron_preview_runs: Vec::new(),
@@ -210,6 +250,12 @@ impl ScheduledPageView {
                         self.schedule_kind = kind;
                         self.time_input
                             .update(cx, |s, cx| s.set_value(&time_str, window, cx));
+                        if let Some((hh, mm)) = parse_hhmm(&time_str) {
+                            if let Some(nt) = NaiveTime::from_hms_opt(hh, mm, 0) {
+                                self.start_time_field
+                                    .update(cx, |s, cx| s.set_time(nt, window, cx));
+                            }
+                        }
                         self.minute_input
                             .update(cx, |s, cx| s.set_value(&min_str, window, cx));
                         self.weekday = wd;
@@ -229,6 +275,12 @@ impl ScheduledPageView {
                 .update(cx, |s, cx| s.set_value(&default_cwd, window, cx));
             self.time_input
                 .update(cx, |s, cx| s.set_value("09:00", window, cx));
+            self.start_date_picker
+                .update(cx, |s, cx| s.set_date(Local::now().date_naive(), window, cx));
+            if let Some(nt) = NaiveTime::from_hms_opt(9, 0, 0) {
+                self.start_time_field
+                    .update(cx, |s, cx| s.set_time(nt, window, cx));
+            }
             self.minute_input
                 .update(cx, |s, cx| s.set_value("0", window, cx));
             self.once_input.update(cx, |s, cx| s.set_value("", window, cx));
@@ -240,7 +292,7 @@ impl ScheduledPageView {
             self.weekday = 1;
             self.model_key = None;
             self.thinking_level = None;
-            self.tool_preset = "read-only".to_string();
+            self.tool_preset = "default".to_string();
             self.acknowledged_writes = false;
             self.mode = ScheduledViewMode::Edit(None);
         }
@@ -267,8 +319,8 @@ impl ScheduledPageView {
                 Some(format!("{m} * * * *"))
             }
             ScheduleKind::Daily | ScheduleKind::Weekdays | ScheduleKind::Weekly => {
-                let time_val = self.time_input.read(cx).value().to_string();
-                let (hh, mm) = parse_hhmm(&time_val).unwrap_or((9, 0));
+                let t = self.start_time_field.read(cx).time();
+                let (hh, mm) = (t.hour(), t.minute());
                 match self.schedule_kind {
                     ScheduleKind::Daily => Some(format!("{mm} {hh} * * *")),
                     ScheduleKind::Weekdays => Some(format!("{mm} {hh} * * 1-5")),
@@ -339,15 +391,25 @@ impl ScheduledPageView {
         let schedule_val = match self.schedule_kind {
             ScheduleKind::Manual => json!({ "kind": "manual" }),
             ScheduleKind::Once => {
-                let raw = self.once_input.read(cx).value().trim().to_string();
-                let iso = parse_once_to_iso(&raw).unwrap_or(raw);
+                let date_str = self
+                    .start_date_picker
+                    .read(cx)
+                    .date()
+                    .format("%Y-%m-%d")
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+                let time_str = self.start_time_field.read(cx).time().format("%H:%M").to_string();
+                let combined = format!("{date_str}T{time_str}");
+                let iso = parse_once_to_iso(&combined).unwrap_or(combined);
                 json!({ "kind": "once", "at": iso })
             }
             _ => {
                 let expr = self
                     .current_cron_expr(cx)
                     .unwrap_or_else(|| "0 9 * * *".to_string());
-                json!({ "kind": "cron", "expr": expr, "timezone": local_timezone_name() })
+                let tz = self.timezone_input.read(cx).value().trim().to_string();
+                let tz = if tz.is_empty() { local_timezone_name() } else { tz };
+                json!({ "kind": "cron", "expr": expr, "timezone": tz })
             }
         };
 
@@ -1117,14 +1179,28 @@ impl ScheduledPageView {
                     ScheduleKind::Manual => tr(locale, "scheduled.schedule.manual"),
                 };
 
-                // Section 4: Model & Thinking (> 3 items -> dropdowns)
+                // Section 4: Model & Thinking (linked dynamically)
+                let selected_model_info = self
+                    .model_key
+                    .as_ref()
+                    .and_then(|(p, id)| models.iter().find(|m| &m.provider == p && &m.id == id))
+                    .or_else(|| self.app_state.read(cx).selected_model.as_ref())
+                    .cloned();
+                let supported_thinking_levels: Vec<String> = selected_model_info
+                    .as_ref()
+                    .map(|m| m.thinking_levels.clone())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec!["off".into(), "low".into(), "medium".into(), "high".into()]);
+
                 let model_label = match &self.model_key {
                     Some((p, id)) => format!("{id} ({p})"),
                     None => tr(locale, "scheduled.model.default").to_string(),
                 };
                 let thinking_label = self
                     .thinking_level
-                    .clone()
+                    .as_ref()
+                    .filter(|lvl| supported_thinking_levels.contains(lvl))
+                    .cloned()
                     .unwrap_or_else(|| tr(locale, "scheduled.thinking.default").to_string());
 
                 let missing_required = self.name_input.read(cx).value().trim().is_empty()
@@ -1134,13 +1210,30 @@ impl ScheduledPageView {
                 let back_t1 = back_target.clone();
                 let back_t2 = back_target;
 
+                let setting_row = |label: SharedString, ctrl: gpui_kit::AnyElement, cx: &gpui_kit::App| {
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .font_medium()
+                                .text_color(cx.theme().foreground)
+                                .child(label),
+                        )
+                        .child(div().w(px(260.)).flex_shrink_0().child(ctrl))
+                };
+
                 shell = shell
                     .child(
                         h_flex().child(
                             Button::new("sched-edit-back")
                                 .ghost()
-                                .small()
-                                .h(px(28.))
+                                .h(px(32.))
                                 .icon(IconName::ArrowLeft)
                                 .label(back_label)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1149,256 +1242,327 @@ impl ScheduledPageView {
                                 })),
                         ),
                     )
-                    .child(div().text_lg().font_semibold().child(if is_edit {
-                        tr(locale, "scheduled.edit")
-                    } else {
-                        tr(locale, "scheduled.new")
-                    }))
                     .child(
                         v_flex()
+                            .w_full()
+                            .max_w(px(760.))
+                            .mx_auto()
                             .gap_4()
-                            .p_5()
-                            .rounded_xl()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().secondary)
-                            // 1. 任务名称 - 任务内容
+                            // 1. 基础信息
                             .child(
-                                v_flex()
-                                    .gap_3()
-                                    .child(form_field(
-                                        tr(locale, "scheduled.field.name"),
-                                        Input::new(&self.name_input).small(),
+                                GroupBox::new()
+                                    .outline()
+                                    .title(tr(locale, "scheduled.section.basic"))
+                                    .gap_4()
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.name")),
+                                        Input::new(&self.name_input).h(px(32.)).into_any_element(),
                                         cx,
                                     ))
-                                    .child(form_field(
-                                        tr(locale, "scheduled.field.prompt"),
-                                        Textarea::new(&self.prompt_input),
-                                        cx,
-                                    )),
-                            )
-                            .child(div().w_full().h_px().bg(cx.theme().border.opacity(0.6)))
-                            // 2. 执行位置（每次新建对话/复用对话）、项目
-                            .child(
-                                h_flex()
-                                    .gap_4()
                                     .child(
                                         v_flex()
-                                            .flex_1()
+                                            .w_full()
                                             .gap_1p5()
-                                            .child(div().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.execTarget")))
                                             .child(
-                                                TabBar::new("sched-exec-target-tabs")
-                                                    .segmented()
-                                                    .h(px(32.))
-                                                    .child(
-                                                        Tab::new()
-                                                            .label(tr(locale, "scheduled.execTargetNew"))
-                                                            .selected(self.execution_target == "new")
-                                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                                this.execution_target = "new".to_string();
-                                                                cx.notify();
-                                                            })),
-                                                    )
-                                                    .child(
-                                                        Tab::new()
-                                                            .label(tr(locale, "scheduled.execTargetReuse"))
-                                                            .selected(self.execution_target == "reuse")
-                                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                                this.execution_target = "reuse".to_string();
-                                                                cx.notify();
-                                                            })),
-                                                    ),
-                                            ),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_1p5()
-                                            .child(div().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.field.project")))
-                                            .child({
-                                                let cwd_in = self.cwd_input.clone();
-                                                let projs = projects.clone();
-                                                Button::new("sched-proj-dropdown")
-                                                    .outline()
-                                                    .h(px(32.))
-                                                    .w_full()
-                                                    .label(selected_proj_name)
-                                                    .dropdown_menu(move |mut menu, _, _| {
-                                                        for (p_name, p_cwd) in &projs {
-                                                            let c_in = cwd_in.clone();
-                                                            let target_cwd = p_cwd.clone();
-                                                            menu = menu.item(
-                                                                PopupMenuItem::new(p_name.clone()).on_click(move |_, window, cx| {
+                                                div()
+                                                    .text_sm()
+                                                    .font_medium()
+                                                    .text_color(cx.theme().foreground)
+                                                    .child(tr(locale, "scheduled.field.prompt")),
+                                            )
+                                            .child(Textarea::new(&self.prompt_input)),
+                                    ),
+                            )
+                            // 2. 执行位置与项目
+                            .child(
+                                GroupBox::new()
+                                    .outline()
+                                    .title(tr(locale, "scheduled.section.execution"))
+                                    .gap_4()
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.execTarget")),
+                                        TabBar::new("sched-exec-target-tabs")
+                                            .segmented()
+                                            .w_full()
+                                            .h(px(32.))
+                                            .child(
+                                                Tab::new()
+                                                    .flex_1()
+                                                    .label(tr(locale, "scheduled.execTargetNew"))
+                                                    .selected(self.execution_target == "new")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.execution_target = "new".to_string();
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Tab::new()
+                                                    .flex_1()
+                                                    .label(tr(locale, "scheduled.execTargetReuse"))
+                                                    .selected(self.execution_target == "reuse")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.execution_target = "reuse".to_string();
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .into_any_element(),
+                                        cx,
+                                    ))
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.project")),
+                                        {
+                                            let cwd_in = self.cwd_input.clone();
+                                            let projs = projects.clone();
+                                            Button::new("sched-proj-dropdown")
+                                                .outline()
+                                                .h(px(32.))
+                                                .w_full()
+                                                .dropdown_caret(true)
+                                                .label(selected_proj_name)
+                                                .dropdown_menu(move |mut menu, _, _| {
+                                                    for (p_name, p_cwd) in &projs {
+                                                        let c_in = cwd_in.clone();
+                                                        let target_cwd = p_cwd.clone();
+                                                        let checked = &cur_cwd == p_cwd;
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(p_name.clone())
+                                                                .checked(checked)
+                                                                .on_click(move |_, window, cx| {
                                                                     c_in.update(cx, |s, cx| {
                                                                         s.set_value(&target_cwd, window, cx);
                                                                     });
                                                                 }),
-                                                            );
-                                                        }
-                                                        menu
-                                                    })
-                                            }),
-                                    ),
-                            )
-                            .child(div().w_full().h_px().bg(cx.theme().border.opacity(0.6)))
-                            // 3. 运行时间 - 重复 - 开始日期 - 开始时间 - 时区
-                            .child(
-                                v_flex()
-                                    .gap_3()
-                                    .child(div().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.section.schedule")))
-                                    .child(
-                                        h_flex()
-                                            .gap_3()
-                                            .items_center()
-                                            .child(
-                                                v_flex()
-                                                    .w(px(140.))
-                                                    .gap_1()
-                                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.field.repeat")))
-                                                    .child({
-                                                        let entity_sched = cx.entity().clone();
-                                                        Button::new("sched-repeat-btn")
-                                                            .outline()
-                                                            .h(px(32.))
-                                                            .w_full()
-                                                            .label(repeat_label)
-                                                            .dropdown_menu(move |mut menu, _, _| {
-                                                                for &kind in ScheduleKind::all() {
-                                                                    let e_k = entity_sched.clone();
-                                                                    menu = menu.item(
-                                                                        PopupMenuItem::new(tr(locale, kind.i18n_key())).on_click(move |_, _, cx| {
-                                                                            e_k.update(cx, |v, cx| {
-                                                                                v.schedule_kind = kind;
-                                                                                v.preview_cron_now(cx);
-                                                                                cx.notify();
-                                                                            });
-                                                                        }),
-                                                                    );
-                                                                }
-                                                                menu
-                                                            })
-                                                    }),
-                                            )
-                                            .child(
-                                                v_flex()
-                                                    .w(px(130.))
-                                                    .gap_1()
-                                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.field.startDate")))
-                                                    .child(Input::new(&self.start_date_input).small()),
-                                            )
-                                            .child(
-                                                v_flex()
-                                                    .w(px(110.))
-                                                    .gap_1()
-                                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.field.startTime")))
-                                                    .child(Input::new(&self.time_input).small()),
-                                            )
-                                            .child(
-                                                v_flex()
-                                                    .flex_1()
-                                                    .gap_1()
-                                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.field.timezone")))
-                                                    .child(Input::new(&self.timezone_input).small()),
-                                            ),
-                                    ),
-                            )
-                            .child(div().w_full().h_px().bg(cx.theme().border.opacity(0.6)))
-                            // 4. 使用模型 - 思考强度
-                            .child(
-                                h_flex()
-                                    .gap_4()
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_1p5()
-                                            .child(div().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.field.model")))
-                                            .child({
-                                                let models_for_menu = models.clone();
-                                                let entity_model = cx.entity().clone();
-                                                Button::new("sched-model-btn")
-                                                    .outline()
-                                                    .h(px(32.))
-                                                    .w_full()
-                                                    .label(model_label)
-                                                    .dropdown_menu(move |mut menu, _, _| {
-                                                        let e_def = entity_model.clone();
-                                                        menu = menu.item(
-                                                            PopupMenuItem::new(tr(locale, "scheduled.model.default")).on_click(move |_, _, cx| {
-                                                                e_def.update(cx, |v, cx| {
-                                                                    v.model_key = None;
-                                                                    cx.notify();
-                                                                });
-                                                            }),
                                                         );
-                                                        for m in &models_for_menu {
-                                                            let e_m = entity_model.clone();
-                                                            let p = m.provider.clone();
-                                                            let id = m.id.clone();
-                                                            let lbl = m.display_label();
-                                                            menu = menu.item(
-                                                                PopupMenuItem::new(lbl).on_click(move |_, _, cx| {
-                                                                    e_m.update(cx, |v, cx| {
-                                                                        v.model_key = Some((p.clone(), id.clone()));
+                                                    }
+                                                    menu
+                                                })
+                                                .into_any_element()
+                                        },
+                                        cx,
+                                    )),
+                            )
+                            // 3. 运行时间与调度
+                            .child(
+                                GroupBox::new()
+                                    .outline()
+                                    .title(tr(locale, "scheduled.section.schedule"))
+                                    .gap_4()
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.repeat")),
+                                        {
+                                            let entity_sched = cx.entity().clone();
+                                            let cur_kind = self.schedule_kind;
+                                            Button::new("sched-repeat-btn")
+                                                .outline()
+                                                .h(px(32.))
+                                                .w_full()
+                                                .dropdown_caret(true)
+                                                .label(repeat_label)
+                                                .dropdown_menu(move |mut menu, _, _| {
+                                                    for &kind in ScheduleKind::all() {
+                                                        let e_k = entity_sched.clone();
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(tr(locale, kind.i18n_key()))
+                                                                .checked(cur_kind == kind)
+                                                                .on_click(move |_, _, cx| {
+                                                                    e_k.update(cx, |v, cx| {
+                                                                        v.schedule_kind = kind;
+                                                                        v.preview_cron_now(cx);
                                                                         cx.notify();
                                                                     });
                                                                 }),
-                                                            );
-                                                        }
-                                                        menu
-                                                    })
-                                            }),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_1p5()
-                                            .child(div().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.field.thinking")))
-                                            .child({
-                                                let entity_think = cx.entity().clone();
-                                                Button::new("sched-think-btn")
-                                                    .outline()
-                                                    .h(px(32.))
-                                                    .w_full()
-                                                    .label(thinking_label)
-                                                    .dropdown_menu(move |mut menu, _, _| {
-                                                        let e_def = entity_think.clone();
-                                                        menu = menu.item(
-                                                            PopupMenuItem::new(tr(locale, "scheduled.thinking.default")).on_click(move |_, _, cx| {
+                                                        );
+                                                    }
+                                                    menu
+                                                })
+                                                .into_any_element()
+                                        },
+                                        cx,
+                                    ))
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.startDate")),
+                                        DatePicker::new(&self.start_date_picker)
+                                            .w_full()
+                                            .h(px(32.))
+                                            .into_any_element(),
+                                        cx,
+                                    ))
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.startTime")),
+                                        TimeField::new(&self.start_time_field)
+                                            .w_full()
+                                            .h(px(32.))
+                                            .into_any_element(),
+                                        cx,
+                                    ))
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.timezone")),
+                                        Input::new(&self.timezone_input)
+                                            .h(px(32.))
+                                            .into_any_element(),
+                                        cx,
+                                    )),
+                            )
+                            // 4. 模型与思考强度（联动）
+                            .child(
+                                GroupBox::new()
+                                    .outline()
+                                    .title(tr(locale, "scheduled.section.model"))
+                                    .gap_4()
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.model")),
+                                        {
+                                            let models_for_menu = models.clone();
+                                            let entity_model = cx.entity().clone();
+                                            let cur_model_key = self.model_key.clone();
+                                            Button::new("sched-model-btn")
+                                                .outline()
+                                                .h(px(32.))
+                                                .w_full()
+                                                .dropdown_caret(true)
+                                                .label(model_label)
+                                                .dropdown_menu(move |mut menu, _, _| {
+                                                    let e_def = entity_model.clone();
+                                                    menu = menu.item(
+                                                        PopupMenuItem::new(tr(locale, "scheduled.model.default"))
+                                                            .checked(cur_model_key.is_none())
+                                                            .on_click(move |_, _, cx| {
                                                                 e_def.update(cx, |v, cx| {
+                                                                    v.model_key = None;
                                                                     v.thinking_level = None;
                                                                     cx.notify();
                                                                 });
                                                             }),
-                                                        );
-                                                        for lvl in ["off", "minimal", "low", "medium", "high", "xhigh"] {
-                                                            let e_l = entity_think.clone();
-                                                            menu = menu.item(
-                                                                PopupMenuItem::new(lvl).on_click(move |_, _, cx| {
-                                                                    e_l.update(cx, |v, cx| {
-                                                                        v.thinking_level = Some(lvl.to_string());
+                                                    );
+                                                    for m in &models_for_menu {
+                                                        let e_m = entity_model.clone();
+                                                        let p = m.provider.clone();
+                                                        let id = m.id.clone();
+                                                        let lbl = m.display_label();
+                                                        let supported = m.thinking_levels.clone();
+                                                        let is_cur = cur_model_key.as_ref() == Some(&(p.clone(), id.clone()));
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(lbl)
+                                                                .checked(is_cur)
+                                                                .on_click(move |_, _, cx| {
+                                                                    e_m.update(cx, |v, cx| {
+                                                                        v.model_key = Some((p.clone(), id.clone()));
+                                                                        if let Some(ref cur_t) = v.thinking_level {
+                                                                            if !supported.contains(cur_t) {
+                                                                                v.thinking_level = None;
+                                                                            }
+                                                                        }
                                                                         cx.notify();
                                                                     });
                                                                 }),
+                                                        );
+                                                    }
+                                                    menu
+                                                })
+                                                .into_any_element()
+                                        },
+                                        cx,
+                                    ))
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.thinking")),
+                                        {
+                                            let entity_think = cx.entity().clone();
+                                            let levels = supported_thinking_levels.clone();
+                                            let cur_think = self.thinking_level.clone();
+                                            if levels.len() <= 2 {
+                                                // <= 3 options (Default + 1..2 levels) -> Segmented Group Tag
+                                                let mut tabs = TabBar::new("sched-think-tabs")
+                                                    .segmented()
+                                                    .w_full()
+                                                    .h(px(32.))
+                                                    .child({
+                                                        let e_def = entity_think.clone();
+                                                        Tab::new()
+                                                            .flex_1()
+                                                            .label(tr(locale, "scheduled.thinking.default"))
+                                                            .selected(cur_think.is_none())
+                                                            .on_click(move |_, _, cx| {
+                                                                e_def.update(cx, |v, cx| {
+                                                                    v.thinking_level = None;
+                                                                    cx.notify();
+                                                                });
+                                                            })
+                                                    });
+                                                for lvl in levels {
+                                                    let e_l = entity_think.clone();
+                                                    let lvl_c = lvl.clone();
+                                                    let is_sel = cur_think.as_deref() == Some(lvl.as_str());
+                                                    tabs = tabs.child(
+                                                        Tab::new()
+                                                            .flex_1()
+                                                            .label(lvl.clone())
+                                                            .selected(is_sel)
+                                                            .on_click(move |_, _, cx| {
+                                                                e_l.update(cx, |v, cx| {
+                                                                    v.thinking_level = Some(lvl_c.clone());
+                                                                    cx.notify();
+                                                                });
+                                                            }),
+                                                    );
+                                                }
+                                                tabs.into_any_element()
+                                            } else {
+                                                Button::new("sched-think-btn")
+                                                    .outline()
+                                                    .h(px(32.))
+                                                    .w_full()
+                                                    .dropdown_caret(true)
+                                                    .label(thinking_label)
+                                                    .dropdown_menu(move |mut menu, _, _| {
+                                                        let e_def = entity_think.clone();
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(tr(locale, "scheduled.thinking.default"))
+                                                                .checked(cur_think.is_none())
+                                                                .on_click(move |_, _, cx| {
+                                                                    e_def.update(cx, |v, cx| {
+                                                                        v.thinking_level = None;
+                                                                        cx.notify();
+                                                                    });
+                                                                }),
+                                                        );
+                                                        for lvl in &levels {
+                                                            let e_l = entity_think.clone();
+                                                            let lvl_c = lvl.clone();
+                                                            let is_sel = cur_think.as_deref() == Some(lvl.as_str());
+                                                            menu = menu.item(
+                                                                PopupMenuItem::new(lvl.clone())
+                                                                    .checked(is_sel)
+                                                                    .on_click(move |_, _, cx| {
+                                                                        e_l.update(cx, |v, cx| {
+                                                                            v.thinking_level = Some(lvl_c.clone());
+                                                                            cx.notify();
+                                                                        });
+                                                                    }),
                                                             );
                                                         }
                                                         menu
                                                     })
-                                            }),
-                                    ),
+                                                    .into_any_element()
+                                            }
+                                        },
+                                        cx,
+                                    )),
                             )
-                            .child(div().w_full().h_px().bg(cx.theme().border.opacity(0.6)))
                             // 5. 可用工具
                             .child(
-                                v_flex()
-                                    .gap_1p5()
-                                    .child(div().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(tr(locale, "scheduled.section.tools")))
-                                    .child(
+                                GroupBox::new()
+                                    .outline()
+                                    .title(tr(locale, "scheduled.section.tools"))
+                                    .gap_4()
+                                    .child(setting_row(
+                                        SharedString::from(tr(locale, "scheduled.field.tools")),
                                         TabBar::new("sched-tools-tabs")
                                             .segmented()
+                                            .w_full()
                                             .h(px(32.))
                                             .child(
                                                 Tab::new()
+                                                    .flex_1()
                                                     .label(tr(locale, "scheduled.tools.full"))
                                                     .selected(self.tool_preset == "full")
                                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1408,6 +1572,7 @@ impl ScheduledPageView {
                                             )
                                             .child(
                                                 Tab::new()
+                                                    .flex_1()
                                                     .label(tr(locale, "scheduled.tools.default"))
                                                     .selected(self.tool_preset == "default")
                                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1417,14 +1582,17 @@ impl ScheduledPageView {
                                             )
                                             .child(
                                                 Tab::new()
+                                                    .flex_1()
                                                     .label(tr(locale, "scheduled.tools.none"))
                                                     .selected(self.tool_preset == "none" || self.tool_preset == "read-only")
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.tool_preset = "none".to_string();
                                                         cx.notify();
                                                     })),
-                                            ),
-                                    ),
+                                            )
+                                            .into_any_element(),
+                                        cx,
+                                    )),
                             )
                             .children(self.action_error.as_ref().map(|e| {
                                 div()
@@ -1439,9 +1607,9 @@ impl ScheduledPageView {
                                     .pt_2()
                                     .child(
                                         Button::new("sched-cancel-btn")
-                                            .ghost()
-                                            .small()
-                                            .h(px(28.))
+                                            .outline()
+                                            .h(px(32.))
+                                            .w(px(100.))
                                             .disabled(self.busy)
                                             .label(tr(locale, "scheduled.cancel"))
                                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1452,8 +1620,8 @@ impl ScheduledPageView {
                                     .child(
                                         Button::new("sched-save-btn")
                                             .primary()
-                                            .small()
-                                            .h(px(28.))
+                                            .h(px(32.))
+                                            .w(px(124.))
                                             .disabled(self.busy || missing_required)
                                             .label(if is_edit {
                                                 tr(locale, "scheduled.save")
