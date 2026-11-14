@@ -171,8 +171,10 @@ impl FileExplorerPanel {
                             row = row.child(
                                 Button::new(("fe-mention", ix))
                                     .ghost()
-                                    .xsmall()
-                                    .compact()
+                                    .small()
+                                    .w(px(26.))
+                                    .h(px(24.))
+                                    .flex_shrink_0()
                                     .label("@")
                                     .tooltip(tr(locale, "panel.mentionTooltip"))
                                     .on_click(move |_, _, cx| {

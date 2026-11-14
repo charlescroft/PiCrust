@@ -447,6 +447,121 @@ impl ComposerView {
         })
         .detach();
 
+        let weak_self = cx.weak_entity();
+        cx.intercept_keystrokes(move |event, window, cx| {
+            let key = event.keystroke.key.as_str();
+            if !matches!(key, "up" | "down" | "left" | "right" | "enter" | "escape") {
+                return;
+            }
+            if event.keystroke.modifiers.control
+                || event.keystroke.modifiers.alt
+                || event.keystroke.modifiers.platform
+                || event.keystroke.modifiers.function
+            {
+                return;
+            }
+            let Some(entity) = weak_self.upgrade() else {
+                return;
+            };
+            let mut handled = false;
+            entity.update(cx, |this, cx| {
+                if !this.file_picker_open && this.at_query.is_none() {
+                    return;
+                }
+                let (modal_open, is_chat_page, file_matches) = {
+                    let s = this.app_state.read(cx);
+                    (
+                        s.settings_open || s.find_open,
+                        s.active_page == crate::app_state::WorkspacePage::Chat,
+                        s.file_search_results.clone(),
+                    )
+                };
+                if modal_open || !is_chat_page {
+                    return;
+                }
+                let is_dir_browser = this.file_picker_open && this.at_query.is_none();
+                let len = if is_dir_browser {
+                    this.file_picker_entries.len()
+                } else {
+                    file_matches.len().min(40)
+                };
+                match key {
+                    "up" => {
+                        handled = true;
+                        if len > 0 {
+                            this.file_picker_selected_idx =
+                                this.file_picker_selected_idx.saturating_sub(1);
+                            this.file_picker_scroll
+                                .scroll_to_item(this.file_picker_selected_idx);
+                            cx.notify();
+                        }
+                    }
+                    "down" => {
+                        handled = true;
+                        if len > 0 {
+                            this.file_picker_selected_idx =
+                                (this.file_picker_selected_idx + 1).min(len - 1);
+                            this.file_picker_scroll
+                                .scroll_to_item(this.file_picker_selected_idx);
+                            cx.notify();
+                        }
+                    }
+                    "right" if is_dir_browser => {
+                        if let Some(entry) = this
+                            .file_picker_entries
+                            .get(this.file_picker_selected_idx)
+                            .cloned()
+                        {
+                            if entry.is_dir {
+                                handled = true;
+                                this.enter_file_picker_dir(entry.relative_path, cx);
+                            }
+                        }
+                    }
+                    "left" if is_dir_browser => {
+                        if !this.file_picker_dir.is_empty() {
+                            handled = true;
+                            this.exit_file_picker_dir(cx);
+                        }
+                    }
+                    "enter" => {
+                        handled = true;
+                        if is_dir_browser {
+                            if let Some(entry) = this
+                                .file_picker_entries
+                                .get(this.file_picker_selected_idx)
+                                .cloned()
+                            {
+                                if entry.is_dir {
+                                    this.enter_file_picker_dir(entry.relative_path, cx);
+                                } else {
+                                    this.insert_file_reference(&entry.relative_path, window, cx);
+                                    this.textarea.update(cx, |st, cx| st.focus(window, cx));
+                                }
+                            }
+                        } else if let Some(m) = file_matches.get(this.file_picker_selected_idx) {
+                            let rel = m.relative_path.clone();
+                            this.insert_file_reference(&rel, window, cx);
+                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
+                        }
+                    }
+                    "escape" => {
+                        handled = true;
+                        this.at_query = None;
+                        this.file_picker_open = false;
+                        this.textarea.update(cx, |st, cx| st.focus(window, cx));
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            });
+            if handled {
+                window.prevent_default();
+                cx.stop_propagation();
+            }
+        })
+        .detach();
+
         Self {
             focus_handle: cx.focus_handle(),
             app_state,
@@ -1265,7 +1380,7 @@ impl ComposerView {
                             .rounded_md()
                             .cursor_pointer()
                             .bg(if is_selected {
-                                cx.theme().secondary
+                                cx.theme().accent.opacity(0.18)
                             } else {
                                 cx.theme().transparent
                             })
@@ -1333,7 +1448,7 @@ impl ComposerView {
                             .rounded_md()
                             .cursor_pointer()
                             .bg(if is_selected {
-                                cx.theme().secondary
+                                cx.theme().accent.opacity(0.18)
                             } else {
                                 cx.theme().transparent
                             })
