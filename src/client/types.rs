@@ -461,6 +461,8 @@ pub struct ArtifactRecord {
     pub kind: ArtifactKind,
     #[serde(default)]
     pub language: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
     pub content: String,
     /// Previous revision, kept for the panel's Diff tab.
     #[serde(default)]

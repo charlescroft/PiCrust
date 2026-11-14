@@ -1,35 +1,53 @@
-use crate::app_state::{AppState, WorkspacePage};
+use crate::app_state::{AppState, RightPanelTab, WorkspacePage};
 use crate::client::types::{ArtifactKind, ArtifactRecord};
-use crate::i18n::{format_commas, tr};
+use crate::i18n::{AppLocale, format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Styled as _,
-    Window, div, px,
+    AppContext as _, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _,
+    Window, div, img, px,
 };
-use std::collections::HashMap;
+use gpui_webview::WebView;
+use std::path::{Path, PathBuf};
 
-/// The artifact panel only compares two things: the artifact's own source and
-/// what changed since the previous revision.
+const MAX_TEXT_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArtifactViewMode {
-    Source,
-    Diff,
+enum PreviewKind {
+    Html,
+    Pdf,
+    Svg,
+    Image,
+    Markdown,
+    Office,
+    Binary,
+    Code,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadedArtifactKey {
+    identifier: String,
+    version: usize,
+    content_len: usize,
+    file_path: Option<String>,
+    kind: PreviewKind,
 }
 
 pub struct ArtifactPanelView {
     app_state: Entity<AppState>,
-    mode: ArtifactViewMode,
-    loaded_key: Option<(String, usize, ArtifactViewMode, usize, usize)>,
+    loaded_key: Option<LoadedArtifactKey>,
+    active_kind: PreviewKind,
+    active_disk_path: Option<PathBuf>,
     code_editor: Entity<EditorState>,
-    /// Lazily built only while the Diff tab shows a version with a predecessor.
-    diff_states: HashMap<String, Entity<DiffState>>,
+    markdown_content: Option<SharedString>,
+    webview: Option<Entity<WebView>>,
+    webview_error: Option<String>,
 }
 
 impl gpui_kit::Render for ArtifactPanelView {
@@ -41,13 +59,32 @@ impl gpui_kit::Render for ArtifactPanelView {
 impl ArtifactPanelView {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let code_editor = cx.new(|cx| EditorState::new(window, cx));
-        cx.observe(&app_state, |_, _, cx| cx.notify()).detach();
+        cx.observe(&app_state, |this, app, cx| {
+            let s = app.read(cx);
+            if !s.right_panel_open || s.right_panel_tab != RightPanelTab::Artifact {
+                this.release_webview();
+            }
+            cx.notify();
+        })
+        .detach();
         Self {
             app_state,
-            mode: ArtifactViewMode::Source,
             loaded_key: None,
+            active_kind: PreviewKind::Code,
+            active_disk_path: None,
             code_editor,
-            diff_states: HashMap::new(),
+            markdown_content: None,
+            webview: None,
+            webview_error: None,
+        }
+    }
+
+    fn release_webview(&mut self) {
+        if self.webview.is_some() || self.webview_error.is_some() {
+            self.webview = None;
+            self.webview_error = None;
+            // Force re-sync when panel re-opens on the same artifact.
+            self.loaded_key = None;
         }
     }
 
@@ -57,14 +94,24 @@ impl ArtifactPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let prev_len = art.previous_content.as_ref().map_or(0, |s| s.len());
-        let key = (art.identifier.clone(), art.version, self.mode, art.content.len(), prev_len);
+        let mut kind = resolve_preview_kind(art);
+        let key = LoadedArtifactKey {
+            identifier: art.identifier.clone(),
+            version: art.version,
+            content_len: art.content.len(),
+            file_path: art.file_path.clone(),
+            kind,
+        };
         if self.loaded_key.as_ref() == Some(&key) {
             return;
         }
         self.loaded_key = Some(key);
 
-        if art.content.is_empty() || (art.version > 1 && art.previous_content.is_none()) {
+        let disk_path = resolve_disk_path(art);
+        self.active_disk_path = disk_path.clone();
+
+        // Fetch inline artifact content if this is a session artifact without disk path.
+        if disk_path.is_none() && art.content.is_empty() {
             if let Some(ref sid) = art.session_id {
                 let app = self.app_state.clone();
                 let sid_c = sid.clone();
@@ -77,46 +124,113 @@ impl ArtifactPanelView {
             }
         }
 
-        if self.mode == ArtifactViewMode::Source {
-            let lang = art
-                .language
-                .as_deref()
-                .unwrap_or_else(|| match art.kind {
-                    ArtifactKind::Html => "html",
-                    ArtifactKind::React => "tsx",
-                    ArtifactKind::Svg => "xml",
-                    ArtifactKind::Mermaid => "markdown",
-                    ArtifactKind::Markdown => "markdown",
-                    ArtifactKind::Code => "text",
-                });
-            self.code_editor = cx.new(|cx| EditorState::new(window, cx).language(lang));
-            self.code_editor.update(cx, |ed, cx| {
-                ed.set_value(&art.content, window, cx);
-            });
-            // Bounded cache: one diff per artifact, dropped when the panel moves on.
-            self.diff_states.clear();
-            return;
-        }
+        // Load text content lazily only for text-based preview kinds.
+        let mut text_content = if !art.content.is_empty() {
+            Some(art.content.clone())
+        } else if matches!(
+            kind,
+            PreviewKind::Html | PreviewKind::Svg | PreviewKind::Markdown | PreviewKind::Code
+        ) {
+            match disk_path.as_deref() {
+                Some(path) => match read_text_preview(path) {
+                    TextRead::Text(s) => Some(s),
+                    TextRead::Binary => {
+                        kind = PreviewKind::Binary;
+                        None
+                    }
+                    TextRead::Missing => None,
+                },
+                None => None,
+            }
+        } else {
+            None
+        };
 
-        // Diff tab: build (or rebuild) the patch for this revision.
-        let cache_key = format!("{}:{}:{}:{}", art.identifier, art.version, art.content.len(), prev_len);
-        if self.diff_states.contains_key(&cache_key) {
-            self.diff_states.retain(|k, _| k == &cache_key);
-            return;
-        }
-        self.diff_states.clear();
+        self.active_kind = kind;
 
-        let previous = art.previous_content.as_deref().unwrap_or("");
-        if !art.content.trim().is_empty() {
-            let patch = build_unified_patch(&art.title, previous, &art.content);
-            if let Ok(files) = DiffFile::parse(&patch) {
-                let state = cx.new(|cx| {
-                    let mut s = DiffState::new(files, cx);
-                    s.set_mode(DiffMode::Unified, cx);
-                    s
+        match kind {
+            PreviewKind::Html => {
+                self.markdown_content = None;
+                let builder = if let Some(ref path) = disk_path {
+                    wry::WebViewBuilder::new().with_url(&file_path_to_url(path))
+                } else {
+                    let html = text_content.take().unwrap_or_default();
+                    wry::WebViewBuilder::new().with_html(&html)
+                };
+                self.build_webview(builder, window, cx);
+            }
+            PreviewKind::Pdf => {
+                self.markdown_content = None;
+                #[cfg(target_os = "linux")]
+                {
+                    self.webview = None;
+                    self.webview_error = None;
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    if let Some(ref path) = disk_path {
+                        let builder = wry::WebViewBuilder::new().with_url(&file_path_to_url(path));
+                        self.build_webview(builder, window, cx);
+                    } else {
+                        self.webview = None;
+                        self.webview_error = Some("PDF file path missing".to_string());
+                    }
+                }
+            }
+            PreviewKind::Svg => {
+                self.markdown_content = None;
+                if let Some(svg) = text_content.take() {
+                    let html = wrap_svg_html(&svg);
+                    let builder = wry::WebViewBuilder::new().with_html(&html);
+                    self.build_webview(builder, window, cx);
+                } else if let Some(ref path) = disk_path {
+                    let builder = wry::WebViewBuilder::new().with_url(&file_path_to_url(path));
+                    self.build_webview(builder, window, cx);
+                } else {
+                    self.webview = None;
+                    self.webview_error = None;
+                }
+            }
+            PreviewKind::Markdown => {
+                self.webview = None;
+                self.webview_error = None;
+                let md = text_content.unwrap_or_default();
+                self.markdown_content = Some(SharedString::from(md));
+            }
+            PreviewKind::Code => {
+                self.webview = None;
+                self.webview_error = None;
+                self.markdown_content = None;
+                let lang = infer_editor_language(art, disk_path.as_deref());
+                let code = text_content.unwrap_or_default();
+                self.code_editor = cx.new(|cx| EditorState::new(window, cx).language(lang));
+                self.code_editor.update(cx, |ed, cx| {
+                    ed.set_value(&code, window, cx);
                 });
-                cx.observe(&state, |_, _, cx| cx.notify()).detach();
-                self.diff_states.insert(cache_key, state);
+            }
+            PreviewKind::Image | PreviewKind::Office | PreviewKind::Binary => {
+                self.webview = None;
+                self.webview_error = None;
+                self.markdown_content = None;
+            }
+        }
+    }
+
+    fn build_webview(
+        &mut self,
+        builder: wry::WebViewBuilder<'_>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.webview = None;
+        self.webview_error = None;
+        match WebView::build(builder, window, cx) {
+            Ok(wv) => {
+                let entity = cx.new(|_| wv);
+                self.webview = Some(entity);
+            }
+            Err(err) => {
+                self.webview_error = Some(err.to_string());
             }
         }
     }
@@ -143,6 +257,7 @@ impl ArtifactPanelView {
         };
 
         let Some(art) = active_art else {
+            self.release_webview();
             return v_flex()
                 .size_full()
                 .items_center()
@@ -163,11 +278,24 @@ impl ArtifactPanelView {
 
         self.sync_artifact(&art, window, cx);
 
-        let mention_ref = std::path::Path::new(&art.identifier)
+        let mention_target = art
+            .file_path
+            .as_deref()
+            .unwrap_or(art.identifier.as_str());
+        let mention_ref = Path::new(mention_target)
             .strip_prefix(&cwd_root)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| art.identifier.clone());
+            .unwrap_or_else(|_| mention_target.to_string());
         let app_mention = self.app_state.clone();
+        let open_art = art.clone();
+
+        let title_text = if art.file_path.is_some() && art.version <= 1 {
+            art.title.clone()
+        } else {
+            format!("{} (v{})", art.title, format_commas(art.version))
+        };
+
+        let subtitle_text = preview_subtitle(&art, self.active_kind);
 
         let header = h_flex()
             .px_3()
@@ -186,43 +314,20 @@ impl ArtifactPanelView {
                             .text_xs()
                             .font_semibold()
                             .truncate()
-                            .child(format!("{} (v{})", art.title, format_commas(art.version))),
+                            .child(title_text),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(art.kind.label()),
+                            .truncate()
+                            .child(subtitle_text),
                     ),
             )
             .child(
                 h_flex()
                     .items_center()
                     .gap_1p5()
-                    .child(
-                        TabBar::new("art-mode-tabs")
-                            .segmented()
-                            .small()
-                            .h(px(24.))
-                            .child(
-                                Tab::new()
-                                    .label(tr(locale, "panel.artifactSource"))
-                                    .selected(self.mode == ArtifactViewMode::Source)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.mode = ArtifactViewMode::Source;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Tab::new()
-                                    .label(tr(locale, "panel.artifactDiff"))
-                                    .selected(self.mode == ArtifactViewMode::Diff)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.mode = ArtifactViewMode::Diff;
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
                     .child(
                         Button::new("art-mention")
                             .outline()
@@ -239,51 +344,22 @@ impl ArtifactPanelView {
                                     }
                                 });
                             }),
+                    )
+                    .child(
+                        Button::new("art-open-external")
+                            .outline()
+                            .xsmall()
+                            .h(px(24.))
+                            .icon(Icon::new(IconName::ExternalLink))
+                            .label(tr(locale, "panel.openExternal"))
+                            .tooltip(tr(locale, "panel.openExternalTooltip"))
+                            .on_click(move |_, _, _| {
+                                open_artifact_externally(&open_art);
+                            }),
                     ),
             );
 
-        let prev_len = art.previous_content.as_ref().map_or(0, |s| s.len());
-        let content = if self.mode == ArtifactViewMode::Source {
-            div()
-                .flex_1()
-                .min_h_0()
-                .size_full()
-                .child(
-                    Editor::new(&self.code_editor)
-                        .readonly(true)
-                        .appearance(false)
-                        .bordered(false)
-                        .text_size(px(preview_font_sz))
-                        .size_full(),
-                )
-                .into_any_element()
-        } else {
-            let cache_key = format!("{}:{}:{}:{}", art.identifier, art.version, art.content.len(), prev_len);
-            match self.diff_states.get(&cache_key) {
-                Some(diff_state) => div()
-                    .flex_1()
-                    .min_h_0()
-                    .size_full()
-                    // Match the Editor's 6px content padding so the Source and Diff
-                    // tabs put their line numbers in the same column.
-                    .child(
-                        Diff::new(diff_state)
-                            .header_visible(false)
-                            .line_number(true)
-                            .text_size(px(preview_font_sz))
-                            .size_full(),
-                    )
-                    .into_any_element(),
-                None => div()
-                    .flex_1()
-                    .min_h_0()
-                    .p_4()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(tr(locale, "panel.artifactNoDiff"))
-                    .into_any_element(),
-            }
-        };
+        let content = self.render_preview_body(&art, locale, preview_font_sz, cx);
 
         v_flex()
             .size_full()
@@ -298,102 +374,431 @@ impl ArtifactPanelView {
             )
             .into_any_element()
     }
+
+    fn render_preview_body(
+        &self,
+        art: &ArtifactRecord,
+        locale: AppLocale,
+        preview_font_sz: f32,
+        cx: &Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        match self.active_kind {
+            PreviewKind::Html | PreviewKind::Svg => {
+                if let Some(ref wv) = self.webview {
+                    div().size_full().child(wv.clone()).into_any_element()
+                } else {
+                    render_unsupported_card(
+                        locale,
+                        self.webview_error
+                            .as_deref()
+                            .unwrap_or_else(|| tr(locale, "panel.artifactWebViewFailed")),
+                        art.clone(),
+                        cx,
+                    )
+                }
+            }
+            PreviewKind::Pdf => {
+                #[cfg(target_os = "linux")]
+                {
+                    render_unsupported_card(
+                        locale,
+                        tr(locale, "panel.artifactPdfLinuxUnsupported"),
+                        art.clone(),
+                        cx,
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    if let Some(ref wv) = self.webview {
+                        div().size_full().child(wv.clone()).into_any_element()
+                    } else {
+                        render_unsupported_card(
+                            locale,
+                            self.webview_error
+                                .as_deref()
+                                .unwrap_or_else(|| tr(locale, "panel.artifactWebViewFailed")),
+                            art.clone(),
+                            cx,
+                        )
+                    }
+                }
+            }
+            PreviewKind::Image => {
+                if let Some(ref path) = self.active_disk_path {
+                    div()
+                        .size_full()
+                        .p_4()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .overflow_hidden()
+                        .child(img(path.clone()).max_w_full().max_h_full())
+                        .into_any_element()
+                } else {
+                    render_unsupported_card(
+                        locale,
+                        tr(locale, "panel.artifactBinaryUnsupported"),
+                        art.clone(),
+                        cx,
+                    )
+                }
+            }
+            PreviewKind::Markdown => {
+                if let Some(ref md) = self.markdown_content {
+                    div()
+                        .size_full()
+                        .overflow_y_scrollbar()
+                        .p_4()
+                        .text_size(px(preview_font_sz))
+                        .child(TextView::markdown("artifact-markdown-preview", md.clone()))
+                        .into_any_element()
+                } else {
+                    div().size_full().into_any_element()
+                }
+            }
+            PreviewKind::Office => render_unsupported_card(
+                locale,
+                tr(locale, "panel.artifactOfficeUnsupported"),
+                art.clone(),
+                cx,
+            ),
+            PreviewKind::Binary => render_unsupported_card(
+                locale,
+                tr(locale, "panel.artifactBinaryUnsupported"),
+                art.clone(),
+                cx,
+            ),
+            PreviewKind::Code => div()
+                .size_full()
+                .child(
+                    Editor::new(&self.code_editor)
+                        .readonly(true)
+                        .appearance(false)
+                        .bordered(false)
+                        .text_size(px(preview_font_sz))
+                        .size_full(),
+                )
+                .into_any_element(),
+        }
+    }
 }
 
-/// Builds a single-file unified diff (`--- a/<title>` / `+++ b/<title>`) from two
-/// revisions, using a small LCS so only real line changes appear.
-fn build_unified_patch(title: &str, previous: &str, current: &str) -> String {
-    let safe_title: String = title
-        .chars()
-        .map(|c| if c.is_whitespace() || c == '\0' { '_' } else { c })
-        .collect();
-    let safe_title = if safe_title.is_empty() { "artifact".to_string() } else { safe_title };
-
-    if previous.is_empty() {
-        let lines: Vec<&str> = current.lines().collect();
-        if lines.is_empty() {
-            return String::new();
-        }
-        let mut out = format!("--- /dev/null\n+++ b/{safe_title}\n@@ -0,0 +1,{} @@\n", lines.len());
-        for line in lines {
-            out.push('+');
-            out.push_str(line);
-            out.push('\n');
-        }
-        return out;
-    }
-
-    let a: Vec<&str> = previous.lines().collect();
-    let b: Vec<&str> = current.lines().collect();
-
-    // Classic LCS table; artifacts are small enough for this to stay cheap.
-    let n = a.len();
-    let m = b.len();
-    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            lcs[i][j] = if a[i] == b[j] {
-                lcs[i + 1][j + 1] + 1
-            } else {
-                lcs[i + 1][j].max(lcs[i][j + 1])
-            };
-        }
-    }
-
-    let mut body = String::new();
-    let (mut i, mut j) = (0usize, 0usize);
-    let mut old_start = 1usize;
-    let mut new_start = 1usize;
-    let mut old_count = 0usize;
-    let mut new_count = 0usize;
-    let mut hunk = String::new();
-    let mut flush_hunk = |hunk: &mut String, old_start: usize, old_count: usize, new_start: usize, new_count: usize| {
-        if !hunk.is_empty() {
-            body.push_str(&format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"));
-            body.push_str(hunk);
-            hunk.clear();
-        }
+fn render_unsupported_card(
+    locale: AppLocale,
+    message: &str,
+    art: ArtifactRecord,
+    _cx: &Context<ArtifactPanelView>,
+) -> gpui_kit::AnyElement {
+    let ext = extract_extension(&art).unwrap_or_default().to_uppercase();
+    let title = if ext.is_empty() {
+        art.title.clone()
+    } else {
+        format!("{} ({})", art.title, ext)
     };
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap_4()
+        .p_6()
+        .child(
+            Empty::new().header(
+                EmptyHeader::new()
+                    .media(EmptyMedia::new().child(Icon::new(IconName::File)))
+                    .title(EmptyTitle::new().child(title))
+                    .description(EmptyDescription::new().child(SharedString::from(message.to_string()))),
+            ),
+        )
+        .child(
+            Button::new("art-unsupported-open")
+                .primary()
+                .small()
+                .icon(Icon::new(IconName::ExternalLink))
+                .label(tr(locale, "panel.openExternal"))
+                .on_click(move |_, _, _| {
+                    open_artifact_externally(&art);
+                }),
+        )
+        .into_any_element()
+}
 
-    let mut pending_hunk_started = false;
-    while i < n || j < m {
-        if i < n && j < m && a[i] == b[j] {
-            if pending_hunk_started {
-                hunk.push(' ');
-                hunk.push_str(a[i]);
-                hunk.push('\n');
-                old_count += 1;
-                new_count += 1;
+fn extract_extension(art: &ArtifactRecord) -> Option<String> {
+    let from_path = art
+        .file_path
+        .as_deref()
+        .and_then(|p| Path::new(p).extension())
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if from_path.as_ref().is_some_and(|s| !s.is_empty()) {
+        return from_path;
+    }
+    let from_id = Path::new(&art.identifier)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if from_id.as_ref().is_some_and(|s| !s.is_empty()) {
+        return from_id;
+    }
+    let from_title = Path::new(&art.title)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if from_title.as_ref().is_some_and(|s| !s.is_empty()) {
+        return from_title;
+    }
+    art.language
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+}
+
+fn resolve_preview_kind(art: &ArtifactRecord) -> PreviewKind {
+    if let Some(ext) = extract_extension(art) {
+        match ext.as_str() {
+            "html" | "htm" => return PreviewKind::Html,
+            "pdf" => return PreviewKind::Pdf,
+            "svg" => return PreviewKind::Svg,
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "icns" | "avif"
+            | "tiff" | "tif" => return PreviewKind::Image,
+            "md" | "markdown" | "mdx" => return PreviewKind::Markdown,
+            "doc" | "docx" | "odt" | "rtf" | "xls" | "xlsx" | "ods" | "ppt" | "pptx"
+            | "odp" => return PreviewKind::Office,
+            "zip" | "tar" | "gz" | "7z" | "rar" | "dmg" | "exe" | "bin" | "wasm" | "dll"
+            | "so" | "dylib" | "mp3" | "mp4" | "wav" | "mov" | "avi" | "mkv" | "sqlite"
+            | "db" | "parquet" => return PreviewKind::Binary,
+            _ => {}
+        }
+    }
+    match art.kind {
+        ArtifactKind::Html => PreviewKind::Html,
+        ArtifactKind::Svg => PreviewKind::Svg,
+        ArtifactKind::Markdown => PreviewKind::Markdown,
+        ArtifactKind::React | ArtifactKind::Mermaid | ArtifactKind::Code => PreviewKind::Code,
+    }
+}
+
+fn resolve_disk_path(art: &ArtifactRecord) -> Option<PathBuf> {
+    if let Some(ref p) = art.file_path {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    let id_pb = PathBuf::from(&art.identifier);
+    if id_pb.is_absolute() && id_pb.is_file() {
+        return Some(id_pb);
+    }
+    None
+}
+
+enum TextRead {
+    Text(String),
+    Binary,
+    Missing,
+}
+
+fn read_text_preview(path: &Path) -> TextRead {
+    let Ok(bytes) = std::fs::read(path) else {
+        return TextRead::Missing;
+    };
+    let slice = if bytes.len() > MAX_TEXT_PREVIEW_BYTES {
+        &bytes[..MAX_TEXT_PREVIEW_BYTES]
+    } else {
+        &bytes[..]
+    };
+    if slice.contains(&0) {
+        return TextRead::Binary;
+    }
+    match String::from_utf8(slice.to_vec()) {
+        Ok(mut text) => {
+            if bytes.len() > MAX_TEXT_PREVIEW_BYTES {
+                text.push_str("\n\n… (truncated)");
             }
-            i += 1;
-            j += 1;
-            continue;
+            TextRead::Text(text)
         }
-        if !pending_hunk_started {
-            pending_hunk_started = true;
-            old_start = i + 1;
-            new_start = j + 1;
-            old_count = 0;
-            new_count = 0;
-        }
-        if j < m && (i >= n || lcs[i][j + 1] >= lcs[i + 1][j]) {
-            hunk.push('+');
-            hunk.push_str(b[j]);
-            hunk.push('\n');
-            new_count += 1;
-            j += 1;
-        } else if i < n {
-            hunk.push('-');
-            hunk.push_str(a[i]);
-            hunk.push('\n');
-            old_count += 1;
-            i += 1;
-        }
+        Err(_) => TextRead::Binary,
     }
-    flush_hunk(&mut hunk, old_start, old_count, new_start, new_count);
+}
 
-    if body.is_empty() {
-        return String::new();
+fn infer_editor_language(art: &ArtifactRecord, disk_path: Option<&Path>) -> &'static str {
+    let ext = disk_path
+        .and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .or_else(|| art.language.as_deref())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "rs" => "rust",
+        "ts" => "typescript",
+        "tsx" => "tsx",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "jsx",
+        "py" => "python",
+        "go" => "go",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "css" | "scss" => "css",
+        "html" | "htm" => "html",
+        "xml" | "svg" => "xml",
+        "sh" | "bash" | "zsh" => "bash",
+        "sql" => "sql",
+        "c" | "h" => "c",
+        "cpp" | "hpp" | "cc" => "cpp",
+        "java" => "java",
+        "swift" => "swift",
+        "md" | "markdown" | "mdx" => "markdown",
+        _ => match art.kind {
+            ArtifactKind::React => "tsx",
+            ArtifactKind::Mermaid | ArtifactKind::Markdown => "markdown",
+            _ => "text",
+        },
     }
-    format!("--- a/{safe_title}\n+++ b/{safe_title}\n{body}")
+}
+
+fn preview_subtitle(art: &ArtifactRecord, kind: PreviewKind) -> String {
+    let ext = extract_extension(art).map(|s| s.to_ascii_uppercase());
+    match (kind, ext) {
+        (PreviewKind::Html, _) => "HTML".to_string(),
+        (PreviewKind::Pdf, _) => "PDF".to_string(),
+        (PreviewKind::Svg, _) => "SVG".to_string(),
+        (PreviewKind::Image, Some(e)) => e,
+        (PreviewKind::Image, None) => "Image".to_string(),
+        (PreviewKind::Markdown, _) => "Markdown".to_string(),
+        (PreviewKind::Office, Some(e)) => format!("Office · {e}"),
+        (PreviewKind::Office, None) => "Office".to_string(),
+        (PreviewKind::Binary, Some(e)) => e,
+        (PreviewKind::Binary, None) => "Binary".to_string(),
+        (PreviewKind::Code, Some(e)) => e,
+        (PreviewKind::Code, None) => art.kind.label().to_string(),
+    }
+}
+
+fn file_path_to_url(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let mut encoded = String::with_capacity(raw.len() + 16);
+    if raw.starts_with('/') {
+        encoded.push_str("file://");
+    } else {
+        encoded.push_str("file:///");
+    }
+    for byte in raw.as_bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'/'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b':' => encoded.push(*byte as char),
+            _ => encoded.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    encoded
+}
+
+fn wrap_svg_html(svg: &str) -> String {
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
+        html,body{{margin:0;padding:16px;width:100%;height:100%;box-sizing:border-box;\
+        display:flex;align-items:center;justify-content:center;background:transparent;}}\
+        svg{{max-width:100%;max-height:100%;width:auto;height:auto;}}\
+        </style></head><body>{svg}</body></html>"
+    )
+}
+
+fn open_artifact_externally(art: &ArtifactRecord) {
+    if let Some(path) = resolve_disk_path(art) {
+        let _ = open::that_detached(path);
+        return;
+    }
+    let ext = extract_extension(art).unwrap_or_else(|| match art.kind {
+        ArtifactKind::Html => "html".to_string(),
+        ArtifactKind::Svg => "svg".to_string(),
+        ArtifactKind::Markdown => "md".to_string(),
+        ArtifactKind::React => "tsx".to_string(),
+        ArtifactKind::Mermaid => "mmd".to_string(),
+        ArtifactKind::Code => "txt".to_string(),
+    });
+    let safe_id: String = art
+        .identifier
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let filename = if safe_id.is_empty() {
+        format!("pi-artifact.{ext}")
+    } else {
+        format!("pi-artifact-{safe_id}.{ext}")
+    };
+    let tmp_path = std::env::temp_dir().join(filename);
+    if std::fs::write(&tmp_path, art.content.as_bytes()).is_ok() {
+        let _ = open::that_detached(tmp_path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_artifact(identifier: &str, kind: ArtifactKind, file_path: Option<&str>) -> ArtifactRecord {
+        ArtifactRecord {
+            identifier: identifier.to_string(),
+            title: identifier.to_string(),
+            kind,
+            language: None,
+            file_path: file_path.map(String::from),
+            content: String::new(),
+            previous_content: None,
+            version: 1,
+            session_id: None,
+            updated_at: None,
+            favorite: false,
+        }
+    }
+
+    #[test]
+    fn classifies_preview_kinds_across_formats() {
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("report.html", ArtifactKind::Html, None)),
+            PreviewKind::Html
+        );
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("spec.pdf", ArtifactKind::Code, Some("/tmp/spec.pdf"))),
+            PreviewKind::Pdf
+        );
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("photo.png", ArtifactKind::Code, Some("/tmp/photo.png"))),
+            PreviewKind::Image
+        );
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("diagram.svg", ArtifactKind::Svg, None)),
+            PreviewKind::Svg
+        );
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("deck.pptx", ArtifactKind::Code, Some("/tmp/deck.pptx"))),
+            PreviewKind::Office
+        );
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("archive.zip", ArtifactKind::Code, Some("/tmp/archive.zip"))),
+            PreviewKind::Binary
+        );
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("README.md", ArtifactKind::Markdown, None)),
+            PreviewKind::Markdown
+        );
+        assert_eq!(
+            resolve_preview_kind(&sample_artifact("main.rs", ArtifactKind::Code, None)),
+            PreviewKind::Code
+        );
+    }
+
+    #[test]
+    fn encodes_file_urls_safely() {
+        assert_eq!(
+            file_path_to_url(Path::new("/tmp/my report #1.pdf")),
+            "file:///tmp/my%20report%20%231.pdf"
+        );
+    }
 }

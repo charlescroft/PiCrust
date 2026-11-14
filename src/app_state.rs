@@ -1872,9 +1872,10 @@ impl AppState {
                 _ => ArtifactKind::Code,
             };
 
-            let content = path_opt
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .or_else(|| v.get("content").and_then(Value::as_str).map(String::from))
+            let content = v
+                .get("content")
+                .and_then(Value::as_str)
+                .map(String::from)
                 .unwrap_or_default();
 
             parsed.push(ArtifactRecord {
@@ -1882,6 +1883,7 @@ impl AppState {
                 title,
                 kind,
                 language: Some(ext.to_string()),
+                file_path: path_opt.map(String::from),
                 content,
                 previous_content: None,
                 version,

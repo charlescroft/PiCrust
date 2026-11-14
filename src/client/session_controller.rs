@@ -1041,6 +1041,7 @@ pub fn extract_artifacts_from_markdown(
             title,
             kind,
             language,
+            file_path: None,
             content: inner_code,
             previous_content: None,
             version: 1,
