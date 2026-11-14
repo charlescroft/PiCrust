@@ -1104,9 +1104,19 @@ pub fn parse_subagent_async_json_widget(lines: &[String]) -> Option<Vec<Subagent
         let turn_count = activity.and_then(|a| a.get("turnCount")).and_then(Value::as_u64);
         let tool_count = activity.and_then(|a| a.get("toolCount")).and_then(Value::as_u64);
         let progress_text = r.get("progressText").and_then(Value::as_str).map(String::from);
+        let run_session_id = r
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from);
         let mut children = Vec::new();
         if let Some(c_arr) = r.get("children").and_then(Value::as_array) {
             for c in c_arr {
+                let child_sid = c
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(String::from);
                 children.push(SubagentChildInfo {
                     id: c.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
                     label: c.get("label").and_then(Value::as_str).unwrap_or("step").to_string(),
@@ -1119,6 +1129,7 @@ pub fn parse_subagent_async_json_widget(lines: &[String]) -> Option<Vec<Subagent
                         .and_then(Value::as_str)
                         .map(String::from),
                     progress_text: c.get("progressText").and_then(Value::as_str).map(String::from),
+                    session_id: child_sid,
                 });
             }
         }
@@ -1135,7 +1146,7 @@ pub fn parse_subagent_async_json_widget(lines: &[String]) -> Option<Vec<Subagent
             turn_count,
             tool_count,
             progress_text,
-            session_id: None,
+            session_id: run_session_id,
             children,
         });
     }

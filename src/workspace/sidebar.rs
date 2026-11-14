@@ -102,7 +102,7 @@ pub fn render_sidebar(
     let pinned: Vec<_> = state
         .sessions
         .iter()
-        .filter(|s| s.pinned && !s.archived)
+        .filter(|s| s.pinned && !s.archived && !s.is_subagent())
         .map(|s| {
             let is_run = s.is_running || running_ids.contains(&s.id);
             let is_unr = unread_ids.contains(&s.id);
@@ -114,7 +114,12 @@ pub fn render_sidebar(
     let chats: Vec<_> = state
         .sessions
         .iter()
-        .filter(|s| s.workspace_kind == Some(WorkspaceKind::Chat) && !s.pinned && !s.archived)
+        .filter(|s| {
+            s.workspace_kind == Some(WorkspaceKind::Chat)
+                && !s.pinned
+                && !s.archived
+                && !s.is_subagent()
+        })
         .map(|s| {
             let is_run = s.is_running || running_ids.contains(&s.id);
             let is_unr = unread_ids.contains(&s.id);
@@ -684,7 +689,7 @@ pub fn render_sidebar(
     let archived_list: Vec<_> = state
         .sessions
         .iter()
-        .filter(|s| s.archived || state.archived_session_ids.contains(&s.id))
+        .filter(|s| !s.is_subagent() && (s.archived || state.archived_session_ids.contains(&s.id)))
         .map(|s| {
             let is_run = s.is_running || running_ids.contains(&s.id);
             let is_unr = unread_ids.contains(&s.id);

@@ -928,7 +928,7 @@ impl Render for ChatPanel {
         }
 
         let subagent_dropdown = subagent_btn.dropdown_menu_with_anchor(
-            Anchor::BottomLeft,
+            Anchor::TopLeft,
             move |mut menu, _, _| {
                 menu = menu.min_w(px(280.)).max_w(px(380.));
                 let header = if active_subagents > 0 {
@@ -1051,16 +1051,35 @@ impl Render for ChatPanel {
                                 .or_else(|| child.progress_text.as_ref().map(|p| format!(" · {p}")))
                                 .unwrap_or_else(|| format!(" · {}", child.state));
                             let c_line = format!("   {c_glyph} {c_name}{c_extra}");
-                            menu = menu.item(
-                                PopupMenuItem::element(move |_, _| {
-                                    div()
-                                        .max_w(px(340.))
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(c_line.clone())
-                                })
-                                .disabled(true),
-                            );
+                            if let Some(child_sid) = child.session_id.clone() {
+                                let app_open = app_for_subagents.clone();
+                                menu = menu.item(
+                                    PopupMenuItem::element(move |_, _| {
+                                        div()
+                                            .max_w(px(316.))
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(c_line.clone())
+                                    })
+                                    .icon(IconName::ExternalLink)
+                                    .on_click(move |_, _, cx| {
+                                        app_open.update(cx, |s, cx| {
+                                            s.select_session(child_sid.clone(), cx);
+                                        });
+                                    }),
+                                );
+                            } else {
+                                menu = menu.item(
+                                    PopupMenuItem::element(move |_, _| {
+                                        div()
+                                            .max_w(px(340.))
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(c_line.clone())
+                                    })
+                                    .disabled(true),
+                                );
+                            }
                         }
                     }
                 }

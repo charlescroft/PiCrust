@@ -183,6 +183,15 @@ pub enum WorkspaceKind {
     Chat,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRelation {
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
@@ -214,10 +223,18 @@ pub struct SessionSummary {
     #[serde(default)]
     pub workspace_kind: Option<WorkspaceKind>,
     #[serde(default)]
+    pub relation: Option<SessionRelation>,
+    #[serde(default)]
     pub path: Option<String>,
 }
 
 impl SessionSummary {
+    pub fn is_subagent(&self) -> bool {
+        self.relation
+            .as_ref()
+            .and_then(|r| r.kind.as_deref())
+            == Some("subagent")
+    }
     pub fn display_title(&self) -> SharedString {
         if let Some(name) = &self.name {
             let trimmed = name.trim();
@@ -716,6 +733,7 @@ pub struct SubagentChildInfo {
     pub model: Option<String>,
     pub current_tool: Option<String>,
     pub progress_text: Option<String>,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

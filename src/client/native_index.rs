@@ -150,6 +150,8 @@ pub fn parse_session_jsonl_summary(path: &Path) -> Option<SessionSummary> {
     let mut name: Option<String> = None;
     let mut first_message: Option<String> = None;
     let mut message_count: usize = 0;
+    let mut is_subagent = false;
+    let mut subagent_parent_id: Option<String> = None;
 
     for line in reader.lines().map_while(Result::ok) {
         let trimmed = line.trim();
@@ -179,6 +181,18 @@ pub fn parse_session_jsonl_summary(path: &Path) -> Option<SessionSummary> {
             "session_info" => {
                 if let Some(n) = val.get("name").and_then(Value::as_str) {
                     name = Some(n.to_string());
+                }
+            }
+            "custom" => {
+                if val.get("customType").and_then(Value::as_str) == Some("pi-web:subagent") {
+                    is_subagent = true;
+                    if subagent_parent_id.is_none() {
+                        subagent_parent_id = val
+                            .get("data")
+                            .and_then(|d| d.get("parentSessionId"))
+                            .and_then(Value::as_str)
+                            .map(String::from);
+                    }
                 }
             }
             "message" => {
@@ -231,6 +245,14 @@ pub fn parse_session_jsonl_summary(path: &Path) -> Option<SessionSummary> {
         pinned: false,
         archived: false,
         workspace_kind,
+        relation: if is_subagent {
+            Some(crate::client::types::SessionRelation {
+                kind: Some("subagent".to_string()),
+                parent_session_id: subagent_parent_id,
+            })
+        } else {
+            None
+        },
         path: Some(path.to_string_lossy().into_owned()),
     })
 }

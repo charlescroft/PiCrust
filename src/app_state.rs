@@ -301,6 +301,7 @@ impl AppState {
                 pinned: false,
                 archived: false,
                 workspace_kind: Some(WorkspaceKind::Project),
+                relation: None,
                 path: None,
             });
             active_session_id = Some(demo_id.clone());
@@ -620,6 +621,9 @@ impl AppState {
     pub fn grouped_project_sessions(&self) -> BTreeMap<String, Vec<&SessionSummary>> {
         let mut map: BTreeMap<String, Vec<&SessionSummary>> = BTreeMap::new();
         for sess in &self.sessions {
+            if sess.is_subagent() {
+                continue;
+            }
             if sess.archived || self.archived_session_ids.contains(&sess.id) || sess.pinned {
                 continue;
             }
@@ -1195,7 +1199,42 @@ impl AppState {
                 if !matches!(tc.name.as_ref(), "Agent" | "subagent" | "subagent_launch") {
                     continue;
                 }
-                if self.tool_subagent_runs.iter().any(|r| r.id == tc.id.as_ref()) {
+                let sid = tc
+                    .subagent_session_id
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        tc.arguments
+                            .iter()
+                            .find(|(k, _)| k.as_ref() == "resume")
+                            .map(|(_, v)| v.to_string())
+                    });
+                let state = if let Some(ref child_sid) = sid {
+                    if self.running_session_ids.contains(child_sid) {
+                        "running"
+                    } else if tc.is_error {
+                        "failed"
+                    } else if tc.is_running {
+                        "running"
+                    } else {
+                        "complete"
+                    }
+                } else if tc.is_error {
+                    "failed"
+                } else if tc.is_running {
+                    "running"
+                } else {
+                    "complete"
+                };
+                if let Some(existing) = self
+                    .tool_subagent_runs
+                    .iter_mut()
+                    .find(|r| r.id == tc.id.as_ref())
+                {
+                    if existing.session_id.is_none() && sid.is_some() {
+                        existing.session_id = sid;
+                    }
+                    existing.state = state.to_string();
                     continue;
                 }
                 let is_builtin = tc.name.as_ref() == "Agent";
@@ -1227,33 +1266,6 @@ impl AppState {
                     .iter()
                     .find(|(k, _)| k.as_ref() == "model")
                     .map(|(_, v)| v.to_string());
-                let sid = tc
-                    .subagent_session_id
-                    .as_ref()
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        tc.arguments
-                            .iter()
-                            .find(|(k, _)| k.as_ref() == "resume")
-                            .map(|(_, v)| v.to_string())
-                    });
-                let state = if let Some(ref child_sid) = sid {
-                    if self.running_session_ids.contains(child_sid) {
-                        "running"
-                    } else if tc.is_error {
-                        "failed"
-                    } else if tc.is_running {
-                        "running"
-                    } else {
-                        "complete"
-                    }
-                } else if tc.is_error {
-                    "failed"
-                } else if tc.is_running {
-                    "running"
-                } else {
-                    "complete"
-                };
                 self.tool_subagent_runs.push(SubagentRunInfo {
                     id: tc.id.to_string(),
                     kind: "subagent".to_string(),
