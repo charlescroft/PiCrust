@@ -60,6 +60,7 @@ impl FileViewerView {
     ) -> impl IntoElement {
         let state = self.app_state.read(cx);
         let locale = state.locale;
+        let preview_font_sz = state.preview_font_size;
         let path = state.open_file_path.clone();
         let content = state.open_file_content.clone();
         let patch = state.open_file_diff_patch.clone();
@@ -263,7 +264,12 @@ impl FileViewerView {
                     )
                     .child(header_actions),
             )
-            .child(body)
+            .child(
+                div()
+                    .size_full()
+                    .text_size(px(preview_font_sz))
+                    .child(body),
+            )
             .into_any_element()
     }
 }

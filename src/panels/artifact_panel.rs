@@ -3,7 +3,7 @@ use crate::client::types::{ArtifactKind, ArtifactRecord};
 use crate::i18n::{format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
+use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::{
@@ -90,14 +90,31 @@ impl ArtifactPanelView {
             return;
         }
         self.diff_states.clear();
-        if let Some(previous) = art.previous_content.as_deref() {
-            if previous != art.content {
-                let patch = build_unified_patch(&art.title, previous, &art.content);
-                if let Ok(files) = DiffFile::parse(&patch) {
-                    let state = cx.new(|cx| DiffState::new(files, cx));
-                    cx.observe(&state, |_, _, cx| cx.notify()).detach();
-                    self.diff_states.insert(cache_key, state);
-                }
+
+        if art.version > 1 && art.previous_content.is_none() {
+            if let Some(ref sid) = art.session_id {
+                let app = self.app_state.clone();
+                let sid_c = sid.clone();
+                let aid_c = art.identifier.clone();
+                cx.defer(move |cx| {
+                    app.update(cx, |s, cx| {
+                        s.load_artifact_versions(&sid_c, &aid_c, cx);
+                    });
+                });
+            }
+        }
+
+        let previous = art.previous_content.as_deref().unwrap_or("");
+        if !art.content.trim().is_empty() {
+            let patch = build_unified_patch(&art.title, previous, &art.content);
+            if let Ok(files) = DiffFile::parse(&patch) {
+                let state = cx.new(|cx| {
+                    let mut s = DiffState::new(files, cx);
+                    s.set_mode(DiffMode::Unified, cx);
+                    s
+                });
+                cx.observe(&state, |_, _, cx| cx.notify()).detach();
+                self.diff_states.insert(cache_key, state);
             }
         }
     }
@@ -107,7 +124,7 @@ impl ArtifactPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (locale, active_art) = {
+        let (locale, active_art, preview_font_sz) = {
             let state = self.app_state.read(cx);
             let active_art = state
                 .active_artifact_id
@@ -115,7 +132,7 @@ impl ArtifactPanelView {
                 .and_then(|id| state.artifacts.iter().find(|a| &a.identifier == id))
                 .or_else(|| state.artifacts.first())
                 .cloned();
-            (state.locale, active_art)
+            (state.locale, active_art, state.preview_font_size)
         };
 
         let Some(art) = active_art else {
@@ -221,7 +238,16 @@ impl ArtifactPanelView {
             }
         };
 
-        v_flex().size_full().child(header).child(content).into_any_element()
+        v_flex()
+            .size_full()
+            .child(header)
+            .child(
+                div()
+                    .size_full()
+                    .text_size(px(preview_font_sz))
+                    .child(content),
+            )
+            .into_any_element()
     }
 }
 

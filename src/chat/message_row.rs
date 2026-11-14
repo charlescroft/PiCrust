@@ -116,12 +116,10 @@ pub fn render_message_row(
         row_cache.last_text_snapshot = display_md.clone();
     }
 
-    // Apply ConversationFind highlights if query is active
-    let warn_bg = cx.theme().warning.opacity(0.35);
-    row_cache.text_state.update(cx, |state, cx| {
-        if find_query.is_empty() {
-            let _ = state.set_range_highlights(Vec::<RangeHighlight>::new(), cx);
-        } else {
+    // Apply ConversationFind highlights only if query is active
+    if !find_query.is_empty() {
+        let warn_bg = cx.theme().warning.opacity(0.35);
+        row_cache.text_state.update(cx, |state, cx| {
             let rendered = state.rendered_text();
             let lower = rendered.as_str().to_lowercase();
             let q_lower = find_query.to_lowercase();
@@ -130,8 +128,8 @@ pub fn render_message_row(
                 .map(|(start, found)| RangeHighlight::new(start..start + found.len(), warn_bg))
                 .collect();
             let _ = state.set_range_highlights(ranges, cx);
-        }
-    });
+        });
+    }
 
     let (is_turn_live, font_px, locale, user_collapse_chars) = {
         let state = app_state.read(cx);

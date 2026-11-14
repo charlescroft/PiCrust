@@ -42,6 +42,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
     let app_dark_write = app_state.clone();
     let app_chat_font = app_state.clone();
     let app_ui_font = app_state.clone();
+    let app_preview_font = app_state.clone();
     let app_chat_width = app_state.clone();
     // Chat & display
     let app_sc_read = app_state.clone();
@@ -280,6 +281,44 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                                 app_reset.update(cx, |s, cx| {
                                     s.set_chat_font_size(13.0, cx);
                                     s.chat_font_slider.update(cx, |st, cx| st.set_value(13.0, window, cx));
+                                });
+                            }),
+                    )
+            }),
+        ))
+        .item(SettingItem::new(
+            tr(locale, "settings.previewFontSize"),
+            SettingField::render(move |_, _, cx| {
+                let s = app_preview_font.read(cx);
+                let val = s.preview_font_size;
+                let slider = s.preview_font_slider.clone();
+                let app_reset = app_preview_font.clone();
+                h_flex()
+                    .w(SETTINGS_DROPDOWN_W)
+                    .items_center()
+                    .gap_2p5()
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().foreground)
+                            .child(format!("{val:.1}px")),
+                    )
+                    .child(div().flex_1().child(Slider::new(&slider)))
+                    .child(
+                        Button::new("reset-preview-font")
+                            .ghost()
+                            .small()
+                            .h(px(26.))
+                            .w(px(26.))
+                            .icon(IconName::RotateCw)
+                            .disabled(val == 13.0)
+                            .tooltip(tr(locale, "settings.reset"))
+                            .on_click(move |_, window, cx| {
+                                app_reset.update(cx, |s, cx| {
+                                    s.set_preview_font_size(13.0, cx);
+                                    s.preview_font_slider.update(cx, |st, cx| st.set_value(13.0, window, cx));
                                 });
                             }),
                     )

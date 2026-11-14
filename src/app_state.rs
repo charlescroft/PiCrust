@@ -95,9 +95,11 @@ pub struct AppState {
     pub dark_theme_name: SharedString,
     pub chat_font_size: f32,
     pub ui_font_size: f32,
+    pub preview_font_size: f32,
     pub chat_content_width: f32,
     pub chat_font_slider: Entity<SliderState>,
     pub ui_font_slider: Entity<SliderState>,
+    pub preview_font_slider: Entity<SliderState>,
     pub chat_width_slider: Entity<SliderState>,
     pub send_shortcut: SendShortcut,
     pub locale: AppLocale,
@@ -362,6 +364,7 @@ impl AppState {
         let appearance = crate::themes::load_appearance_prefs();
         let initial_chat_font_size = appearance.chat_font_size.clamp(9.0, 22.0);
         let initial_ui_font_size = appearance.ui_font_size.clamp(5.0, 21.0);
+        let initial_preview_font_size = appearance.preview_font_size.clamp(9.0, 22.0);
         let initial_chat_width = appearance.chat_content_width.clamp(756.0, 1512.0);
         let initial_locale = crate::themes::locale_from_prefs(&appearance.locale);
         let initial_send_shortcut = crate::themes::send_shortcut_from_prefs(&appearance.send_shortcut);
@@ -379,6 +382,13 @@ impl AppState {
                 .max(21.0)
                 .step(1.0)
                 .default_value(initial_ui_font_size)
+        });
+        let preview_font_slider = cx.new(|_| {
+            SliderState::new()
+                .min(9.0)
+                .max(22.0)
+                .step(1.0)
+                .default_value(initial_preview_font_size)
         });
         let chat_width_slider = cx.new(|_| {
             SliderState::new()
@@ -399,6 +409,13 @@ impl AppState {
         cx.subscribe(&ui_font_slider, move |this, _, ev: &SliderEvent, cx| {
             if let SliderEvent::Change(val) | SliderEvent::Release(val) = ev {
                 this.set_ui_font_size(val.start(), cx);
+            }
+        }).detach();
+
+        let app_pfs = cx.entity().clone();
+        cx.subscribe(&preview_font_slider, move |this, _, ev: &SliderEvent, cx| {
+            if let SliderEvent::Change(val) | SliderEvent::Release(val) = ev {
+                this.set_preview_font_size(val.start(), cx);
             }
         }).detach();
 
@@ -433,9 +450,11 @@ impl AppState {
             dark_theme_name: SharedString::from(appearance.dark_theme),
             chat_font_size: initial_chat_font_size,
             ui_font_size: initial_ui_font_size,
+            preview_font_size: initial_preview_font_size,
             chat_content_width: initial_chat_width,
             chat_font_slider,
             ui_font_slider,
+            preview_font_slider,
             chat_width_slider,
             send_shortcut: initial_send_shortcut,
             locale: initial_locale,
@@ -751,6 +770,7 @@ impl AppState {
             dark_theme: self.dark_theme_name.to_string(),
             chat_font_size: self.chat_font_size,
             ui_font_size: self.ui_font_size,
+            preview_font_size: self.preview_font_size,
             chat_content_width: self.chat_content_width,
             locale: self.locale.code().to_string(),
             send_shortcut: self.send_shortcut.as_str().to_string(),
@@ -921,6 +941,38 @@ impl AppState {
         self.chat_font_size = size.clamp(9.0, 22.0);
         self.persist_appearance_only();
         cx.notify();
+    }
+
+    pub fn set_preview_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        self.preview_font_size = size.clamp(9.0, 22.0);
+        self.persist_appearance_only();
+        cx.notify();
+    }
+
+    pub fn load_artifact_versions(&mut self, session_id: &str, identifier: &str, cx: &mut Context<Self>) {
+        let sid = session_id.to_string();
+        let aid = identifier.to_string();
+        let client = self.client.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            if let Ok(val) = client.get_artifact_item(&sid, &aid).await {
+                if let Some(versions) = val.get("versions").and_then(Value::as_array) {
+                    if versions.len() >= 2 {
+                        let prev_content = versions[versions.len() - 2]
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .map(String::from);
+                        let _ = entity.update(cx, |this, cx| {
+                            if let Some(art) = this.artifacts.iter_mut().find(|a| a.identifier == aid) {
+                                art.previous_content = prev_content;
+                            }
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn set_ui_font_size(&mut self, size: f32, cx: &mut Context<Self>) {

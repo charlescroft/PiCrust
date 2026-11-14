@@ -37,6 +37,9 @@ fn default_chat_font_size() -> f32 {
 fn default_ui_font_size() -> f32 {
     13.0
 }
+fn default_preview_font_size() -> f32 {
+    13.0
+}
 fn default_chat_content_width() -> f32 {
     840.0
 }
@@ -73,6 +76,8 @@ pub struct AppearanceSettings {
     pub chat_font_size: f32,
     #[serde(default = "default_ui_font_size")]
     pub ui_font_size: f32,
+    #[serde(default = "default_preview_font_size")]
+    pub preview_font_size: f32,
     #[serde(default = "default_locale")]
     pub locale: String,
 }
@@ -86,6 +91,7 @@ impl Default for AppearanceSettings {
             dark_theme: default_dark_theme(),
             chat_font_size: default_chat_font_size(),
             ui_font_size: default_ui_font_size(),
+            preview_font_size: default_preview_font_size(),
             locale: default_locale(),
         }
     }

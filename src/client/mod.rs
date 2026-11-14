@@ -626,6 +626,15 @@ impl PiDaemonClient {
         };
         self.get_json(&path).await
     }
+
+    pub async fn get_artifact_item(&self, session_id: &str, identifier: &str) -> Result<Value> {
+        let path = format!(
+            "/api/artifacts/item?session={}&identifier={}",
+            url_encode(session_id),
+            url_encode(identifier)
+        );
+        self.get_json(&path).await
+    }
 }
 
 fn url_encode(s: &str) -> String {

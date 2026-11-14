@@ -40,7 +40,7 @@ pub struct ConversationScrollerState {
 
 impl ConversationScrollerState {
     pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
-        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW).measure_all();
+        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW);
         list_state.set_follow_mode(FollowMode::Tail);
 
         let weak_state = cx.weak_entity();
@@ -150,6 +150,7 @@ pub struct ChatPanel {
     hovered_turn_idx: Option<usize>,
     nav_window_start: usize,
     show_all_turns: bool,
+    cached_turns: Vec<TurnLocation>,
 }
 
 impl Focusable for ChatPanel {
@@ -190,6 +191,7 @@ impl ChatPanel {
             hovered_turn_idx: None,
             nav_window_start: 0,
             show_all_turns: false,
+            cached_turns: Vec::new(),
         }
     }
 
@@ -285,34 +287,38 @@ impl ChatPanel {
     }
 
     fn sync_scroller_with_messages(&mut self, app: &Entity<AppState>, cx: &mut Context<Self>) {
-        let state = app.read(cx);
-        let new_count = state.messages.len();
-        let sid = state.active_session_id.clone();
-        let font_sz = state.chat_font_size;
-        let tail_sig = state.messages.last().map(|m| {
-            (
-                m.id,
-                m.content.len(),
-                m.process_steps.len(),
-                m.thinking.len(),
-                m.is_streaming || state.is_agent_running || state.is_compacting,
-            )
-        });
+        let (new_count, sid, font_sz, tail_sig, keep_ids, messages_copy) = {
+            let state = app.read(cx);
+            let new_count = state.messages.len();
+            let sid = state.active_session_id.clone();
+            let font_sz = state.chat_font_size;
+            let tail_sig = state.messages.last().map(|m| {
+                (
+                    m.id,
+                    m.content.len(),
+                    m.process_steps.len(),
+                    m.thinking.len(),
+                    m.is_streaming || state.is_agent_running || state.is_compacting,
+                )
+            });
 
-        let top_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
-        let keep_ids: Option<std::collections::HashSet<u64>> = (self.row_cache.len() > 120).then(|| {
-            let mut ids = std::collections::HashSet::new();
-            let tail_from = state.messages.len().saturating_sub(30);
-            for m in &state.messages[tail_from..] {
-                ids.insert(m.id);
-            }
-            let win_from = top_ix.saturating_sub(25);
-            let win_to = (top_ix + 35).min(state.messages.len());
-            for m in &state.messages[win_from..win_to] {
-                ids.insert(m.id);
-            }
-            ids
-        });
+            let top_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
+            let keep_ids: Option<std::collections::HashSet<u64>> = (self.row_cache.len() > 300).then(|| {
+                let mut ids = std::collections::HashSet::new();
+                let tail_from = state.messages.len().saturating_sub(60);
+                for m in &state.messages[tail_from..] {
+                    ids.insert(m.id);
+                }
+                let win_from = top_ix.saturating_sub(50);
+                let win_to = (top_ix + 70).min(state.messages.len());
+                for m in &state.messages[win_from..win_to] {
+                    ids.insert(m.id);
+                }
+                ids
+            });
+            let messages_copy = state.messages.clone();
+            (new_count, sid, font_sz, tail_sig, keep_ids, messages_copy)
+        };
 
         // A review position must survive tail updates: remember the exact top offset
         // and restore it after any mutation, otherwise a growing thinking block or a
@@ -335,6 +341,7 @@ impl ChatPanel {
             self.last_tail_sig = tail_sig;
             self.nav_window_start = usize::MAX;
             self.show_all_turns = false;
+            self.cached_turns = collect_turn_locations(&messages_copy);
             self.scroller.update(cx, |s, cx| {
                 s.reset(new_count, cx);
             });
@@ -347,6 +354,7 @@ impl ChatPanel {
             let added = new_count - self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
+            self.cached_turns = collect_turn_locations(&messages_copy);
             self.scroller.update(cx, |s, cx| {
                 let _ = s.append(added, cx);
             });
@@ -355,6 +363,7 @@ impl ChatPanel {
             let old_count = self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
+            self.cached_turns = collect_turn_locations(&messages_copy);
             self.scroller.update(cx, |s, cx| {
                 if s.is_scrolled_up() {
                     let _ = s.splice(new_count..old_count, 0, cx);
@@ -435,7 +444,11 @@ impl Render for ChatPanel {
         let chat_width = state_snap.chat_content_width;
         let has_gutter_space = chat_col_w >= px(chat_width + 88.);
 
-        let turns = collect_turn_locations(&messages);
+        let turns = if self.cached_turns.is_empty() && !messages.is_empty() {
+            collect_turn_locations(&messages)
+        } else {
+            self.cached_turns.clone()
+        };
         let top_item_ix = self.scroller.read(cx).logical_scroll_top().item_ix;
         let is_at_tail = self.scroller.read(cx).is_following_tail() || !self.scroller.read(cx).is_scrolled_up();
         let active_turn = if is_at_tail && !turns.is_empty() {
@@ -947,6 +960,7 @@ impl Render for ChatPanel {
     }
 }
 
+#[derive(Clone)]
 struct TurnLocation {
     msg_index: usize,
     question: String,
