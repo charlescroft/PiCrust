@@ -4299,13 +4299,33 @@ impl AppState {
             } => {
                 if tool_name == "todo" {
                     self.todos_from_tool = true;
-                    if let Some(details) = result.as_ref().and_then(|v| v.get("details")) {
-                        if let Some(parsed) = parse_todo_tool_details(details) {
+                    let updated_from_details = result
+                        .as_ref()
+                        .and_then(|v| v.get("details"))
+                        .and_then(parse_todo_tool_details)
+                        .map(|parsed| {
                             if !parsed.is_empty() {
                                 self.todos_hidden = false;
                                 self.todos_hidden_session = None;
                             }
                             self.set_todos(parsed);
+                        })
+                        .is_some();
+                    if !updated_from_details {
+                        let output_text = result
+                            .as_ref()
+                            .and_then(|v| v.get("content"))
+                            .map(|c| flatten_content_text(Some(c)))
+                            .unwrap_or_default();
+                        if !output_text.is_empty() {
+                            if !output_text.starts_with("No tasks")
+                                && !output_text.starts_with("Cleared ")
+                            {
+                                self.todos_hidden = false;
+                                self.todos_hidden_session = None;
+                            }
+                            apply_todo_tool_output_text(&mut self.todos, &output_text);
+                            self.prune_dismissed_todos();
                         }
                     }
                     if let Some(sid) = self.active_session_id.clone() {

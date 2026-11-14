@@ -442,6 +442,11 @@ impl ComposerView {
             .as_ref()
             .map(|m| (m.provider.clone(), m.id.clone()));
 
+        cx.observe(&app_state, |_, _, cx| {
+            cx.notify();
+        })
+        .detach();
+
         Self {
             focus_handle: cx.focus_handle(),
             app_state,
