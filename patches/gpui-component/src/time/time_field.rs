@@ -123,7 +123,7 @@ impl RenderOnce for TimeField {
                     // field rather than on the frame around it.
                     .flex()
                     .size_full()
-                    .px_1()
+                    .px_3()
                     .items_center()
                     .render_segment(move |segment, state, _, cx| {
                         segment

@@ -1,8 +1,11 @@
 use crate::app_state::AppState;
 use crate::client::session_controller::format_compact_relative_time;
 use crate::client::types::{ScheduledRunView, ScheduledTask, TaskScheduleSpec};
+use crate::engine::scheduler::{
+    STANDARD_TIMEZONES, TimezoneOption, parse_timezone_to_offset, preview_cron_runs_tz_ms,
+};
 use crate::i18n::{AppLocale, format_commas, tr};
-use chrono::{DateTime, Local, NaiveDate, NaiveTime, Timelike};
+use chrono::{DateTime, Local, NaiveTime, Offset as _, Timelike};
 use gpui_kit::component::badge::Badge;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
@@ -10,7 +13,6 @@ use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedi
 use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants as _};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::time_field::{TimeField, TimeFieldEvent, TimeFieldState, TimePrecision};
@@ -24,6 +26,42 @@ use gpui_kit::{
     Styled as _, Window, div, px,
 };
 use serde_json::{Value, json};
+
+fn format_timezone_dropdown_label(tz_id: &str) -> String {
+    for tz in STANDARD_TIMEZONES {
+        if tz.id.eq_ignore_ascii_case(tz_id) {
+            let offset_sign = if tz.offset_hours >= 0 { "+" } else { "" };
+            let offset_str = if tz.offset_minutes == 0 {
+                format!("{offset_sign}{}", tz.offset_hours)
+            } else {
+                format!("{offset_sign}{}:{:02}", tz.offset_hours, tz.offset_minutes)
+            };
+            return format!("{} {}", tz.id, offset_str);
+        }
+    }
+    tz_id.to_string()
+}
+
+fn format_timezone_item_label(tz: &TimezoneOption, locale: AppLocale) -> String {
+    let offset_sign = if tz.offset_hours >= 0 { "+" } else { "" };
+    let offset_str = if tz.offset_minutes == 0 {
+        format!("{offset_sign}{}", tz.offset_hours)
+    } else {
+        format!("{offset_sign}{}:{:02}", tz.offset_hours, tz.offset_minutes)
+    };
+    let region = if locale == AppLocale::ZhCn {
+        tz.name_zh
+    } else {
+        tz.name_en
+    };
+    let local_id = local_timezone_name();
+    let is_local = tz.id.eq_ignore_ascii_case(&local_id);
+    if is_local {
+        format!("{} ({} · {} · {})", tz.id, offset_str, region, tr(locale, "scheduled.timezone.local"))
+    } else {
+        format!("{} ({} · {})", tz.id, offset_str, region)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScheduledViewMode {
@@ -87,7 +125,7 @@ pub struct ScheduledPageView {
     name_input: Entity<InputState>,
     desc_input: Entity<InputState>,
     prompt_input: Entity<TextareaState>,
-    cwd_input: Entity<InputState>,
+    cwd_path: String,
     time_input: Entity<InputState>,
     minute_input: Entity<InputState>,
     once_input: Entity<InputState>,
@@ -99,10 +137,9 @@ pub struct ScheduledPageView {
     thinking_level: Option<String>,
     tool_preset: String,
     execution_target: String,
-    start_date_input: Entity<InputState>,
     start_date_picker: Entity<DatePickerState>,
     start_time_field: Entity<TimeFieldState>,
-    timezone_input: Entity<InputState>,
+    timezone: String,
     acknowledged_writes: bool,
     cron_preview_runs: Vec<String>,
     cron_preview_error: Option<String>,
@@ -120,7 +157,6 @@ impl ScheduledPageView {
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Daily repo summary"));
         let desc_input = cx.new(|cx| InputState::new(window, cx));
         let prompt_input = cx.new(|cx| TextareaState::new(window, cx).rows(6));
-        let cwd_input = cx.new(|cx| InputState::new(window, cx).default_value(default_cwd));
         let time_input = cx.new(|cx| InputState::new(window, cx).default_value("09:00"));
         let minute_input = cx.new(|cx| InputState::new(window, cx).default_value("0"));
         let once_input = cx.new(|cx| InputState::new(window, cx).placeholder("2026-05-01T09:00"));
@@ -130,7 +166,6 @@ impl ScheduledPageView {
                 .default_value("0 9 * * 1-5")
         });
         let max_duration_input = cx.new(|cx| InputState::new(window, cx).default_value("30"));
-        let start_date_input = cx.new(|cx| InputState::new(window, cx).default_value("2026-05-01"));
         let start_date_picker = cx.new(|cx| {
             let mut st = DatePickerState::new(window, cx).date_format("%Y-%m-%d");
             st.set_date(Local::now().date_naive(), window, cx);
@@ -148,7 +183,6 @@ impl ScheduledPageView {
             if matches!(ev, TimeFieldEvent::Change(_)) {
                 let formatted = st.read(cx).time().format("%H:%M").to_string();
                 let _ = time_in_sync.update(cx, |inp, cx| {
-                    // Keep string fallback synced for cron generation
                     let _ = formatted;
                     let _ = inp;
                     cx.notify();
@@ -156,15 +190,7 @@ impl ScheduledPageView {
             }
         })
         .detach();
-        let date_in_sync = start_date_input.clone();
-        cx.subscribe(&start_date_picker, move |_, _st, ev: &DatePickerEvent, cx| {
-            if matches!(ev, DatePickerEvent::Change(_)) {
-                let _ = &date_in_sync;
-                cx.notify();
-            }
-        })
-        .detach();
-        let timezone_input = cx.new(|cx| InputState::new(window, cx).default_value(&local_timezone_name()));
+        let default_tz = local_timezone_name();
 
         Self {
             app_state,
@@ -180,7 +206,7 @@ impl ScheduledPageView {
             name_input,
             desc_input,
             prompt_input,
-            cwd_input,
+            cwd_path: default_cwd,
             time_input,
             minute_input,
             once_input,
@@ -192,10 +218,9 @@ impl ScheduledPageView {
             thinking_level: None,
             tool_preset: "default".to_string(),
             execution_target: "new".to_string(),
-            start_date_input,
             start_date_picker,
             start_time_field,
-            timezone_input,
+            timezone: default_tz,
             acknowledged_writes: false,
             cron_preview_runs: Vec::new(),
             cron_preview_error: None,
@@ -222,8 +247,7 @@ impl ScheduledPageView {
             });
             self.prompt_input
                 .update(cx, |s, cx| s.set_value(&t.prompt, window, cx));
-            self.cwd_input
-                .update(cx, |s, cx| s.set_value(&t.cwd, window, cx));
+            self.cwd_path = t.cwd.clone();
             self.max_duration_input.update(cx, |s, cx| {
                 s.set_value(&t.max_duration_min.to_string(), window, cx)
             });
@@ -243,7 +267,12 @@ impl ScheduledPageView {
                     self.schedule_kind = ScheduleKind::Once;
                     self.once_input.update(cx, |s, cx| s.set_value(at, window, cx));
                 }
-                TaskScheduleSpec::Cron { expr, .. } => {
+                TaskScheduleSpec::Cron { expr, timezone } => {
+                    self.timezone = if timezone.trim().is_empty() {
+                        local_timezone_name()
+                    } else {
+                        timezone.clone()
+                    };
                     self.cron_input
                         .update(cx, |s, cx| s.set_value(expr, window, cx));
                     if let Some((kind, time_str, min_str, wd)) = parse_preset_from_cron(expr) {
@@ -267,12 +296,12 @@ impl ScheduledPageView {
             self.mode = ScheduledViewMode::Edit(Some(t.id.clone()));
         } else {
             self.editing_task_id = None;
+            self.timezone = local_timezone_name();
             self.name_input.update(cx, |s, cx| s.set_value("", window, cx));
             self.desc_input.update(cx, |s, cx| s.set_value("", window, cx));
             self.prompt_input
                 .update(cx, |s, cx| s.set_value("", window, cx));
-            self.cwd_input
-                .update(cx, |s, cx| s.set_value(&default_cwd, window, cx));
+            self.cwd_path = default_cwd;
             self.time_input
                 .update(cx, |s, cx| s.set_value("09:00", window, cx));
             self.start_date_picker
@@ -337,45 +366,40 @@ impl ScheduledPageView {
             self.cron_preview_error = None;
             return;
         };
-        if !self.app_state.read(cx).sidecar_connected {
-            return;
-        }
-        let client = self.app_state.read(cx).client.clone();
-        let tz = local_timezone_name();
-        cx.spawn(async move |this, cx| {
-            if let Ok(val) = client.preview_scheduled_cron(&expr, &tz).await {
-                let _ = this.update(cx, |view, cx| {
-                    if val.get("valid").and_then(Value::as_bool) == Some(true) {
-                        view.cron_preview_error = None;
-                        view.cron_preview_runs = val
-                            .get("nextRuns")
-                            .and_then(Value::as_array)
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(Value::as_str)
-                                    .map(String::from)
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                    } else {
-                        view.cron_preview_runs.clear();
-                        view.cron_preview_error = val
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .map(String::from);
-                    }
-                    cx.notify();
-                });
+        let tz = if self.timezone.trim().is_empty() {
+            local_timezone_name()
+        } else {
+            self.timezone.trim().to_string()
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        match preview_cron_runs_tz_ms(&expr, Some(&tz), now_ms, 5) {
+            Ok(runs) => {
+                let offset = parse_timezone_to_offset(&tz).unwrap_or_else(|| Local::now().offset().fix());
+                self.cron_preview_error = None;
+                self.cron_preview_runs = runs
+                    .into_iter()
+                    .filter_map(|ms| {
+                        DateTime::from_timestamp_millis(ms as i64)
+                            .map(|dt| dt.with_timezone(&offset).format("%Y-%m-%d %H:%M:%S").to_string())
+                    })
+                    .collect();
             }
-        })
-        .detach();
+            Err(e) => {
+                self.cron_preview_runs.clear();
+                self.cron_preview_error = Some(e);
+            }
+        }
     }
 
     fn submit_editor(&mut self, cx: &mut Context<Self>) {
         let name = self.name_input.read(cx).value().trim().to_string();
         let desc = self.desc_input.read(cx).value().trim().to_string();
         let prompt = self.prompt_input.read(cx).value().to_string();
-        let cwd = self.cwd_input.read(cx).value().trim().to_string();
+        let cwd = self.cwd_path.trim().to_string();
         if name.is_empty() || prompt.trim().is_empty() || cwd.is_empty() {
             return;
         }
@@ -407,8 +431,11 @@ impl ScheduledPageView {
                 let expr = self
                     .current_cron_expr(cx)
                     .unwrap_or_else(|| "0 9 * * *".to_string());
-                let tz = self.timezone_input.read(cx).value().trim().to_string();
-                let tz = if tz.is_empty() { local_timezone_name() } else { tz };
+                let tz = if self.timezone.trim().is_empty() {
+                    local_timezone_name()
+                } else {
+                    self.timezone.trim().to_string()
+                };
                 json!({ "kind": "cron", "expr": expr, "timezone": tz })
             }
         };
@@ -1166,10 +1193,10 @@ impl ScheduledPageView {
                 let projects = {
                     let s = self.app_state.read(cx);
                     let mut projs: Vec<(String, String)> = Vec::new();
-                    for p in &s.sessions {
-                        if let (Some(name), Some(cwd)) = (&p.project_name, &p.cwd) {
-                            if !projs.iter().any(|(n, _)| n == name) {
-                                projs.push((name.clone(), cwd.clone()));
+                    for (name, list) in s.grouped_project_sessions() {
+                        if let Some(cwd) = list.first().and_then(|sess| sess.cwd.as_deref()) {
+                            if !projs.iter().any(|(n, _)| n == &name) {
+                                projs.push((name, cwd.to_string()));
                             }
                         }
                     }
@@ -1180,12 +1207,14 @@ impl ScheduledPageView {
                             projs.push((name, cwd));
                         }
                     }
-                    if projs.is_empty() {
-                        projs.push(("Default Workspace".to_string(), s.active_cwd.to_string_lossy().into_owned()));
+                    let active_cwd_str = s.active_cwd.to_string_lossy().into_owned();
+                    let active_name = s.active_cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Current Project".to_string());
+                    if !projs.iter().any(|(_, c)| c == &active_cwd_str) {
+                        projs.insert(0, (active_name, active_cwd_str));
                     }
                     projs
                 };
-                let cur_cwd = self.cwd_input.read(cx).value().trim().to_string();
+                let cur_cwd = self.cwd_path.trim().to_string();
                 let selected_proj_name = projects
                     .iter()
                     .find(|(_, cwd)| cwd == &cur_cwd)
@@ -1194,7 +1223,10 @@ impl ScheduledPageView {
                         if cur_cwd.is_empty() {
                             projects.first().map(|(n, _)| n.clone()).unwrap_or_else(|| "Project".to_string())
                         } else {
-                            cur_cwd.clone()
+                            std::path::Path::new(&cur_cwd)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| cur_cwd.clone())
                         }
                     });
 
@@ -1219,23 +1251,26 @@ impl ScheduledPageView {
                 let supported_thinking_levels: Vec<String> = selected_model_info
                     .as_ref()
                     .map(|m| m.thinking_levels.clone())
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| vec!["off".into(), "low".into(), "medium".into(), "high".into()]);
+                    .unwrap_or_default();
+                let has_thinking_support = !supported_thinking_levels.is_empty();
 
                 let model_label = match &self.model_key {
                     Some((p, id)) => format!("{id} ({p})"),
                     None => tr(locale, "scheduled.model.default").to_string(),
                 };
-                let thinking_label = self
-                    .thinking_level
-                    .as_ref()
-                    .filter(|lvl| supported_thinking_levels.contains(lvl))
-                    .cloned()
-                    .unwrap_or_else(|| tr(locale, "scheduled.thinking.default").to_string());
+                let thinking_label = if !has_thinking_support {
+                    tr(locale, "scheduled.thinking.unsupported").to_string()
+                } else {
+                    self.thinking_level
+                        .as_ref()
+                        .filter(|lvl| supported_thinking_levels.contains(lvl))
+                        .cloned()
+                        .unwrap_or_else(|| tr(locale, "scheduled.thinking.default").to_string())
+                };
 
                 let missing_required = self.name_input.read(cx).value().trim().is_empty()
                     || self.prompt_input.read(cx).value().trim().is_empty()
-                    || self.cwd_input.read(cx).value().trim().is_empty();
+                    || self.cwd_path.trim().is_empty();
 
                 let back_t1 = back_target.clone();
                 let back_t2 = back_target;
@@ -1255,7 +1290,7 @@ impl ScheduledPageView {
                                 .text_color(cx.theme().foreground)
                                 .child(label),
                         )
-                        .child(div().w(px(260.)).flex_shrink_0().child(ctrl))
+                        .child(div().w(px(340.)).flex_shrink_0().child(ctrl))
                 };
 
                 shell = shell
@@ -1341,7 +1376,7 @@ impl ScheduledPageView {
                                     .child(setting_row(
                                         SharedString::from(tr(locale, "scheduled.field.project")),
                                         {
-                                            let cwd_in = self.cwd_input.clone();
+                                            let entity_proj = cx.entity().clone();
                                             let projs = projects.clone();
                                             Button::new("sched-proj-dropdown")
                                                 .outline()
@@ -1351,19 +1386,45 @@ impl ScheduledPageView {
                                                 .label(selected_proj_name)
                                                 .dropdown_menu(move |mut menu, _, _| {
                                                     for (p_name, p_cwd) in &projs {
-                                                        let c_in = cwd_in.clone();
+                                                        let e_p = entity_proj.clone();
                                                         let target_cwd = p_cwd.clone();
                                                         let checked = &cur_cwd == p_cwd;
                                                         menu = menu.item(
                                                             PopupMenuItem::new(p_name.clone())
                                                                 .checked(checked)
-                                                                .on_click(move |_, window, cx| {
-                                                                    c_in.update(cx, |s, cx| {
-                                                                        s.set_value(&target_cwd, window, cx);
+                                                                .on_click(move |_, _, cx| {
+                                                                    e_p.update(cx, |this, cx| {
+                                                                        this.cwd_path = target_cwd.clone();
+                                                                        cx.notify();
                                                                     });
                                                                 }),
                                                         );
                                                     }
+                                                    let e_browse = entity_proj.clone();
+                                                    menu = menu.separator().item(
+                                                        PopupMenuItem::new(tr(locale, "scheduled.field.browse"))
+                                                            .on_click(move |_, _, cx| {
+                                                                let prompt_text = tr(locale, "sidebar.selectProjectFolder").to_string();
+                                                                let rx = cx.prompt_for_paths(PathPromptOptions {
+                                                                    files: false,
+                                                                    directories: true,
+                                                                    multiple: false,
+                                                                    prompt: Some(prompt_text.into()),
+                                                                });
+                                                                let e_b = e_browse.clone();
+                                                                cx.spawn(async move |cx| {
+                                                                    if let Ok(Ok(Some(paths))) = rx.await {
+                                                                        if let Some(path) = paths.into_iter().next() {
+                                                                            let path_str = path.to_string_lossy().into_owned();
+                                                                            let _ = e_b.update(cx, |this, cx| {
+                                                                                this.cwd_path = path_str;
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                    }
+                                                                }).detach();
+                                                            }),
+                                                    );
                                                     menu
                                                 })
                                                 .into_any_element()
@@ -1427,11 +1488,63 @@ impl ScheduledPageView {
                                     ))
                                     .child(setting_row(
                                         SharedString::from(tr(locale, "scheduled.field.timezone")),
-                                        Input::new(&self.timezone_input)
-                                            .h(px(32.))
-                                            .into_any_element(),
+                                        {
+                                            let entity_tz = cx.entity().clone();
+                                            let cur_tz = self.timezone.clone();
+                                            let tz_label = format_timezone_dropdown_label(&cur_tz);
+                                            Button::new("sched-timezone-dropdown")
+                                                .outline()
+                                                .h(px(32.))
+                                                .w_full()
+                                                .dropdown_caret(true)
+                                                .label(tz_label)
+                                                .dropdown_menu(move |mut menu, _, _| {
+                                                    for tz in STANDARD_TIMEZONES {
+                                                        let e_tz = entity_tz.clone();
+                                                        let tz_id = tz.id.to_string();
+                                                        let item_label = format_timezone_item_label(tz, locale);
+                                                        let is_checked = cur_tz.eq_ignore_ascii_case(tz.id);
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(item_label)
+                                                                .checked(is_checked)
+                                                                .on_click(move |_, _, cx| {
+                                                                    e_tz.update(cx, |this, cx| {
+                                                                        this.timezone = tz_id.clone();
+                                                                        this.preview_cron_now(cx);
+                                                                        cx.notify();
+                                                                    });
+                                                                }),
+                                                        );
+                                                    }
+                                                    menu
+                                                })
+                                                .into_any_element()
+                                        },
                                         cx,
-                                    )),
+                                    ))
+                                    .children((!self.cron_preview_runs.is_empty()).then(|| {
+                                        v_flex()
+                                            .w_full()
+                                            .p_3()
+                                            .gap_1p5()
+                                            .rounded_lg()
+                                            .bg(cx.theme().secondary.opacity(0.35))
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(format!("{} ({}):", tr(locale, "scheduled.preview.title"), format_timezone_dropdown_label(&self.timezone))),
+                                            )
+                                            .children(self.cron_preview_runs.iter().take(3).map(|run| {
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().foreground)
+                                                    .child(format!("• {run}"))
+                                            }))
+                                    })),
                             )
                             // 4. 模型与思考强度（联动）
                             .child(
@@ -1499,7 +1612,15 @@ impl ScheduledPageView {
                                             let entity_think = cx.entity().clone();
                                             let levels = supported_thinking_levels.clone();
                                             let cur_think = self.thinking_level.clone();
-                                            if levels.len() <= 2 {
+                                            if !has_thinking_support {
+                                                Button::new("sched-think-btn-disabled")
+                                                    .outline()
+                                                    .h(px(32.))
+                                                    .w_full()
+                                                    .disabled(true)
+                                                    .label(thinking_label)
+                                                    .into_any_element()
+                                            } else if levels.len() <= 2 {
                                                 // <= 3 options (Default + 1..2 levels) -> Segmented Group Tag
                                                 let mut tabs = TabBar::new("sched-think-tabs")
                                                     .segmented()

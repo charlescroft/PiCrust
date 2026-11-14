@@ -2,11 +2,10 @@ use crate::app_state::{AppState, RightPanelTab, WorkspacePage};
 use crate::client::session_controller::format_compact_relative_time;
 use crate::client::types::{ArtifactKind, ArtifactRecord};
 use crate::i18n::{AppLocale, format_commas, tr};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex,
@@ -65,7 +64,7 @@ fn category_label(cat: &str, locale: AppLocale) -> &'static str {
 pub fn render_artifacts_page(
     app_state: &Entity<AppState>,
     search_input: &Entity<InputState>,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<crate::workspace::WorkspaceView>,
 ) -> impl IntoElement {
     let (all_artifacts, sessions, locale, search_query, type_filter, page_index) = {
@@ -79,6 +78,12 @@ pub fn render_artifacts_page(
             state.artifacts_page_index,
         )
     };
+
+    // Dynamically synchronize search box placeholder when locale changes
+    let expected_placeholder = tr(locale, "page.searchArtifacts");
+    search_input.update(cx, |input, cx| {
+        input.set_placeholder(expected_placeholder, window, cx);
+    });
 
     let filtered_artifacts: Vec<_> = all_artifacts
         .into_iter()
@@ -169,13 +174,25 @@ pub fn render_artifacts_page(
         .child(filter_bar);
 
     if filtered_artifacts.is_empty() {
+        let is_search_or_filter = !search_query.is_empty() || (!type_filter.is_empty() && type_filter != "all");
+        let (empty_title, empty_desc) = if is_search_or_filter {
+            (
+                tr(locale, "page.noMatchingArtifacts"),
+                tr(locale, "page.noMatchingArtifactsDesc"),
+            )
+        } else {
+            (
+                tr(locale, "page.noArtifacts"),
+                tr(locale, "page.noArtifactsDesc"),
+            )
+        };
         inner = inner.child(
             div().flex_1().flex().items_center().justify_center().child(
                 Empty::new().header(
                     EmptyHeader::new()
                         .media(EmptyMedia::new().child(Icon::new(IconName::Frame)))
-                        .title(EmptyTitle::new().child(tr(locale, "page.noArtifacts")))
-                        .description(EmptyDescription::new().child(tr(locale, "page.noArtifactsDesc"))),
+                        .title(EmptyTitle::new().child(empty_title))
+                        .description(EmptyDescription::new().child(empty_desc)),
                 ),
             ),
         );
@@ -271,6 +288,7 @@ pub fn render_artifacts_page(
                             .outline()
                             .small()
                             .h(px(28.))
+                            .tooltip(tr(locale, "page.openArtifactInPanel"))
                             .label(tr(locale, "chat.preview"))
                             .on_click(move |_, _, cx| {
                                 let aid_clone = aid.clone();
