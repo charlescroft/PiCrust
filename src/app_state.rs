@@ -4429,14 +4429,8 @@ impl AppState {
                         .or(req.message.as_deref())
                         .unwrap_or("");
                     self.trigger_desktop_notification(n_title, n_body);
-                    let is_blocking_dialog = req.method == "select"
-                        || req.method == "input"
-                        || req.method == "confirm"
-                        || req.method == "ask_user_question";
-                    if is_blocking_dialog && self.awaiting_ask_user_question() {
-                        self.questionnaire_request_id = Some(req.request_id.clone());
-                    }
                     if req.method == "ask_user_question" {
+                        self.questionnaire_request_id = Some(req.request_id.clone());
                         self.pending_ui_request = Some(req);
                     } else {
                         self.push_extension_dialog(req);

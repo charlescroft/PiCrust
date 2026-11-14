@@ -406,12 +406,17 @@ pub struct QuestionDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionUiRequest {
+    #[serde(alias = "id")]
     pub request_id: String,
     pub method: String,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub prefill: Option<String>,
     #[serde(default)]
     pub questions: Vec<QuestionDefinition>,
     /// `select` choices, already rendered as labels by the pi host.

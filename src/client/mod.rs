@@ -231,15 +231,15 @@ impl PiDaemonClient {
     }
 
     pub async fn respond_extension_ui(&self, session_id: &str, request_id: &str, response: Value) -> Result<Value> {
-        self.send_agent_command(
-            session_id,
-            json!({
-                "type": "extension_ui_response",
-                "id": request_id,
-                "response": response,
-            }),
-        )
-        .await
+        let mut body = serde_json::Map::new();
+        body.insert("type".to_string(), json!("extension_ui_response"));
+        body.insert("id".to_string(), json!(request_id));
+        if let Value::Object(map) = response {
+            for (k, v) in map {
+                body.insert(k, v);
+            }
+        }
+        self.send_agent_command(session_id, Value::Object(body)).await
     }
 
     pub fn agent_events_url(&self, session_id: &str) -> String {

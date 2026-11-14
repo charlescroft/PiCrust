@@ -47,8 +47,17 @@ impl QuestionnaireView {
             questions.push(dialog_question_from_request(&request));
         }
         for q in &questions {
+            let ph = request
+                .placeholder
+                .clone()
+                .unwrap_or_else(|| "Type something.".to_string());
+            let prefill = request.prefill.clone();
             let custom_input = cx.new(|cx| {
-                InputState::new(window, cx).placeholder("Type something.")
+                let mut st = InputState::new(window, cx).placeholder(ph);
+                if let Some(val) = prefill {
+                    st.set_value(val, window, cx);
+                }
+                st
             });
             let choices: Vec<QuestionnaireChoiceDefinition> = q
                 .options
@@ -123,7 +132,13 @@ impl QuestionnaireView {
             let mut order: Vec<(String, Vec<usize>, Option<String>)> = Vec::new();
             for item in submission.items() {
                 let name = item.name().to_string();
-                let (indexes, text) = parse_answer_indices(&format!("{:?}", item.answer()));
+                let ans = item.answer();
+                let indexes: Vec<usize> = ans
+                    .choices()
+                    .iter()
+                    .filter_map(|c| c.as_ref().trim().parse::<usize>().ok())
+                    .collect();
+                let text = ans.freeform().map(|s| s.to_string());
                 if let Some(slot) = order.iter_mut().find(|(n, _, _)| *n == name) {
                     slot.1 = indexes;
                     slot.2 = text;
@@ -157,19 +172,29 @@ impl QuestionnaireView {
                 })
             } else if method == "select" {
                 let picked = order.first().and_then(|(_, indexes, text)| {
-                    indexes
-                        .first()
-                        .and_then(|ix| questions_for_submit.first().and_then(|q| q.options.get(*ix)))
-                        .map(|o| o.label.clone())
-                        .or_else(|| text.clone())
+                    text.as_ref()
+                        .filter(|t| !t.trim().is_empty())
+                        .cloned()
+                        .or_else(|| {
+                            indexes
+                                .first()
+                                .and_then(|ix| questions_for_submit.first().and_then(|q| q.options.get(*ix)))
+                                .map(|o| o.label.clone())
+                        })
                 });
-                json!({ "value": picked, "cancelled": picked.is_none() })
-            } else if method == "input" {
+                match picked {
+                    Some(v) => json!({ "value": v }),
+                    None => json!({ "cancelled": true }),
+                }
+            } else if method == "input" || method == "editor" {
                 let typed = order
                     .first()
                     .and_then(|(_, _, text)| text.clone())
                     .filter(|t| !t.trim().is_empty());
-                json!({ "value": typed, "cancelled": typed.is_none() })
+                match typed {
+                    Some(v) => json!({ "value": v }),
+                    None => json!({ "cancelled": true }),
+                }
             } else if method == "confirm" {
                 let confirmed = order
                     .first()
@@ -178,7 +203,7 @@ impl QuestionnaireView {
                             && text.as_ref().map(|t| !t.trim().is_empty()).unwrap_or(true)
                     })
                     .unwrap_or(false);
-                json!({ "confirmed": confirmed, "cancelled": !confirmed })
+                json!({ "confirmed": confirmed })
             } else {
                 let mut answers = Map::new();
                 for (name, _, text) in &order {
@@ -393,28 +418,22 @@ fn dialog_question_from_request(request: &ExtensionUiRequest) -> QuestionDefinit
     }
 }
 
-/// Reads the `{ indexes: [...], text: "..." }` shape that `QuestionnaireState`
-/// answers carry, tolerating plain strings as free-text answers.
-fn parse_answer_indices(rendered: &str) -> (Vec<usize>, Option<String>) {
-    let mut indexes = Vec::new();
-    let mut text: Option<String> = None;
-    if let Some(start) = rendered.find('[') {
-        if let Some(end) = rendered[start..].find(']') {
-            let inner = &rendered[start + 1..start + end];
-            for part in inner.split(',') {
-                if let Ok(ix) = part.trim().parse::<usize>() {
-                    indexes.push(ix);
-                }
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_rpc_extension_ui_request_with_id_field() {
+        let raw = json!({
+            "type": "extension_ui_request",
+            "id": "req-123",
+            "method": "select",
+            "title": "[Header] Pick one?",
+            "options": ["1. Alpha — first", "2. Beta — second"]
+        });
+        let req: ExtensionUiRequest = serde_json::from_value(raw).expect("valid ExtensionUiRequest");
+        assert_eq!(req.request_id, "req-123");
+        assert_eq!(req.method, "select");
+        assert_eq!(req.options.len(), 2);
     }
-    if let Some(t_pos) = rendered.find("text:") {
-        let rest = rendered[t_pos + 5..].trim();
-        let trimmed = rest.trim_end_matches('}').trim();
-        let cleaned = trimmed.trim_matches(|c| c == '"' || c == ' ').to_string();
-        if !cleaned.is_empty() && cleaned != "None" {
-            text = Some(cleaned);
-        }
-    }
-    (indexes, text)
 }
