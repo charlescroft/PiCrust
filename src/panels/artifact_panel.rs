@@ -107,7 +107,7 @@ impl ArtifactPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (locale, active_art, is_unread) = {
+        let (locale, active_art) = {
             let state = self.app_state.read(cx);
             let active_art = state
                 .active_artifact_id
@@ -115,8 +115,7 @@ impl ArtifactPanelView {
                 .and_then(|id| state.artifacts.iter().find(|a| &a.identifier == id))
                 .or_else(|| state.artifacts.first())
                 .cloned();
-            let is_unread = active_art.as_ref().map(|a| state.is_artifact_unread(a)).unwrap_or(false);
-            (state.locale, active_art, is_unread)
+            (state.locale, active_art)
         };
 
         let Some(art) = active_art else {
@@ -139,16 +138,6 @@ impl ArtifactPanelView {
         };
 
         self.sync_artifact(&art, window, cx);
-
-        if is_unread {
-            let aid = art.identifier.clone();
-            let app_st = self.app_state.clone();
-            cx.defer(move |cx| {
-                app_st.update(cx, |s, cx| {
-                    s.mark_artifact_read(&aid, cx);
-                });
-            });
-        }
 
         let header = h_flex()
             .px_3()

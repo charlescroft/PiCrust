@@ -121,8 +121,9 @@ pub struct AppState {
     pub sessions: Vec<SessionSummary>,
     pub running_session_ids: HashSet<String>,
     pub unread_session_ids: HashSet<String>,
-    pub read_artifact_ids: HashSet<String>,
     pub artifacts_page_index: usize,
+    pub artifacts_search_query: String,
+    pub artifacts_type_filter: String,
     pub has_earlier_messages: bool,
     pub is_loading_earlier: bool,
     pub collapsed_projects: HashSet<String>,
@@ -456,8 +457,9 @@ impl AppState {
             sessions,
             running_session_ids: HashSet::new(),
             unread_session_ids: HashSet::new(),
-            read_artifact_ids: HashSet::new(),
             artifacts_page_index: 0,
+            artifacts_search_query: String::new(),
+            artifacts_type_filter: "all".to_string(),
             has_earlier_messages: false,
             is_loading_earlier: false,
             collapsed_projects: HashSet::new(),
@@ -2819,29 +2821,22 @@ impl AppState {
     }
 
     /// Monotonic request_id guarded session selection (per AGENTS.md hard rule).
-    pub fn is_artifact_unread(&self, artifact: &ArtifactRecord) -> bool {
-        if self.read_artifact_ids.contains(&artifact.identifier) {
-            return false;
-        }
-        if let Some(sid) = &artifact.session_id {
-            self.unread_session_ids.contains(sid)
-        } else {
-            false
-        }
-    }
 
-    pub fn has_unread_artifacts(&self) -> bool {
-        self.artifacts.iter().any(|art| self.is_artifact_unread(art))
-    }
-
-    pub fn mark_artifact_read(&mut self, identifier: &str, cx: &mut Context<Self>) {
-        if self.read_artifact_ids.insert(identifier.to_string()) {
-            cx.notify();
-        }
-    }
 
     pub fn set_artifacts_page_index(&mut self, page: usize, cx: &mut Context<Self>) {
         self.artifacts_page_index = page;
+        cx.notify();
+    }
+
+    pub fn set_artifacts_search_query(&mut self, query: String, cx: &mut Context<Self>) {
+        self.artifacts_search_query = query;
+        self.artifacts_page_index = 0;
+        cx.notify();
+    }
+
+    pub fn set_artifacts_type_filter(&mut self, filter: String, cx: &mut Context<Self>) {
+        self.artifacts_type_filter = filter;
+        self.artifacts_page_index = 0;
         cx.notify();
     }
 
@@ -2884,6 +2879,14 @@ impl AppState {
     }
 
     pub fn select_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        if self.active_session_id.as_deref() == Some(session_id.as_str()) && !self.messages.is_empty() {
+            if self.active_page != WorkspacePage::Chat {
+                self.active_page = WorkspacePage::Chat;
+                cx.notify();
+            }
+            return;
+        }
+
         let req_id = self.controller.next_load_id();
         self.controller.stop_sse();
         self.active_session_id = Some(session_id.clone());

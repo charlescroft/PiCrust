@@ -183,7 +183,7 @@ pub fn render_sidebar(
             tr(locale, "sidebar.artifacts").to_string(),
             active_page == WorkspacePage::Artifacts,
             cx,
-            state.has_unread_artifacts(),
+            false,
             move |_, _, cx| {
                 app_arts.update(cx, |s, cx| {
                     s.active_page = WorkspacePage::Artifacts;
@@ -919,7 +919,9 @@ fn build_session_row(
         .group(sess_group.clone())
         .on_click(move |_, _, cx| {
             app_sel.update(cx, |s, cx| {
-                s.select_session(sid_click.clone(), cx);
+                if s.active_session_id.as_deref() != Some(sid_click.as_str()) || s.active_page != WorkspacePage::Chat {
+                    s.select_session(sid_click.clone(), cx);
+                }
             });
         })
         .context_menu(move |menu, _, _| {

@@ -32,6 +32,7 @@ pub struct WorkspaceView {
     workbench_panel: Entity<WorkbenchPanel>,
     scheduled_page: Entity<ScheduledPageView>,
     settings_add_dialog: Entity<SettingsAddDialogView>,
+    artifacts_search_input: Entity<gpui_kit::component::input::InputState>,
     rename_state: Option<InlineRenameState>,
     resizing_right: bool,
 }
@@ -50,6 +51,23 @@ impl WorkspaceView {
         let settings_add_dialog =
             cx.new(|cx| SettingsAddDialogView::new(app_state.clone(), window, cx));
 
+        let initial_locale = app_state.read(cx).locale;
+        let artifacts_search_input = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder(crate::i18n::tr(initial_locale, "page.searchArtifacts"))
+        });
+        let app_search = app_state.clone();
+        let input_for_search = artifacts_search_input.clone();
+        cx.subscribe(&artifacts_search_input, move |_, _, ev: &gpui_kit::component::input::InputEvent, cx| {
+            if matches!(ev, gpui_kit::component::input::InputEvent::Change) {
+                let val = input_for_search.read(cx).value().to_string();
+                app_search.update(cx, |s, cx| {
+                    s.set_artifacts_search_query(val, cx);
+                });
+            }
+        })
+        .detach();
+
         cx.observe(&app_state, |_, _, cx| cx.notify()).detach();
 
         Self {
@@ -59,6 +77,7 @@ impl WorkspaceView {
             workbench_panel,
             scheduled_page,
             settings_add_dialog,
+            artifacts_search_input,
             rename_state: None,
             resizing_right: false,
         }
@@ -106,7 +125,7 @@ impl Render for WorkspaceView {
             }
             WorkspacePage::Scheduled => Some(self.scheduled_page.clone().into_any_element()),
             WorkspacePage::Artifacts => {
-                Some(render_artifacts_page(&self.app_state, window, cx).into_any_element())
+                Some(render_artifacts_page(&self.app_state, &self.artifacts_search_input, window, cx).into_any_element())
             }
         };
 
