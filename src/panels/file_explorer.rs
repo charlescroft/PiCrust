@@ -3,10 +3,10 @@ use crate::i18n::tr;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tree::{TreeItem, TreeState, tree};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _,
-    Window, div, px,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    SharedString, Styled as _, Window, div, px,
 };
 use std::path::{Path, PathBuf};
 
@@ -169,20 +169,23 @@ impl FileExplorerPanel {
                         if !is_dir {
                             let rel_for_btn = rel_for_click.clone();
                             row = row.child(
-                                Button::new(("fe-mention", ix))
-                                    .ghost()
-                                    .small()
-                                    .w(px(26.))
-                                    .h(px(24.))
+                                div()
                                     .flex_shrink_0()
-                                    .label("@")
-                                    .tooltip(tr(locale, "panel.mentionTooltip"))
-                                    .on_click(move |_, _, cx| {
+                                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation();
-                                        app_mention.update(cx, |s, cx| {
-                                            s.insert_composer_mention(&rel_for_btn, cx);
-                                        });
-                                    }),
+                                    })
+                                    .child(
+                                        Button::new(("fe-mention", ix))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(Icon::new(crate::icons::AtSignIcon))
+                                            .on_click(move |_, _, cx| {
+                                                cx.stop_propagation();
+                                                app_mention.update(cx, |s, cx| {
+                                                    s.insert_composer_mention(&rel_for_btn, cx);
+                                                });
+                                            }),
+                                    ),
                             );
                         }
 
