@@ -69,7 +69,14 @@ pub fn format_commas<T: std::fmt::Display>(val: T) -> String {
 }
 
 pub fn format_tokens_km(n: u64) -> String {
-    if n >= 1_000_000 {
+    if n >= 1_000_000_000 {
+        let b = n as f64 / 1_000_000_000.0;
+        if (b - b.round()).abs() < 0.05 {
+            format!("{}B", b.round() as u64)
+        } else {
+            format!("{b:.1}B")
+        }
+    } else if n >= 1_000_000 {
         let m = n as f64 / 1_000_000.0;
         if (m - m.round()).abs() < 0.05 {
             format!("{}M", m.round() as u64)
@@ -1182,5 +1189,7 @@ mod tests {
         assert_eq!(format_tokens_km(1_400), "1.4K");
         assert_eq!(format_tokens_km(200_000), "200K");
         assert_eq!(format_tokens_km(1_250_000), "1.2M");
+        assert_eq!(format_tokens_km(1_300_000_000), "1.3B");
+        assert_eq!(format_tokens_km(2_000_000_000), "2B");
     }
 }

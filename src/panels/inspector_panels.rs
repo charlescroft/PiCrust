@@ -1,7 +1,11 @@
 use crate::app_state::AppState;
 use crate::i18n::{format_commas, format_tokens_km, tr};
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
-use gpui_kit::{Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::{
+    ClipboardItem, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _,
+    Window, div,
+};
 
 pub fn render_inspector_panel(
     app_state: &Entity<AppState>,
@@ -46,6 +50,61 @@ pub fn render_inspector_panel(
         _ => "—".to_string(),
     };
 
+    let has_session_id = state.active_session_id.is_some();
+    let sid_for_copy = sid.clone();
+    let copy_tooltip = tr(locale, "chat.copy");
+
+    let mut session_card = v_flex()
+        .p_3()
+        .gap_1p5()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().secondary)
+        .child(div().text_xs().font_semibold().child(tr(locale, "panel.sessionInfo")));
+
+    let session_rows: Vec<(&'static str, SharedString, bool)> = vec![
+        (tr(locale, "panel.name"), sess_name, false),
+        (tr(locale, "panel.id"), SharedString::from(sid), has_session_id),
+        (
+            tr(locale, "panel.directory"),
+            SharedString::from(state.active_cwd.to_string_lossy().into_owned()),
+            false,
+        ),
+        (tr(locale, "panel.messages"), SharedString::from(format_commas(msg_count)), false),
+        (tr(locale, "panel.model"), model, false),
+        (
+            tr(locale, "panel.thinking"),
+            SharedString::from(state.thinking_level.label()),
+            false,
+        ),
+    ];
+
+    for (k, v, copyable) in session_rows {
+        let mut row = h_flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .child(div().text_color(cx.theme().muted_foreground).child(k))
+            .child(div().flex_1().min_w_0().truncate().text_right().child(v));
+        if copyable {
+            let sid_c = sid_for_copy.clone();
+            row = row.child(
+                Button::new("inspector-copy-session-id")
+                    .ghost()
+                    .xsmall()
+                    .compact()
+                    .icon(IconName::Copy)
+                    .tooltip(copy_tooltip)
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(sid_c.clone()));
+                    }),
+            );
+        }
+        session_card = session_card.child(row);
+    }
+
     v_flex()
         .size_full()
         .p_3()
@@ -57,24 +116,7 @@ pub fn render_inspector_panel(
                 .text_color(cx.theme().muted_foreground)
                 .child(tr(locale, "panel.session")),
         )
-        .child(inspector_card(
-            tr(locale, "panel.sessionInfo"),
-            vec![
-                (tr(locale, "panel.name"), sess_name),
-                (tr(locale, "panel.id"), SharedString::from(sid)),
-                (
-                    tr(locale, "panel.directory"),
-                    SharedString::from(state.active_cwd.to_string_lossy().into_owned()),
-                ),
-                (tr(locale, "panel.messages"), SharedString::from(format_commas(msg_count))),
-                (tr(locale, "panel.model"), model),
-                (
-                    tr(locale, "panel.thinking"),
-                    SharedString::from(state.thinking_level.label()),
-                ),
-            ],
-            cx,
-        ))
+        .child(session_card)
         .child(inspector_card(
             tr(locale, "panel.tokensCost"),
             vec![

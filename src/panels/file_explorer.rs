@@ -170,12 +170,10 @@ impl FileExplorerPanel {
                             let rel_for_btn = rel_for_click.clone();
                             row = row.child(
                                 Button::new(("fe-mention", ix))
-                                    .outline()
-                                    .small()
-                                    .h(px(26.))
-                                    .px_2()
-                                    .icon(IconName::Plus)
-                                    .label(tr(locale, "panel.mention"))
+                                    .ghost()
+                                    .xsmall()
+                                    .compact()
+                                    .label("@")
                                     .tooltip(tr(locale, "panel.mentionTooltip"))
                                     .on_click(move |_, _, cx| {
                                         cx.stop_propagation();
