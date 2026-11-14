@@ -187,6 +187,7 @@ impl FileExplorerPanel {
                         }
 
                         ListItem::new(ix)
+                            .cursor_pointer()
                             .selected(selected)
                             .pl(px(14.) * entry.depth() + px(10.))
                             .child(row)

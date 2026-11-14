@@ -123,14 +123,49 @@ fn main() {
         };
 
         let (window_handle, _workspace) = open_window(options, cx, |window, cx| {
+            let ui_sz = app_state.read(cx).ui_font_size.clamp(5.0, 21.0);
+            window.set_rem_size(px(ui_sz));
+            let is_system_dark = matches!(
+                window.appearance(),
+                gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+            );
+            app_state.update(cx, |s, cx| {
+                if s.theme_mode == "system" && s.dark_mode != is_system_dark {
+                    s.dark_mode = is_system_dark;
+                    themes::apply_appearance(
+                        s.dark_mode,
+                        &s.light_theme_name,
+                        &s.dark_theme_name,
+                        cx,
+                    );
+                }
+            });
+
             let state = app_state.clone();
             window.on_window_should_close(cx, |window, _| {
                 save_window_bounds(window.window_bounds());
                 true
             });
-            cx.new(|cx| WorkspaceView::new(state, window, cx))
+            cx.new(|cx| {
+                cx.observe_window_bounds(window, |_, win, _| {
+                    save_window_bounds(win.window_bounds());
+                })
+                .detach();
+                WorkspaceView::new(state, window, cx)
+            })
         })
         .expect("failed to open Pi Agent GPUI window");
+
+        cx.on_app_quit({
+            let wh = window_handle;
+            move |cx| {
+                let _ = wh.update(cx, |_, window, _| {
+                    save_window_bounds(window.window_bounds());
+                });
+                async {}
+            }
+        })
+        .detach();
 
         let _ = window_handle.update(cx, |_, window, _| {
             window.activate_window();

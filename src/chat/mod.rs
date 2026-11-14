@@ -266,9 +266,10 @@ impl ChatPanel {
         self.scroller.update(cx, |s, cx| s.remeasure(cx));
     }
 
-    pub fn toggle_modified_files(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+    pub fn toggle_modified_files(&mut self, msg_id: u64, default_open: bool, cx: &mut Context<Self>) {
         if let Some(entry) = self.row_cache.get_mut(&msg_id) {
-            entry.modified_files_open = !entry.modified_files_open;
+            let cur = entry.modified_files_open.unwrap_or(default_open);
+            entry.modified_files_open = Some(!cur);
         }
         self.scroller.update(cx, |s, cx| s.remeasure(cx));
     }

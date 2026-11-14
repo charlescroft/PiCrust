@@ -39,7 +39,7 @@ pub struct CachedRowEntities {
     pub expanded_thinking_steps: HashMap<usize, bool>,
     pub expanded_compactions: HashMap<usize, bool>,
     pub expanded_tools: HashMap<SharedString, bool>,
-    pub modified_files_open: bool,
+    pub modified_files_open: Option<bool>,
     pub error_expanded: bool,
     pub error_dismissed: bool,
     pub user_expanded: bool,
@@ -80,7 +80,7 @@ pub fn render_message_row(
             expanded_thinking_steps: HashMap::new(),
             expanded_compactions: HashMap::new(),
             expanded_tools: HashMap::new(),
-            modified_files_open: true,
+            modified_files_open: None,
             error_expanded: false,
             error_dismissed: false,
             user_expanded: false,
@@ -143,11 +143,12 @@ pub fn render_message_row(
         });
     }
 
-    let (is_turn_live, font_px, locale, user_collapse_chars) = {
+    let (is_turn_live, is_last_turn, font_px, locale, user_collapse_chars) = {
         let state = app_state.read(cx);
         let is_last = state.messages.last().map(|m| m.id) == Some(msg.id);
         (
             msg.is_streaming || (is_last && (state.is_agent_running || state.is_compacting)),
+            is_last,
             state.chat_font_size,
             state.locale,
             state.user_collapse_chars,
@@ -168,7 +169,7 @@ pub fn render_message_row(
             render_notice_row(msg, row_cache, font_px, locale, cx)
         }
         MessageRole::Assistant => {
-            render_assistant_row(msg, row_cache, font_px, is_turn_live, locale, app_state, window, cx)
+            render_assistant_row(msg, row_cache, font_px, is_turn_live, is_last_turn, locale, app_state, window, cx)
         }
     };
 
@@ -681,6 +682,7 @@ fn render_assistant_row(
     row_cache: &mut CachedRowEntities,
     font_px: f32,
     is_turn_live: bool,
+    is_last_turn: bool,
     locale: AppLocale,
     app_state: &Entity<AppState>,
     window: &mut Window,
@@ -1381,15 +1383,58 @@ fn render_assistant_row(
         );
     }
 
-    // 5. Modified files summary card: shown ONLY when the entire turn has settled (!is_turn_live),
-    //    not mid-turn between individual write/edit tool calls.
-    let modified_files = collect_modified_files(&msg.tool_calls);
-    if !is_turn_live && !modified_files.is_empty() {
-        let mf_open = row_cache.modified_files_open;
+    // 5. Modified files summary card:
+    //    - Shown ONLY when the entire turn has settled (!is_turn_live)
+    //    - Expanded by default ONLY for the latest turn (is_last_turn); all earlier turns stay collapsed
+    //    - When collapsed, does NOT parse diffs or allocate patch strings; reads lazily only on expand!
+    let mf_count = if !is_turn_live {
+        count_modified_file_paths(&msg.tool_calls)
+    } else {
+        0
+    };
+    if mf_count > 0 {
+        let mf_open = row_cache.modified_files_open.unwrap_or(is_last_turn);
         let msg_id = msg.id;
-        let count = modified_files.len();
-        let total_added: usize = modified_files.iter().map(|f| f.added).sum();
-        let total_removed: usize = modified_files.iter().map(|f| f.removed).sum();
+
+        let (count, total_added, total_removed, modified_files_opt) = if mf_open {
+            let files = collect_modified_files(&msg.tool_calls);
+            let added: usize = files.iter().map(|f| f.added).sum();
+            let removed: usize = files.iter().map(|f| f.removed).sum();
+            (files.len(), added, removed, Some(files))
+        } else {
+            (mf_count, 0, 0, None)
+        };
+
+        let mut header_left = h_flex()
+            .gap_2()
+            .items_center()
+            .child(Icon::new(IconName::FileText).xsmall())
+            .child(
+                div()
+                    .text_xs()
+                    .font_medium()
+                    .child(if count == 1 {
+                        tr(locale, "chat.fileModifiedOne").to_string()
+                    } else {
+                        format!("{} {}", format_commas(count), tr(locale, "chat.filesModified"))
+                    }),
+            );
+
+        if mf_open {
+            header_left = header_left
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().success)
+                        .child(format!("+{}", format_commas(total_added))),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(format!("-{}", format_commas(total_removed))),
+                );
+        }
 
         let mf_header = h_flex()
             .id(("mod-files-hdr", msg_id))
@@ -1401,37 +1446,10 @@ fn render_assistant_row(
             .cursor_pointer()
             .hover(|s| s.bg(cx.theme().background.opacity(0.45)))
             .on_click(cx.listener(move |panel, _, _, cx| {
-                panel.toggle_modified_files(msg_id, cx);
+                panel.toggle_modified_files(msg_id, is_last_turn, cx);
                 cx.notify();
             }))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(Icon::new(IconName::FileText).xsmall())
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_medium()
-                            .child(if count == 1 {
-                                tr(locale, "chat.fileModifiedOne").to_string()
-                            } else {
-                                format!("{} {}", format_commas(count), tr(locale, "chat.filesModified"))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().success)
-                            .child(format!("+{}", format_commas(total_added))),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(format!("-{}", format_commas(total_removed))),
-                    ),
-            )
+            .child(header_left)
             .child(
                 Icon::new(if mf_open {
                     IconName::ChevronUp
@@ -1450,7 +1468,7 @@ fn render_assistant_row(
             .bg(cx.theme().secondary)
             .child(mf_header);
 
-        if mf_open {
+        if let Some(modified_files) = modified_files_opt {
             let mut list = v_flex().border_t_1().border_color(cx.theme().border);
             for (f_idx, mf) in modified_files.into_iter().enumerate() {
                 let raw_path = mf.path.clone();
@@ -2004,6 +2022,23 @@ fn render_tool_call_card(
     }
 
     card.into_any_element()
+}
+
+fn count_modified_file_paths(tool_calls: &[ToolCallItem]) -> usize {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for tc in tool_calls {
+        if tc.is_error || !matches!(tc.name.as_ref(), "edit" | "write" | "apply_patch") {
+            continue;
+        }
+        if let Some((_, v)) = tc
+            .arguments
+            .iter()
+            .find(|(k, _)| matches!(k.as_ref(), "path" | "file_path"))
+        {
+            seen.insert(v.as_ref());
+        }
+    }
+    seen.len()
 }
 
 fn collect_modified_files(tool_calls: &[ToolCallItem]) -> Vec<ModifiedFileSummary> {

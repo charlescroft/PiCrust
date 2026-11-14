@@ -1,21 +1,65 @@
 use crate::app_state::{AppState, RightPanelTab, WorkspacePage};
 use crate::client::session_controller::format_compact_relative_time;
-use crate::client::types::ArtifactKind;
-use crate::i18n::{format_commas, tr};
+use crate::client::types::{ArtifactKind, ArtifactRecord};
+use crate::i18n::{AppLocale, format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
-    StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex,
+    v_flex,
 };
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
+
+fn classify_artifact_category(art: &ArtifactRecord) -> &'static str {
+    let ext = art
+        .language
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or_else(|| art.identifier.rsplit('.').next())
+        .or_else(|| art.title.rsplit('.').next())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    match ext.as_str() {
+        "html" | "htm" => "html",
+        "pdf" => "pdf",
+        "md" | "markdown" | "mdx" => "markdown",
+        "doc" | "docx" | "odt" | "xls" | "xlsx" | "ods" | "csv" | "ppt" | "pptx" | "odp" => "office",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "icns" | "zip" | "tar"
+        | "gz" | "dmg" | "exe" | "bin" | "wasm" | "dll" | "so" | "dylib" | "mp3" | "mp4"
+        | "wav" | "mov" => "binary",
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go" | "c" | "cpp"
+        | "h" | "hpp" | "java" | "kt" | "swift" | "css" | "scss" | "json" | "toml" | "yaml"
+        | "yml" | "sh" | "bash" | "zsh" | "sql" | "xml" | "svg" => "codes",
+        _ => match art.kind {
+            ArtifactKind::Html => "html",
+            ArtifactKind::Markdown => "markdown",
+            ArtifactKind::React | ArtifactKind::Svg | ArtifactKind::Code | ArtifactKind::Mermaid => {
+                "codes"
+            }
+        },
+    }
+}
+
+fn category_label(cat: &str, locale: AppLocale) -> &'static str {
+    match cat {
+        "html" => "HTML",
+        "pdf" => "PDF",
+        "markdown" => "Markdown",
+        "office" => tr(locale, "page.typeOffice"),
+        "codes" => tr(locale, "page.typeCodes"),
+        "binary" => tr(locale, "page.typeBinary"),
+        "others" => tr(locale, "page.typeOthers"),
+        _ => tr(locale, "page.allTypes"),
+    }
+}
 
 pub fn render_artifacts_page(
     app_state: &Entity<AppState>,
@@ -38,13 +82,10 @@ pub fn render_artifacts_page(
     let filtered_artifacts: Vec<_> = all_artifacts
         .into_iter()
         .filter(|art| {
-            let matches_type = match type_filter.as_str() {
-                "html" => matches!(art.kind, ArtifactKind::Html),
-                "react" => matches!(art.kind, ArtifactKind::React),
-                "svg" => matches!(art.kind, ArtifactKind::Svg),
-                "markdown" => matches!(art.kind, ArtifactKind::Markdown),
-                "code" => matches!(art.kind, ArtifactKind::Code),
-                _ => true,
+            let matches_type = if type_filter == "all" || type_filter.is_empty() {
+                true
+            } else {
+                classify_artifact_category(art) == type_filter
             };
             if !matches_type {
                 return false;
@@ -59,13 +100,14 @@ pub fn render_artifacts_page(
         })
         .collect();
 
-    let app_tab1 = app_state.clone();
-    let app_tab2 = app_state.clone();
-    let app_tab3 = app_state.clone();
-    let app_tab4 = app_state.clone();
-    let app_tab5 = app_state.clone();
-    let app_tab6 = app_state.clone();
+    let categories = [
+        "all", "html", "pdf", "markdown", "office", "codes", "binary", "others",
+    ];
+    let current_cat_label = category_label(&type_filter, locale);
+    let app_cat = app_state.clone();
+    let cur_filter = type_filter.clone();
 
+    // > 3 mutually exclusive categories -> Dropdown per ui-design-system.md
     let filter_bar = h_flex()
         .w_full()
         .gap_3()
@@ -74,61 +116,35 @@ pub fn render_artifacts_page(
         .child(
             div()
                 .flex_1()
-                .max_w(px(360.))
+                .max_w(px(420.))
                 .child(Input::new(search_input).h(px(32.))),
         )
         .child(
-            TabBar::new("art-type-tabs")
-                .segmented()
-                .h(px(32.))
-                .child(
-                    Tab::new()
-                        .label(tr(locale, "page.allTypes"))
-                        .selected(type_filter == "all")
-                        .on_click(move |_, _, cx| {
-                            app_tab1.update(cx, |s, cx| s.set_artifacts_type_filter("all".to_string(), cx));
-                        }),
-                )
-                .child(
-                    Tab::new()
-                        .label("HTML")
-                        .selected(type_filter == "html")
-                        .on_click(move |_, _, cx| {
-                            app_tab2.update(cx, |s, cx| s.set_artifacts_type_filter("html".to_string(), cx));
-                        }),
-                )
-                .child(
-                    Tab::new()
-                        .label("React")
-                        .selected(type_filter == "react")
-                        .on_click(move |_, _, cx| {
-                            app_tab3.update(cx, |s, cx| s.set_artifacts_type_filter("react".to_string(), cx));
-                        }),
-                )
-                .child(
-                    Tab::new()
-                        .label("SVG")
-                        .selected(type_filter == "svg")
-                        .on_click(move |_, _, cx| {
-                            app_tab4.update(cx, |s, cx| s.set_artifacts_type_filter("svg".to_string(), cx));
-                        }),
-                )
-                .child(
-                    Tab::new()
-                        .label("Markdown")
-                        .selected(type_filter == "markdown")
-                        .on_click(move |_, _, cx| {
-                            app_tab5.update(cx, |s, cx| s.set_artifacts_type_filter("markdown".to_string(), cx));
-                        }),
-                )
-                .child(
-                    Tab::new()
-                        .label("Code")
-                        .selected(type_filter == "code")
-                        .on_click(move |_, _, cx| {
-                            app_tab6.update(cx, |s, cx| s.set_artifacts_type_filter("code".to_string(), cx));
-                        }),
-                ),
+            div().w(px(220.)).child(
+                Button::new("art-type-dropdown")
+                    .outline()
+                    .h(px(32.))
+                    .w_full()
+                    .dropdown_caret(true)
+                    .label(current_cat_label)
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for &cat in &categories {
+                            let app_c = app_cat.clone();
+                            let cat_s = cat.to_string();
+                            let checked = cur_filter == cat || (cur_filter.is_empty() && cat == "all");
+                            menu = menu.item(
+                                PopupMenuItem::new(category_label(cat, locale))
+                                    .checked(checked)
+                                    .on_click(move |_, _, cx| {
+                                        app_c.update(cx, |s, cx| {
+                                            s.set_artifacts_type_filter(cat_s.clone(), cx);
+                                        });
+                                    }),
+                            );
+                        }
+                        menu
+                    }),
+            ),
         );
 
     let mut inner = v_flex()
@@ -183,10 +199,11 @@ pub fn render_artifacts_page(
             let aid = art.identifier.clone();
             let sid_opt = art.session_id.clone();
             let app_open = app_state.clone();
-            let type_icon = match art.kind {
-                ArtifactKind::Html | ArtifactKind::React | ArtifactKind::Svg => IconName::Frame,
-                ArtifactKind::Markdown => IconName::FileText,
-                ArtifactKind::Code | ArtifactKind::Mermaid => IconName::File,
+            let cat = classify_artifact_category(art);
+            let type_icon = match cat {
+                "html" => IconName::Frame,
+                "markdown" | "pdf" | "office" => IconName::FileText,
+                _ => IconName::File,
             };
 
             let session_title = sid_opt
@@ -238,7 +255,7 @@ pub fn render_artifacts_page(
                                             .text_color(cx.theme().foreground)
                                             .child(SharedString::from(art.title.clone())),
                                     )
-                                    .child(Tag::secondary().small().child(art.kind.label())),
+                                    .child(Tag::secondary().small().child(category_label(cat, locale))),
                             )
                             .child(
                                 div()

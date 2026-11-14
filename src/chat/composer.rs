@@ -18,7 +18,7 @@ use gpui_kit::component::{
     StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, Focusable as _, Font,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, Font,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, Task, TextRun, Window, div, px,
 };
@@ -283,6 +283,7 @@ impl SelectDelegate for ModelGroupDelegate {
 }
 
 pub struct ComposerView {
+    focus_handle: FocusHandle,
     app_state: Entity<AppState>,
     textarea: Entity<TextareaState>,
     disabled_bottom_input: Entity<InputState>,
@@ -442,6 +443,7 @@ impl ComposerView {
             .map(|m| (m.provider.clone(), m.id.clone()));
 
         Self {
+            focus_handle: cx.focus_handle(),
             app_state,
             textarea,
             disabled_bottom_input,
@@ -733,11 +735,79 @@ impl ComposerView {
         let app_proj = self.app_state.clone();
         let app_ctx = self.app_state.clone();
 
+        let fm_for_wrapper = file_matches.clone();
         let mut wrapper = v_flex()
             .w_full()
             .max_w(px(state.chat_content_width))
             .mx_auto()
-            .gap_2();
+            .gap_2()
+            .track_focus(&self.focus_handle)
+            .capture_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                if !this.file_picker_open && this.at_query.is_none() {
+                    return;
+                }
+                let key = event.keystroke.key.as_str();
+                let is_dir_browser = this.file_picker_open && this.at_query.is_none();
+                let len = if is_dir_browser {
+                    this.file_picker_entries.len()
+                } else {
+                    fm_for_wrapper.len().min(40)
+                };
+                match key {
+                    "up" => {
+                        cx.stop_propagation();
+                        if len > 0 {
+                            this.file_picker_selected_idx = this.file_picker_selected_idx.saturating_sub(1);
+                            this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
+                            cx.notify();
+                        }
+                    }
+                    "down" => {
+                        cx.stop_propagation();
+                        if len > 0 {
+                            this.file_picker_selected_idx = (this.file_picker_selected_idx + 1).min(len - 1);
+                            this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
+                            cx.notify();
+                        }
+                    }
+                    "right" if is_dir_browser => {
+                        if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
+                            if entry.is_dir {
+                                cx.stop_propagation();
+                                this.enter_file_picker_dir(entry.relative_path, cx);
+                            }
+                        }
+                    }
+                    "left" if is_dir_browser => {
+                        if !this.file_picker_dir.is_empty() {
+                            cx.stop_propagation();
+                            this.exit_file_picker_dir(cx);
+                        }
+                    }
+                    "enter" => {
+                        cx.stop_propagation();
+                        if is_dir_browser {
+                            if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
+                                if entry.is_dir {
+                                    this.enter_file_picker_dir(entry.relative_path, cx);
+                                } else {
+                                    this.insert_file_reference(&entry.relative_path, window, cx);
+                                }
+                            }
+                        } else if let Some(m) = fm_for_wrapper.get(this.file_picker_selected_idx) {
+                            let rel = m.relative_path.clone();
+                            this.insert_file_reference(&rel, window, cx);
+                        }
+                    }
+                    "escape" => {
+                        cx.stop_propagation();
+                        this.at_query = None;
+                        this.file_picker_open = false;
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            }));
 
         // Live activity status hint in the gap above composer/todos, strictly <= half composer width
         if let Some(hint) = activity_hint {
@@ -1148,7 +1218,7 @@ impl ComposerView {
                 .w_full()
                 .max_h(px(210.))
                 .overflow_y_scroll()
-                .gap_0p5();
+                .cursor_pointer();
 
             if list_len == 0 {
                 list_scroll = list_scroll.child(
@@ -1572,7 +1642,7 @@ impl ComposerView {
                             this.at_query = None;
                             this.file_picker_dir.clear();
                             this.reload_file_browser(cx);
-                            this.textarea.read(cx).focus_handle(cx).focus(window, cx);
+                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
                         }
                         cx.notify();
                     })),

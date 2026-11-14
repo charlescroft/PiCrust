@@ -418,7 +418,11 @@ fn en_text(key: &'static str) -> &'static str {
         "page.noArtifacts" => "No artifacts yet",
         "page.noArtifactsDesc" => "Generated HTML, React, SVG, Mermaid, and code artifacts appear here.",
         "page.searchArtifacts" => "Search artifacts by title, path, content...",
-        "page.allTypes" => "All",
+        "page.allTypes" => "All Types",
+        "page.typeOffice" => "Office Files",
+        "page.typeCodes" => "Codes",
+        "page.typeBinary" => "Binary",
+        "page.typeOthers" => "Others",
 
         // Settings
         "settings.title" => "Settings",
@@ -936,7 +940,11 @@ fn zh_text(key: &'static str) -> &'static str {
         "page.noArtifacts" => "暂无产物",
         "page.noArtifactsDesc" => "对话中生成的 HTML、React、SVG、Mermaid 和代码产物将显示在这里。",
         "page.searchArtifacts" => "搜索产物名称、路径或内容...",
-        "page.allTypes" => "全部",
+        "page.allTypes" => "全部类型",
+        "page.typeOffice" => "Office 文档",
+        "page.typeCodes" => "代码文件",
+        "page.typeBinary" => "二进制文件",
+        "page.typeOthers" => "其他",
 
         // Settings
         "settings.title" => "设置",

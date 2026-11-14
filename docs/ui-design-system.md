@@ -113,7 +113,7 @@ Outer vertical flex (`size_full`):
   - **Tool Calls**: Expandable cards; `Bash` hides copy in collapsed header and shows copy next to command inside `160px` scrollable body.
   - **Compaction Card**: Expandable Markdown summary + collapsible `FileContext` section listing `Modified files` and `Read files` with file icons.
   - **Errors**: Mid-turn errors render in-place inside `ProcessDetailsGroup` with copy button; standalone bottom errors include dismiss (`×`).
-- **Modified Files Summary Card**: Shown **ONLY** when `!is_turn_live && !modified_files.is_empty()` (never mid-turn between individual `write`/`edit` tool calls).
+- **Modified Files Summary Card**: Shown **ONLY** when `!is_turn_live` and at least one file was modified. Expanded by default **ONLY** on the latest turn (`is_last_turn`); all earlier turns stay collapsed by default without parsing diffs or allocating patches until explicitly clicked.
 - **Turn Footer**: Shown **ONLY** when `!is_turn_live && has_answer_text` (`28px` Copy, Turn Usage DB popover, Duration, Timestamp).
 
 ### 5.3 Conversation Navigator (`ConversationNavigator`)
@@ -157,9 +157,9 @@ Outer vertical flex (`size_full`):
 
 ### 7.3 Artifacts Page (`artifacts_page.rs`)
 - Search & Browse library (NO unread tracking or unread dots):
-  - Top Filter Bar: Search `Input` (title, identifier, path, content) + Type Segmented `TabBar` (`All`, `HTML`, `React`, `SVG`, `Markdown`, `Code`, `h(px(32.))`).
-  - Scrollable Card List: Type icon, Title, Kind tag, Identifier & Version, `"Preview"` outline button (opens right drawer & activates session without redundant reload).
-  - Pagination Footer (`8` items/page): `"Page X of Y"`, Prev / Next buttons.
+  - Top Filter Bar: Search `Input` (`h(px(32.))`, title, identifier, path, content) + Type **Dropdown** (`> 3` options → `Button::outline().h(px(32.)).dropdown_caret(true)`: `All Types`, `HTML`, `PDF`, `Markdown`, `Office Files`, `Codes`, `Binary`, `Others`).
+  - Scrollable Card List (`bg(cx.theme().background)` + `rounded_xl` + `border_1`): Type icon, Title, Category tag, Identifier, Version, Session Title, Relative Time, `"Preview"` outline button (`h(px(28.))`).
+  - Pagination Footer (`8` items/page): `"Page X of Y"`, Prev / Next buttons (`h(px(28.))`).
 
 ---
 
