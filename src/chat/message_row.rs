@@ -101,25 +101,31 @@ pub fn render_message_row(
         .detach();
     }
 
-    // Incremental update of retained TextViewState for streaming fade
-    let display_md = strip_artifact_blocks(&msg.content);
-    if display_md != row_cache.last_text_snapshot {
-        let prev = &row_cache.last_text_snapshot;
-        let is_append = display_md.starts_with(prev.as_str());
-        if is_append {
-            let delta = &display_md[prev.len()..];
-            if !delta.is_empty() {
+    // Incremental update of retained TextViewState (fast path when no artifacts & unchanged)
+    if !newly_created && (msg.content.len() != row_cache.last_text_len || msg.content.contains(":::artifact")) {
+        let display_md = if msg.content.contains(":::artifact") {
+            strip_artifact_blocks(&msg.content)
+        } else {
+            msg.content.clone()
+        };
+        if display_md != row_cache.last_text_snapshot {
+            let prev = &row_cache.last_text_snapshot;
+            let is_append = display_md.starts_with(prev.as_str());
+            if is_append {
+                let delta = &display_md[prev.len()..];
+                if !delta.is_empty() {
+                    row_cache.text_state.update(cx, |state, cx| {
+                        state.push_str(delta, cx);
+                    });
+                }
+            } else {
                 row_cache.text_state.update(cx, |state, cx| {
-                    state.push_str(delta, cx);
+                    state.set_text(&display_md, cx);
                 });
             }
-        } else {
-            row_cache.text_state.update(cx, |state, cx| {
-                state.set_text(&display_md, cx);
-            });
+            row_cache.last_text_len = display_md.len();
+            row_cache.last_text_snapshot = display_md;
         }
-        row_cache.last_text_len = display_md.len();
-        row_cache.last_text_snapshot = display_md.clone();
     }
 
     // Apply ConversationFind highlights only if query is active
@@ -708,7 +714,7 @@ fn render_assistant_row(
     let has_process =
         !msg.process_steps.is_empty() || !msg.thinking.is_empty() || !msg.tool_calls.is_empty() || is_turn_live;
     if has_process {
-        let default_process_open = thinking_expanded_default || is_turn_live || !has_answer_text;
+        let default_process_open = thinking_expanded_default || is_turn_live;
         let process_open = row_cache
             .process_group_open
             .unwrap_or(default_process_open);
@@ -913,6 +919,20 @@ fn render_assistant_row(
                                         ),
                                 )
                         } else {
+                            let think_preview: String = think_text
+                                .lines()
+                                .map(str::trim)
+                                .find(|l| !l.is_empty())
+                                .unwrap_or("")
+                                .chars()
+                                .take(80)
+                                .collect();
+                            let think_label = if think_preview.is_empty() {
+                                tr(locale, "chat.thinkingLabel").to_string()
+                            } else {
+                                think_preview
+                            };
+
                             h_flex()
                                 .id(("think-step", msg_id * 1000 + step_idx as u64))
                                 .w_full()
@@ -944,10 +964,11 @@ fn render_assistant_row(
                                     div()
                                         .flex_1()
                                         .min_w_0()
+                                        .truncate()
                                         .text_xs()
                                         .line_height(px(16.))
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(tr(locale, "chat.thinkingLabel")),
+                                        .child(SharedString::from(think_label)),
                                 )
                                 .child(
                                     Icon::new(IconName::ChevronRight)
@@ -1252,8 +1273,12 @@ fn render_assistant_row(
         );
     }
 
-    // 3. Inline Artifact cards (leading icons + dropdown with Open File Location)
-    let artifacts = extract_artifacts_from_markdown(&msg.content, None);
+    // 3. Inline Artifact cards (skip regex scan when no artifact markers exist)
+    let artifacts = if msg.content.contains(":::artifact") {
+        extract_artifacts_from_markdown(&msg.content, None)
+    } else {
+        Vec::new()
+    };
     for (idx, art) in artifacts.into_iter().enumerate() {
         let app_open = app_state.clone();
         let app_open_menu = app_state.clone();

@@ -29,10 +29,8 @@ use gpui_kit::{
 };
 use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
 
-const UNIFORM_ROW_HEIGHT_HINT: gpui_kit::Pixels = px(140.);
-const LIST_OVERDRAW: gpui_kit::Pixels = px(400.);
+const LIST_OVERDRAW: gpui_kit::Pixels = px(800.);
 
 pub struct ConversationScrollerState {
     list_state: ListState,
@@ -41,7 +39,7 @@ pub struct ConversationScrollerState {
 
 impl ConversationScrollerState {
     pub fn new(item_count: usize, cx: &mut Context<Self>) -> Self {
-        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW).measure_all();
+        let list_state = ListState::new(item_count, ListAlignment::Bottom, LIST_OVERDRAW);
         list_state.set_follow_mode(FollowMode::Tail);
 
         let weak_state = cx.weak_entity();
@@ -297,7 +295,7 @@ impl ChatPanel {
     }
 
     fn sync_scroller_with_messages(&mut self, app: &Entity<AppState>, cx: &mut Context<Self>) {
-        let (new_count, sid, font_sz, tail_sig, keep_ids, messages_copy) = {
+        let (new_count, sid, font_sz, tail_sig, keep_ids, next_turns) = {
             let state = app.read(cx);
             let new_count = state.messages.len();
             let sid = state.active_session_id.clone();
@@ -326,8 +324,12 @@ impl ChatPanel {
                 }
                 ids
             });
-            let messages_copy = state.messages.clone();
-            (new_count, sid, font_sz, tail_sig, keep_ids, messages_copy)
+            let next_turns = if sid != self.last_session_id || new_count != self.last_message_count {
+                Some(collect_turn_locations(&state.messages))
+            } else {
+                None
+            };
+            (new_count, sid, font_sz, tail_sig, keep_ids, next_turns)
         };
 
         // A review position must survive tail updates: remember the exact top offset
@@ -351,7 +353,9 @@ impl ChatPanel {
             self.last_tail_sig = tail_sig;
             self.nav_window_start = usize::MAX;
             self.show_all_turns = false;
-            self.cached_turns = collect_turn_locations(&messages_copy);
+            if let Some(t) = next_turns {
+                self.cached_turns = t;
+            }
             self.scroller.update(cx, |s, cx| {
                 s.reset(new_count, cx);
             });
@@ -364,7 +368,9 @@ impl ChatPanel {
             let added = new_count - self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
-            self.cached_turns = collect_turn_locations(&messages_copy);
+            if let Some(t) = next_turns {
+                self.cached_turns = t;
+            }
             self.scroller.update(cx, |s, cx| {
                 let _ = s.append(added, cx);
             });
@@ -373,7 +379,9 @@ impl ChatPanel {
             let old_count = self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
-            self.cached_turns = collect_turn_locations(&messages_copy);
+            if let Some(t) = next_turns {
+                self.cached_turns = t;
+            }
             self.scroller.update(cx, |s, cx| {
                 if s.is_scrolled_up() {
                     let _ = s.splice(new_count..old_count, 0, cx);
@@ -426,18 +434,17 @@ impl Render for ChatPanel {
             (None, None) => {}
         }
 
-        let messages = Rc::new(self.app_state.read(cx).messages.clone());
         let find_query = self.app_state.read(cx).find_query.clone();
 
         let panel_entity = cx.entity().clone();
         let app_state = self.app_state.clone();
-        let msgs_for_list = messages.clone();
         let q_for_list = find_query.clone();
 
         // Items 1, 2, 3, 6: ConversationNavigator ticks on far left, vertically centered.
         // Hidden ONLY when center chat column is too narrow and ticks would overlap the 840px text body.
         let state_snap = self.app_state.read(cx);
         let locale = state_snap.locale;
+        let messages_empty = state_snap.messages.is_empty();
         let right_open = state_snap.right_panel_open;
         let right_w = if right_open {
             state_snap.right_panel_width
@@ -454,8 +461,8 @@ impl Render for ChatPanel {
         let chat_width = state_snap.chat_content_width;
         let has_gutter_space = chat_col_w >= px(chat_width + 88.);
 
-        let turns = if self.cached_turns.is_empty() && !messages.is_empty() {
-            collect_turn_locations(&messages)
+        let turns = if self.cached_turns.is_empty() && !messages_empty {
+            collect_turn_locations(&state_snap.messages)
         } else {
             self.cached_turns.clone()
         };
@@ -630,7 +637,7 @@ impl Render for ChatPanel {
             None
         };
 
-        let body_area = if messages.is_empty() {
+        let body_area = if messages_empty {
             v_flex()
                 .flex_1()
                 .items_center()
@@ -652,10 +659,9 @@ impl Render for ChatPanel {
             };
             let item_count = list_state.item_count();
             let list_el = list(list_state.clone(), move |index, window, cx| {
-                let Some(msg) = msgs_for_list.get(index) else {
+                let Some(msg_clone) = app_state.read(cx).messages.get(index).cloned() else {
                     return div().into_any_element();
                 };
-                let msg_clone = msg.clone();
                 let q_str = q_for_list.to_string();
                 let app = app_state.clone();
                 let row = panel_entity.update(cx, |this, cx| {
