@@ -80,26 +80,7 @@ impl FileViewerView {
             });
 
             // One presentation only: unified. No split/unified switching in the panel.
-            let patch_to_use = patch.or_else(|| {
-                if let Some(ref p) = path {
-                    let output = std::process::Command::new("git")
-                        .arg("-C")
-                        .arg(&cwd_root)
-                        .args(["diff", "HEAD", "--"])
-                        .arg(p)
-                        .output()
-                        .ok()?;
-                    if output.status.success() && !output.stdout.is_empty() {
-                        let text = String::from_utf8_lossy(&output.stdout).to_string();
-                        if !text.trim().is_empty() {
-                            return Some(SharedString::from(text));
-                        }
-                    }
-                }
-                None
-            });
-
-            self.diff_state = patch_to_use
+            self.diff_state = patch
                 .as_ref()
                 .and_then(|p| DiffFile::parse(p.as_ref()).ok())
                 .map(|files| {
@@ -257,7 +238,7 @@ impl FileViewerView {
                 .flex_1()
                 .min_h_0()
                 .size_full()
-                .child(Editor::new(&self.editor).size_full())
+                .child(Editor::new(&self.editor).readonly(true).appearance(false).bordered(false).size_full())
                 .into_any_element()
         };
 

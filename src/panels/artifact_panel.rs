@@ -192,7 +192,7 @@ impl ArtifactPanelView {
             div()
                 .flex_1()
                 .min_h_0()
-                .child(Editor::new(&self.code_editor).size_full())
+                .child(Editor::new(&self.code_editor).readonly(true).appearance(false).bordered(false).size_full())
                 .into_any_element()
         } else {
             let cache_key = format!("{}:{}", art.identifier, art.version);

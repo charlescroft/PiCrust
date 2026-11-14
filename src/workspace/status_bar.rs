@@ -2,9 +2,10 @@ use crate::app_state::{AppState, RightPanelTab};
 use crate::client::types::WorkspaceKind;
 use crate::i18n::tr;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
@@ -134,21 +135,124 @@ pub fn render_status_bar(
             .icon(Icon::new(crate::icons::GitBranchIcon))
             .label(branch_name)
             .tooltip(tr(locale, "status.switchBranch"))
-            .dropdown_menu_with_anchor(gpui_kit::Anchor::BottomLeft, move |mut menu, _, _| {
+            .dropdown_menu_with_anchor(gpui_kit::Anchor::BottomLeft, move |mut menu, window, cx| {
+                menu = menu
+                    .min_w(px(340.))
+                    .max_w(px(400.))
+                    .max_h(px(440.));
+
+                // 1. Current Branch Card
+                let cur = current_branch.clone();
+                menu = menu.item(PopupMenuItem::element(move |_, cx| {
+                    v_flex()
+                        .w_full()
+                        .p_2p5()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().secondary)
+                        .gap_1p5()
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(
+                                            Icon::new(crate::icons::GitBranchIcon)
+                                                .small()
+                                                .text_color(cx.theme().primary),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(tr(locale, "status.currentBranch")),
+                                        ),
+                                )
+                                .child(Tag::primary().small().child("HEAD")),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(cx.theme().foreground)
+                                .child(SharedString::from(cur.clone())),
+                        )
+                }));
+
+                menu = menu.separator();
                 menu = menu.label(tr(locale, "status.branchesHeading"));
+
                 for b in &branches {
                     let b_name = b.clone();
                     let is_current = b_name == current_branch;
                     let app_sw = app_switch_branch.clone();
+                    let app_pull = app_switch_branch.clone();
+                    let app_push = app_switch_branch.clone();
+                    let app_del = app_switch_branch.clone();
+                    let b_sw = b_name.clone();
+                    let b_pull = b_name.clone();
+                    let b_push = b_name.clone();
+                    let b_del = b_name.clone();
+
+                    let sub_menu = PopupMenu::build(window, cx, move |sub, _, _| {
+                        let mut sub = sub;
+                        if !is_current {
+                            let a_sw = app_sw.clone();
+                            let tgt = b_sw.clone();
+                            sub = sub.item(
+                                PopupMenuItem::new(tr(locale, "status.gitCheckout"))
+                                    .icon(Icon::new(crate::icons::GitBranchIcon))
+                                    .on_click(move |_, _, cx| {
+                                        a_sw.update(cx, |s, cx| s.switch_git_branch(tgt.clone(), cx));
+                                    }),
+                            );
+                        }
+                        let a_pull = app_pull.clone();
+                        let b_p = b_pull.clone();
+                        sub = sub.item(
+                            PopupMenuItem::new(tr(locale, "status.gitPull"))
+                                .icon(IconName::ArrowDown)
+                                .on_click(move |_, _, cx| {
+                                    a_pull.update(cx, |s, cx| s.git_pull(Some(b_p.clone()), cx));
+                                }),
+                        );
+                        let a_push = app_push.clone();
+                        let b_pu = b_push.clone();
+                        sub = sub.item(
+                            PopupMenuItem::new(tr(locale, "status.gitPush"))
+                                .icon(IconName::ArrowUp)
+                                .on_click(move |_, _, cx| {
+                                    a_push.update(cx, |s, cx| s.git_push(Some(b_pu.clone()), cx));
+                                }),
+                        );
+                        if !is_current {
+                            let a_del = app_del.clone();
+                            let b_d = b_del.clone();
+                            sub = sub.separator().item(
+                                PopupMenuItem::new(tr(locale, "status.gitDelete"))
+                                    .icon(Icon::new(crate::icons::TrashIcon))
+                                    .on_click(move |_, _, cx| {
+                                        a_del.update(cx, |s, cx| s.delete_git_branch(b_d.clone(), cx));
+                                    }),
+                            );
+                        }
+                        sub
+                    });
+
+                    let label_str = if is_current {
+                        format!("{} (HEAD)", b_name)
+                    } else {
+                        b_name.clone()
+                    };
+
                     menu = menu.item(
-                        PopupMenuItem::new(SharedString::from(b_name.clone()))
-                            .checked(is_current)
-                            .on_click(move |_, _, cx| {
-                                let target = b_name.clone();
-                                app_sw.update(cx, |s, cx| {
-                                    s.switch_git_branch(target, cx);
-                                });
-                            }),
+                        PopupMenuItem::submenu(SharedString::from(label_str), sub_menu)
+                            .checked(is_current),
                     );
                 }
                 menu

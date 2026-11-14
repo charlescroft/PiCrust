@@ -629,15 +629,83 @@ impl AppState {
     pub fn switch_git_branch(&mut self, branch: String, cx: &mut Context<Self>) {
         let cwd = self.active_cwd.clone();
         let target = branch.clone();
-        std::thread::spawn(move || {
-            let _ = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&cwd)
-                .args(&["checkout", &target])
-                .output();
-        });
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            let _ = smol::unblock(move || {
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&cwd)
+                    .args(&["checkout", &target])
+                    .output()
+                    .ok()
+            })
+            .await;
+            let _ = entity.update(cx, |this, cx| {
+                this.active_branch = resolve_git_branch(&this.active_cwd);
+                cx.notify();
+            });
+        })
+        .detach();
         self.active_branch = Some(SharedString::from(branch));
         cx.notify();
+    }
+
+    pub fn git_pull(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
+        let cwd = self.active_cwd.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            let _ = smol::unblock(move || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.arg("-C").arg(&cwd).arg("pull");
+                if let Some(b) = branch {
+                    cmd.arg("origin").arg(b);
+                }
+                cmd.output().ok()
+            })
+            .await;
+            let _ = entity.update(cx, |this, cx| {
+                this.active_branch = resolve_git_branch(&this.active_cwd);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn git_push(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
+        let cwd = self.active_cwd.clone();
+        cx.spawn(async move |_, _| {
+            let _ = smol::unblock(move || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.arg("-C").arg(&cwd).arg("push");
+                if let Some(b) = branch {
+                    cmd.arg("origin").arg(b);
+                }
+                cmd.output().ok()
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    pub fn delete_git_branch(&mut self, branch: String, cx: &mut Context<Self>) {
+        let cwd = self.active_cwd.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            let _ = smol::unblock(move || {
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&cwd)
+                    .args(&["branch", "-D", &branch])
+                    .output()
+                    .ok()
+            })
+            .await;
+            let _ = entity.update(cx, |this, cx| {
+                this.active_branch = resolve_git_branch(&this.active_cwd);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn toggle_archive_session(&mut self, session_id: String, cx: &mut Context<Self>) {
@@ -4642,12 +4710,14 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.open_file_path = Some(path.clone());
-        self.open_file_diff_patch = diff_patch;
+        self.open_file_diff_patch = diff_patch.clone();
         self.open_right_tab(RightPanelTab::FileViewer, cx);
         let entity = cx.entity().clone();
+        let path_clone = path.clone();
+        let cwd_clone = self.active_cwd.clone();
         cx.spawn(async move |_, cx| {
-            let content = smol::unblock(move || {
-                match std::fs::read(&path) {
+            let (content, patch_result) = smol::unblock(move || {
+                let text = match std::fs::read(&path_clone) {
                     Ok(bytes) => {
                         if bytes.len() > 2 * 1024 * 1024 {
                             format!("File too large to preview ({} bytes)", bytes.len())
@@ -4657,11 +4727,34 @@ impl AppState {
                         }
                     }
                     Err(e) => format!("Failed to read file: {e}"),
-                }
+                };
+
+                let git_diff = if diff_patch.is_none() {
+                    let out = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&cwd_clone)
+                        .args(["diff", "HEAD", "--"])
+                        .arg(&path_clone)
+                        .output()
+                        .ok();
+                    out.and_then(|o| {
+                        if o.status.success() && !o.stdout.is_empty() {
+                            let s = String::from_utf8_lossy(&o.stdout).to_string();
+                            (!s.trim().is_empty()).then(|| SharedString::from(s))
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    diff_patch
+                };
+
+                (text, git_diff)
             })
             .await;
             let _ = entity.update(cx, |this, cx| {
                 this.open_file_content = SharedString::from(content);
+                this.open_file_diff_patch = patch_result;
                 cx.notify();
             });
         })
