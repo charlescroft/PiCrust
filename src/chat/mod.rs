@@ -91,11 +91,15 @@ impl ConversationScrollerState {
         if self.list_state.is_following_tail() {
             return false;
         }
-        if self.list_state.logical_scroll_top().item_ix >= self.list_state.item_count() {
+        if self.list_state.is_scrolled_to_end() == Some(true) {
+            return false;
+        }
+        let count = self.list_state.item_count();
+        if count <= 1 {
             return false;
         }
         self.list_state.max_offset_for_scrollbar().y > px(0.)
-            && self.list_state.is_scrolled_to_end() == Some(false)
+            || self.list_state.logical_scroll_top().item_ix < count.saturating_sub(1)
     }
 
     pub fn is_following_tail(&self) -> bool {
@@ -347,9 +351,10 @@ impl ChatPanel {
         self.scroller.update(cx, |s, cx| s.remeasure(cx));
     }
 
-    pub fn toggle_error_expanded(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+    pub fn toggle_error_expanded(&mut self, msg_id: u64, default_open: bool, cx: &mut Context<Self>) {
         if let Some(entry) = self.row_cache.get_mut(&msg_id) {
-            entry.error_expanded = !entry.error_expanded;
+            let cur = entry.error_expanded.unwrap_or(default_open);
+            entry.error_expanded = Some(!cur);
         }
         self.scroller.update(cx, |s, cx| s.remeasure(cx));
     }

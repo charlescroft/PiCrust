@@ -41,7 +41,7 @@ pub struct CachedRowEntities {
     pub expanded_compactions: HashMap<usize, bool>,
     pub expanded_tools: HashMap<SharedString, bool>,
     pub modified_files_open: Option<bool>,
-    pub error_expanded: bool,
+    pub error_expanded: Option<bool>,
     pub error_dismissed: bool,
     pub user_expanded: bool,
     pub subagent_notice_expanded: Option<bool>,
@@ -84,7 +84,7 @@ pub fn render_message_row(
             expanded_compactions: HashMap::new(),
             expanded_tools: HashMap::new(),
             modified_files_open: None,
-            error_expanded: false,
+            error_expanded: None,
             error_dismissed: false,
             user_expanded: false,
             subagent_notice_expanded: None,
@@ -1104,8 +1104,9 @@ fn render_assistant_row(
         let (code_opt, clean_summary) = parse_error_summary(err.as_ref());
         let err_copy = clean_summary.clone();
         let msg_id = msg.id;
-        let is_err_open = row_cache.error_expanded;
         let is_ctx_limit = is_context_limit_error(err.as_ref()) || is_context_limit_error(&clean_summary);
+        let default_err_open = is_ctx_limit;
+        let is_err_open = row_cache.error_expanded.unwrap_or(default_err_open);
         let is_compacting = app_state.read(cx).is_compacting;
         let app_cmp = app_state.clone();
 
@@ -1136,7 +1137,7 @@ fn render_assistant_row(
                     .justify_between()
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _, _, cx| {
-                        panel.toggle_error_expanded(msg_id, cx);
+                        panel.toggle_error_expanded(msg_id, default_err_open, cx);
                         cx.notify();
                     }))
                     .child(
@@ -1234,7 +1235,7 @@ fn render_assistant_row(
                             ),
                     ),
             )
-            .children((is_err_open || is_ctx_limit).then(|| {
+            .children((is_err_open).then(|| {
                 v_flex()
                     .w_full()
                     .px_3()
