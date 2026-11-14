@@ -4962,7 +4962,7 @@ impl AppState {
 
     fn record_assistant_error(&mut self, err: String) {
         if let Some(last) = self.messages.last_mut() {
-            if last.role == MessageRole::Assistant {
+            if last.role == MessageRole::Assistant && last.is_streaming {
                 last.is_streaming = false;
                 last.stop_reason = Some(SharedString::from("error"));
                 last.error_message = Some(SharedString::from(err));
@@ -5491,7 +5491,11 @@ impl AppState {
                             let _ = entity.update(cx, |this, cx| {
                                 if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
                                     m.error_message = Some(SharedString::from(err));
+                                    m.stop_reason = Some(SharedString::from("error"));
+                                    m.is_streaming = false;
+                                    m.timestamp = current_local_hhmm();
                                 }
+                                this.is_agent_running = false;
                                 cx.notify();
                             });
                             break;
@@ -5745,11 +5749,7 @@ impl AppState {
                         this.is_agent_running = true;
                     }
                     Err(err) => {
-                        // Restore text into composer on send failure & show clean inline error
-                        if this.messages.last().map(|m| m.id) == Some(msg_id) {
-                            this.messages.pop();
-                        }
-                        this.draft_restore_text = Some(text);
+                        this.is_agent_running = false;
                         this.record_assistant_error(err.to_string());
                     }
                 }

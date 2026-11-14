@@ -16,7 +16,7 @@ use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::{RangeHighlight, TextView, TextViewState, TextViewStyle};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _,
     IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
@@ -1020,47 +1020,6 @@ fn render_assistant_row(
                 }
             }
 
-            if let Some(err) = &msg.error_message {
-                let (_, clean_summary) = parse_error_summary(err.as_ref());
-                let err_copy = clean_summary.clone();
-                steps_stack = steps_stack.child(
-                    h_flex()
-                        .w_full()
-                        .px_2p5()
-                        .py_1p5()
-                        .gap_2()
-                        .items_center()
-                        .justify_between()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(cx.theme().danger.opacity(0.45))
-                        .bg(cx.theme().danger.opacity(0.12))
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_2()
-                                .items_center()
-                                .child(Icon::new(IconName::TriangleAlert).xsmall().text_color(cx.theme().danger))
-                                .child(div().flex_1().min_w_0().child(SharedString::from(clean_summary))),
-                        )
-                        .child(
-                            Button::new(("copy-proc-err", msg_id))
-                                .ghost()
-                                .xsmall()
-                                .h(px(22.))
-                                .icon(IconName::Copy)
-                                .label(tr(locale, "chat.copy"))
-                                .on_click(move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.write_to_clipboard(ClipboardItem::new_string(err_copy.clone()));
-                                }),
-                        ),
-                );
-            }
-
             process_container = process_container.child(steps_stack);
         }
 
@@ -1130,30 +1089,36 @@ fn render_assistant_row(
         );
     }
 
-    // 2b. Standalone provider error alert: ONLY if there was no process group to house it!
-    let err_text = (!has_process).then(|| {
-        msg.error_message.clone().or_else(|| {
-            if msg.stop_reason.as_deref() == Some("error") {
-                Some(SharedString::from("Model request failed"))
-            } else {
-                None
-            }
-        })
-    }).flatten();
-    let _old_err_text = {
-        None::<SharedString>
-    };
+    // 2b. Error card & Token limit truncation alerts:
+    //     ALWAYS rendered visibly in the assistant turn card right below the process / text blocks!
+    //     Never hidden inside collapsible process steps, and never suppressed by has_process.
+    let err_text = msg.error_message.clone().or_else(|| {
+        if msg.stop_reason.as_deref() == Some("error") {
+            Some(SharedString::from("Model request failed"))
+        } else {
+            None
+        }
+    });
+
     if let Some(err) = err_text.filter(|_| !row_cache.error_dismissed) {
         let (code_opt, clean_summary) = parse_error_summary(err.as_ref());
         let err_copy = clean_summary.clone();
         let msg_id = msg.id;
         let is_err_open = row_cache.error_expanded;
-        let header_title = match &code_opt {
-            Some(code) => format!("{} {code}", tr(locale, "chat.errorPrefix")),
-            None => tr(locale, "chat.errorPrefix").to_string(),
+        let is_ctx_limit = is_context_limit_error(err.as_ref()) || is_context_limit_error(&clean_summary);
+        let is_compacting = app_state.read(cx).is_compacting;
+        let app_cmp = app_state.clone();
+
+        let header_title = if is_ctx_limit {
+            tr(locale, "chat.contextLimitTitle").to_string()
+        } else {
+            match &code_opt {
+                Some(code) => format!("{} {code}", tr(locale, "chat.errorPrefix")),
+                None => tr(locale, "chat.errorPrefix").to_string(),
+            }
         };
 
-        let mut err_card = v_flex()
+        let err_card = v_flex()
             .w_full()
             .overflow_hidden()
             .rounded_md()
@@ -1199,14 +1164,39 @@ fn render_assistant_row(
                                     .text_xs()
                                     .truncate()
                                     .text_color(cx.theme().danger.opacity(0.8))
-                                    .child(tr(locale, "chat.errorDetailsToggle")),
+                                    .child(if is_ctx_limit {
+                                        SharedString::from(clean_summary.clone())
+                                    } else {
+                                        SharedString::from(tr(locale, "chat.errorDetailsToggle"))
+                                    }),
                             ),
                     )
                     .child(
                         h_flex()
                             .flex_shrink_0()
                             .items_center()
-                            .gap_1()
+                            .gap_1p5()
+                            .children(is_ctx_limit.then(|| {
+                                Button::new(("err-compact-btn", msg_id))
+                                    .outline()
+                                    .xsmall()
+                                    .h(px(24.))
+                                    .icon(if is_compacting {
+                                        IconName::LoaderCircle
+                                    } else {
+                                        IconName::Minimize
+                                    })
+                                    .label(if is_compacting {
+                                        tr(locale, "chat.compacting")
+                                    } else {
+                                        tr(locale, "chat.compactContext")
+                                    })
+                                    .disabled(is_compacting)
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        app_cmp.update(cx, |s, cx| s.trigger_compact(cx));
+                                    })
+                            }))
                             .child(
                                 Button::new(("copy-err", msg.id))
                                     .ghost()
@@ -1243,40 +1233,85 @@ fn render_assistant_row(
                                 .text_color(cx.theme().danger),
                             ),
                     ),
-            );
-
-        if is_err_open {
-            err_card = err_card.child(
-                div()
+            )
+            .children((is_err_open || is_ctx_limit).then(|| {
+                v_flex()
                     .w_full()
                     .px_3()
                     .py_2()
+                    .gap_1()
                     .border_t_1()
                     .border_color(cx.theme().danger.opacity(0.25))
                     .text_xs()
                     .line_height(rems(1.5))
                     .text_color(cx.theme().danger)
-                    .child(SharedString::from(clean_summary)),
-            );
-        }
+                    .children(is_ctx_limit.then(|| {
+                        div()
+                            .font_medium()
+                            .text_color(cx.theme().foreground)
+                            .child(tr(locale, "chat.contextLimitHint"))
+                    }))
+                    .child(SharedString::from(clean_summary))
+            }));
 
         stack = stack.child(err_card);
     } else if msg.stop_reason.as_deref() == Some("length") {
-        stack = stack.child(
-            h_flex()
-                .w_full()
-                .p_2p5()
-                .gap_2()
-                .items_center()
-                .rounded_md()
-                .border_1()
-                .border_color(cx.theme().warning.opacity(0.45))
-                .bg(cx.theme().warning.opacity(0.1))
-                .text_xs()
-                .text_color(cx.theme().warning)
-                .child(Icon::new(IconName::TriangleAlert).xsmall())
-                .child(tr(locale, "chat.truncatedNotice")),
-        );
+        let is_unanswered = !has_answer_text;
+        let is_compacting = app_state.read(cx).is_compacting;
+        let app_cmp = app_state.clone();
+        let notice_text = if is_unanswered {
+            tr(locale, "chat.truncatedWithoutAnswer")
+        } else {
+            tr(locale, "chat.truncatedByOutputLimit")
+        };
+        let trunc_card = v_flex()
+            .w_full()
+            .p_2p5()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().warning.opacity(0.45))
+            .bg(cx.theme().warning.opacity(0.1))
+            .text_xs()
+            .text_color(cx.theme().warning)
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .items_center()
+                            .child(Icon::new(IconName::TriangleAlert).xsmall())
+                            .child(div().flex_1().min_w_0().child(notice_text)),
+                    )
+                    .children(is_unanswered.then(|| {
+                        Button::new(("trunc-compact-btn", msg.id))
+                            .outline()
+                            .xsmall()
+                            .h(px(24.))
+                            .icon(if is_compacting {
+                                IconName::LoaderCircle
+                            } else {
+                                IconName::Minimize
+                            })
+                            .label(if is_compacting {
+                                tr(locale, "chat.compacting")
+                            } else {
+                                tr(locale, "chat.compactContext")
+                            })
+                            .disabled(is_compacting)
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                app_cmp.update(cx, |s, cx| s.trigger_compact(cx));
+                            })
+                    })),
+            );
+        stack = stack.child(trunc_card);
     } else if !is_turn_live && !has_answer_text && msg.stop_reason.as_deref() == Some("aborted") {
         stack = stack.child(
             div()
@@ -2389,6 +2424,29 @@ pub fn parse_error_summary(raw: &str) -> (Option<String>, String) {
     (code_opt, trimmed.to_string())
 }
 
+pub fn is_context_limit_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    (lower.contains("context")
+        && (lower.contains("length")
+            || lower.contains("window")
+            || lower.contains("limit")
+            || lower.contains("exceed")
+            || lower.contains("full")
+            || lower.contains("overflow")))
+        || (lower.contains("token")
+            && (lower.contains("limit")
+                || lower.contains("exceed")
+                || lower.contains("maximum")
+                || lower.contains("too many")
+                || lower.contains("too long")))
+        || lower.contains("prompt is too long")
+        || lower.contains("prompt_error")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("max_tokens")
+        || (lower.contains("达到") && lower.contains("上限"))
+        || (lower.contains("超出") && lower.contains("限制"))
+}
+
 fn usage_row(
     label: &'static str,
     value: SharedString,
@@ -2668,5 +2726,22 @@ mod modified_files_tests {
         assert_eq!(files.len(), 2, "two files summarised: {files:?}");
         assert!(files.iter().any(|f| f.path.ends_with("a.rs") && f.added > 0));
         assert!(files.iter().any(|f| f.path.ends_with("b.rs")));
+    }
+
+    #[test]
+    fn identifies_context_window_and_token_limit_errors() {
+        use super::is_context_limit_error;
+
+        assert!(is_context_limit_error("This model's maximum context length is 128000 tokens. However, your messages resulted in 135000 tokens."));
+        assert!(is_context_limit_error("prompt is too long: 205000 tokens > 200000 maximum"));
+        assert!(is_context_limit_error("Input tokens exceed context window limit: 128000"));
+        assert!(is_context_limit_error("400 Bad Request: context_length_exceeded"));
+        assert!(is_context_limit_error("prompt_error: context window overflow"));
+        assert!(is_context_limit_error("输入 token 达到模型上限"));
+
+        assert!(!is_context_limit_error("401 Unauthorized: Invalid API key"));
+        assert!(!is_context_limit_error("404 Not Found"));
+        assert!(!is_context_limit_error("500 Internal Server Error"));
+        assert!(!is_context_limit_error("Connection closed"));
     }
 }
