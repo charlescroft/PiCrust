@@ -1,6 +1,8 @@
 use crate::app_state::AppState;
 use crate::i18n::{format_commas, format_tokens_km, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     ClipboardItem, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _,
@@ -97,8 +99,9 @@ pub fn render_inspector_panel(
                     .compact()
                     .icon(IconName::Copy)
                     .tooltip(copy_tooltip)
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(sid_c.clone()));
+                        window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                     }),
             );
         }

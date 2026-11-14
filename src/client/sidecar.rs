@@ -15,14 +15,16 @@ impl SidecarProcess {
             return None;
         }
 
+        let active_port = find_available_port(port);
         let node_bin = resolve_node_binary();
         let mut cmd = Command::new(node_bin);
         cmd.arg(&sidecar_script)
             .current_dir(&repo_root)
             .env("PI_SIDECAR_HOST", "127.0.0.1")
-            .env("PI_SIDECAR_PORT", port.to_string())
+            .env("PI_SIDECAR_PORT", active_port.to_string())
             .env("PI_DESKTOP_API_TOKEN", &token)
             .env("PI_DESKTOP_INSTANCE_ID", &instance_id)
+            .env("PI_PARENT_PID", std::process::id().to_string())
             .env("PI_SIDECAR_BUNDLE", &bundle_path)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
@@ -30,7 +32,7 @@ impl SidecarProcess {
         match cmd.spawn() {
             Ok(child) => Some(Self {
                 child: Some(child),
-                port,
+                port: active_port,
                 token,
                 instance_id,
             }),
@@ -50,6 +52,21 @@ impl Drop for SidecarProcess {
             let _ = child.wait();
         }
     }
+}
+
+fn find_available_port(preferred: u16) -> u16 {
+    if std::net::TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
+        return preferred;
+    }
+    for offset in 1..=30 {
+        if std::net::TcpListener::bind(("127.0.0.1", preferred + offset)).is_ok() {
+            return preferred + offset;
+        }
+    }
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map(|addr| addr.port())
+        .unwrap_or(preferred)
 }
 
 fn resolve_node_binary() -> PathBuf {

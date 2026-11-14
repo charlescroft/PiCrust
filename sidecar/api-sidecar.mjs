@@ -28,6 +28,22 @@ const HOST = process.env.PI_SIDECAR_HOST || "127.0.0.1";
 const PORT = Number(process.env.PI_SIDECAR_PORT || "38471");
 const EXPECTED_TOKEN = process.env.PI_DESKTOP_API_TOKEN || "";
 const INSTANCE_ID = process.env.PI_DESKTOP_INSTANCE_ID || "";
+const PARENT_PID = process.env.PI_PARENT_PID ? parseInt(process.env.PI_PARENT_PID, 10) : null;
+
+// Auto-terminate when parent GPUI process exits to prevent orphaned processes and port collisions
+if (PARENT_PID && !isNaN(PARENT_PID)) {
+  const watchParent = () => {
+    try {
+      process.kill(PARENT_PID, 0);
+    } catch {
+      process.exit(0);
+    }
+  };
+  setInterval(watchParent, 2000).unref();
+}
+
+process.on("SIGTERM", () => process.exit(0));
+process.on("SIGINT", () => process.exit(0));
 
 async function loadSidecarBundle() {
   const mjsCandidate = join(piGpuiDir, "dist-sidecar", "server.mjs");

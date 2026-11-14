@@ -67,6 +67,7 @@ pub enum RightPanelTab {
     FileViewer,
     Terminal,
     Inspector,
+    GitGraph,
 }
 
 pub struct AppState {
@@ -365,6 +366,13 @@ impl AppState {
                     for msg in &messages {
                         artifacts.extend(extract_artifacts_from_markdown(&msg.content, sid_ref));
                     }
+                    let mut scanned_arts = crate::client::native_index::scan_all_local_artifacts(&sessions);
+                    for a in artifacts {
+                        if !scanned_arts.iter().any(|sa| sa.identifier == a.identifier) {
+                            scanned_arts.push(a);
+                        }
+                    }
+                    artifacts = scanned_arts;
                 }
             }
         }
@@ -882,6 +890,10 @@ impl AppState {
         } else {
             self.open_right_tab(tab, cx);
         }
+    }
+
+    pub fn toggle_git_graph(&mut self, cx: &mut Context<Self>) {
+        self.toggle_right_tab(RightPanelTab::GitGraph, cx);
     }
 
     pub fn close_right_tab(&mut self, tab: RightPanelTab, cx: &mut Context<Self>) {
@@ -3849,6 +3861,19 @@ impl AppState {
                 self.thinking_level = tl;
             }
             self.clamp_thinking_level_to_model();
+
+            let sid_ref = Some(session_id.as_str());
+            for msg in &self.messages {
+                for art in extract_artifacts_from_markdown(&msg.content, sid_ref) {
+                    if let Some(existing) = self.artifacts.iter_mut().find(|a| a.identifier == art.identifier) {
+                        existing.version += 1;
+                        existing.previous_content = Some(existing.content.clone());
+                        existing.content = art.content;
+                    } else {
+                        self.artifacts.push(art);
+                    }
+                }
+            }
         }
         cx.notify();
 

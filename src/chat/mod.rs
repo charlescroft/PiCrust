@@ -899,6 +899,7 @@ impl Render for ChatPanel {
                 };
 
                 div()
+                    .id(("chat-row", msg_clone.id))
                     .w_full()
                     .min_w_0()
                     .pt(if index == 0 { px(12.) } else { px(0.) })

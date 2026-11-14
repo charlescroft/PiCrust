@@ -270,7 +270,21 @@ pub fn render_status_bar(
                 menu
             });
 
-        bar = bar.left(Separator::vertical()).left(branch_button);
+        let app_graph = app_state.clone();
+        let graph_button = Button::new("sb-git-graph-btn")
+            .ghost()
+            .small()
+            .h(px(26.))
+            .icon(IconName::Network)
+            .label(tr(locale, "git.graph"))
+            .tooltip(tr(locale, "git.graphTooltip"))
+            .on_click(move |_, _, cx| {
+                app_graph.update(cx, |s, cx| {
+                    s.toggle_git_graph(cx);
+                });
+            });
+
+        bar = bar.left(Separator::vertical()).left(branch_button).left(graph_button);
     }
 
     bar.right(
@@ -306,7 +320,7 @@ pub fn render_status_bar(
     )
 }
 
-fn get_local_git_branches(cwd: &std::path::Path) -> Vec<String> {
+pub fn get_local_git_branches(cwd: &std::path::Path) -> Vec<String> {
     use std::process::Command;
     let Ok(out) = Command::new("git")
         .arg("-C")

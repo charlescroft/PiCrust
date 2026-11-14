@@ -15,6 +15,8 @@ use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::{RangeHighlight, TextView, TextViewState, TextViewStyle};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _,
@@ -305,8 +307,9 @@ fn render_user_row(
                 .h(px(24.))
                 .icon(IconName::Copy)
                 .label(tr(locale, "chat.copy"))
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                    window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                 }),
         )
         .child(
@@ -1082,8 +1085,9 @@ fn render_assistant_row(
                             .xsmall()
                             .icon(IconName::Copy)
                             .label("Copy")
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(code_str.clone()));
+                                window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                             }),
                     )
             });
@@ -1230,11 +1234,12 @@ fn render_assistant_row(
                                     .h(px(24.))
                                     .icon(IconName::Copy)
                                     .label(tr(locale, "chat.copy"))
-                                    .on_click(move |_, _, cx| {
+                                    .on_click(move |_, window, cx| {
                                         cx.stop_propagation();
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             err_copy.clone(),
                                         ));
+                                        window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                                     }),
                             )
                             .child(
@@ -1443,10 +1448,11 @@ fn render_assistant_row(
                                     .item(
                                         PopupMenuItem::new(tr(locale, "chat.copyTitle"))
                                             .icon(IconName::Copy)
-                                            .on_click(move |_, _, cx| {
+                                            .on_click(move |_, window, cx| {
                                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                                     title_cp.clone(),
                                                 ));
+                                                window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                                             }),
                                     )
                                 }),
@@ -1634,10 +1640,11 @@ fn render_assistant_row(
                                             .item(
                                                 PopupMenuItem::new(tr(locale, "chat.copyPath"))
                                                     .icon(IconName::Copy)
-                                                    .on_click(move |_, _, cx| {
+                                                    .on_click(move |_, window, cx| {
                                                         cx.write_to_clipboard(
                                                             ClipboardItem::new_string(p_cp.clone()),
                                                         );
+                                                        window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                                                     }),
                                             )
                                         }),
@@ -1664,8 +1671,9 @@ fn render_assistant_row(
                 .h(px(28.))
                 .icon(IconName::Copy)
                 .label(tr(locale, "chat.copy"))
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy_md.clone()));
+                    window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                 }),
         );
         if let Some(ref u) = msg.turn_usage {
@@ -1974,8 +1982,9 @@ fn render_tool_call_card(
                                     .xsmall()
                                     .icon(IconName::Copy)
                                     .label(tr(locale, "chat.copy"))
-                                    .on_click(move |_, _, cx| {
+                                    .on_click(move |_, window, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(cmd_copy.clone()));
+                                        window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                                     }),
                             ),
                     ),
@@ -2124,8 +2133,9 @@ fn render_tool_call_card(
                                     .xsmall()
                                     .icon(IconName::Copy)
                                     .label(tr(locale, "chat.copy"))
-                                    .on_click(move |_, _, cx| {
+                                    .on_click(move |_, window, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(copy_out.clone()));
+                                        window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                                     }),
                             ),
                     )
@@ -2606,9 +2616,10 @@ fn render_subagent_notice_card(
                         .xsmall()
                         .icon(IconName::Copy)
                         .tooltip(tr(locale, "chat.copy"))
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
                             cx.stop_propagation();
                             cx.write_to_clipboard(ClipboardItem::new_string(copy_body.clone()));
+                            window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                         }),
                 ),
         )

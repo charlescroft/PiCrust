@@ -613,7 +613,7 @@ impl ScheduledPageView {
             }
         }
 
-        let owner_banner = (!owner_status.owner).then(|| {
+        let owner_banner = (!owner_status.owner && owner_status.alive && owner_status.fresh).then(|| {
             let app_takeover = self.app_state.clone();
             h_flex()
                 .w_full()
@@ -639,6 +639,9 @@ impl ScheduledPageView {
                         .h(px(28.))
                         .label(tr(locale, "scheduled.takeOver"))
                         .on_click(move |_, _, cx| {
+                            let home = crate::client::native_index::user_home();
+                            let _ = std::fs::remove_file(home.join(".pi/agent/scheduled-tasks/scheduler.lock"));
+                            let _ = std::fs::remove_file(home.join(".pi/agent/scheduled-tasks/scheduler-lease.json"));
                             app_takeover.update(cx, |s, cx| {
                                 let client = s.client.clone();
                                 let ent = cx.entity().clone();

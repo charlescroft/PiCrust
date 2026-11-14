@@ -1,6 +1,7 @@
 pub mod artifact_panel;
 pub mod file_explorer;
 pub mod file_viewer;
+pub mod git_graph;
 pub mod inspector_panels;
 pub mod terminal_panel;
 
@@ -9,6 +10,7 @@ use crate::i18n::{AppLocale, tr};
 use crate::panels::artifact_panel::ArtifactPanelView;
 use crate::panels::file_explorer::FileExplorerPanel;
 use crate::panels::file_viewer::FileViewerView;
+use crate::panels::git_graph::GitGraphView;
 use crate::panels::inspector_panels::render_inspector_panel;
 use crate::panels::terminal_panel::TerminalHostView;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -27,6 +29,7 @@ pub struct WorkbenchPanel {
     file_explorer: Entity<FileExplorerPanel>,
     file_viewer: Entity<FileViewerView>,
     terminal: Entity<TerminalHostView>,
+    git_graph: Entity<GitGraphView>,
 }
 
 impl EventEmitter<PanelEvent> for WorkbenchPanel {}
@@ -75,6 +78,7 @@ fn tab_title(tab: RightPanelTab, file_name: Option<SharedString>, locale: AppLoc
             .unwrap_or_else(|| SharedString::from(tr(locale, "panel.filePreview"))),
         RightPanelTab::Terminal => SharedString::from(tr(locale, "panel.terminal")),
         RightPanelTab::Inspector => SharedString::from(tr(locale, "panel.session")),
+        RightPanelTab::GitGraph => SharedString::from(tr(locale, "git.graphTitle")),
     }
 }
 
@@ -85,6 +89,7 @@ fn tab_icon(tab: RightPanelTab) -> IconName {
         RightPanelTab::FileViewer => IconName::FileText,
         RightPanelTab::Terminal => IconName::SquareTerminal,
         RightPanelTab::Inspector => IconName::Inspector,
+        RightPanelTab::GitGraph => IconName::Network,
     }
 }
 
@@ -94,6 +99,7 @@ impl WorkbenchPanel {
         let file_explorer = cx.new(|cx| FileExplorerPanel::new(app_state.clone(), cx));
         let file_viewer = cx.new(|cx| FileViewerView::new(app_state.clone(), window, cx));
         let terminal = cx.new(|cx| TerminalHostView::new(app_state.clone(), cx));
+        let git_graph = cx.new(|cx| GitGraphView::new(app_state.clone(), window, cx));
 
         cx.observe(&app_state, |_, _, cx| cx.notify()).detach();
 
@@ -104,6 +110,7 @@ impl WorkbenchPanel {
             file_explorer,
             file_viewer,
             terminal,
+            git_graph,
         }
     }
 }
@@ -189,6 +196,7 @@ impl Render for WorkbenchPanel {
             RightPanelTab::Inspector => {
                 render_inspector_panel(&self.app_state, window, cx).into_any_element()
             }
+            RightPanelTab::GitGraph => div().size_full().child(self.git_graph.clone()).into_any_element(),
         };
 
         v_flex()

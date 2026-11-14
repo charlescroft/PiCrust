@@ -280,6 +280,27 @@ fn lease_file_path() -> PathBuf {
         .join("scheduler-lease.json")
 }
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+pub fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    unsafe {
+        let res = kill(pid as i32, 0);
+        if res == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(1)
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 /// Attempts to acquire or renew the scheduler lease for `ttl_ms` (default 90_000ms).
 pub fn try_acquire_scheduler_lease(ttl_ms: u64) -> bool {
     let now_ms = SystemTime::now()
@@ -294,7 +315,10 @@ pub fn try_acquire_scheduler_lease(ttl_ms: u64) -> bool {
         && existing.holder_pid != my_pid
         && existing.expires_at_ms > now_ms
     {
-        return false;
+        // Only yield if the holding process is genuinely still alive
+        if is_pid_alive(existing.holder_pid) {
+            return false;
+        }
     }
 
     let lease = SchedulerLease {

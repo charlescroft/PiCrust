@@ -274,6 +274,38 @@ fn extract_text_content(content: Option<&Value>) -> Option<String> {
     None
 }
 
+/// Fast local scanner across all session files to extract artifact records.
+pub fn scan_all_local_artifacts(sessions: &[SessionSummary]) -> Vec<crate::client::types::ArtifactRecord> {
+    use std::io::BufRead as _;
+    let mut all_artifacts: Vec<crate::client::types::ArtifactRecord> = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    for sess in sessions {
+        let Some(ref path_str) = sess.path else { continue; };
+        let path = std::path::Path::new(path_str);
+        let Ok(file) = std::fs::File::open(path) else { continue; };
+        let reader = std::io::BufReader::new(file);
+        for line in reader.lines().flatten() {
+            if line.contains(":::artifact") {
+                let sid = sess.id.as_str();
+                let arts = crate::client::session_controller::extract_artifacts_from_markdown(&line, Some(sid));
+                for mut art in arts {
+                    if let Some(existing) = all_artifacts.iter_mut().find(|a| a.identifier == art.identifier) {
+                        existing.version += 1;
+                        existing.previous_content = Some(existing.content.clone());
+                        existing.content = art.content;
+                        existing.updated_at = sess.updated_at.clone();
+                    } else if seen_ids.insert(art.identifier.clone()) {
+                        art.updated_at = sess.updated_at.clone();
+                        all_artifacts.push(art);
+                    }
+                }
+            }
+        }
+    }
+    all_artifacts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +345,9 @@ mod tests {
         let matches = fuzzy_search_files(&dir, "test.js", 10);
         assert_eq!(matches.len(), 1);
         assert!(matches[0].relative_path.ends_with("test.jsonl"));
+
+        let arts = scan_all_local_artifacts(&scanned);
+        assert_eq!(arts.len(), 0);
 
         let _ = fs::remove_dir_all(&dir);
     }
