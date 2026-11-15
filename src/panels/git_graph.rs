@@ -508,19 +508,26 @@ impl GitGraphView {
         )
         .detach();
 
-        let init_cwd = app_state.read(cx).active_cwd.clone();
-
         let app_obs = app_state.clone();
         cx.observe(&app_state, move |this, _, cx| {
             let state = app_obs.read(cx);
             let cur_cwd = state.active_cwd.clone();
             let has_git = state.active_branch.is_some();
+            let is_visible = state.right_panel_open
+                && state.right_panel_tab == crate::app_state::RightPanelTab::GitGraph;
             if this.last_loaded_cwd.as_ref() != Some(&cur_cwd) {
-                this.last_loaded_cwd = Some(cur_cwd);
                 this.selected_commit = None;
                 this.commit_files.clear();
                 this.file_preview = None;
-                this.reload_graph(cx);
+                if is_visible {
+                    this.last_loaded_cwd = Some(cur_cwd);
+                    this.reload_graph(cx);
+                } else {
+                    // Defer git log until user opens the GitGraph tab
+                    this.last_loaded_cwd = None;
+                    this.commits.clear();
+                    this.branches.clear();
+                }
             } else if !has_git && !this.commits.is_empty() {
                 this.commits.clear();
                 this.branches.clear();
@@ -532,7 +539,7 @@ impl GitGraphView {
         })
         .detach();
 
-        let mut view = Self {
+        Self {
             focus_handle: cx.focus_handle(),
             app_state,
             commits: Vec::new(),
@@ -548,11 +555,8 @@ impl GitGraphView {
             new_branch_input,
             new_tag_input,
             dialog_mode: None,
-            last_loaded_cwd: Some(init_cwd),
-        };
-
-        view.reload_graph(cx);
-        view
+            last_loaded_cwd: None,
+        }
     }
 
     pub fn reload_graph(&mut self, cx: &mut Context<Self>) {
@@ -570,6 +574,7 @@ impl GitGraphView {
             cx.notify();
             return;
         }
+        self.last_loaded_cwd = Some(cwd.clone());
 
         let branch_filter = if self.selected_branch == "all" {
             None
@@ -578,12 +583,17 @@ impl GitGraphView {
         };
 
         self.is_loading = true;
-        self.branches = crate::workspace::status_bar::get_local_git_branches(&cwd);
 
         cx.spawn(async move |this, cx| {
-            let res = load_git_graph_commits(&cwd, branch_filter.as_deref(), 300);
+            let (branches, res) = smol::unblock(move || {
+                let branches = crate::workspace::status_bar::get_local_git_branches(&cwd);
+                let res = load_git_graph_commits(&cwd, branch_filter.as_deref(), 300);
+                (branches, res)
+            })
+            .await;
             let _ = this.update(cx, |this, cx| {
                 this.is_loading = false;
+                this.branches = branches;
                 if let Ok(list) = res {
                     this.commits = list;
                     if let Some(ref sel) = this.selected_commit.clone() {
@@ -725,8 +735,13 @@ impl GitGraphView {
 
 impl Render for GitGraphView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let locale = self.app_state.read(cx).locale;
-        let is_git = self.app_state.read(cx).active_branch.is_some();
+        let (locale, is_git, cur_cwd) = {
+            let s = self.app_state.read(cx);
+            (s.locale, s.active_branch.is_some(), s.active_cwd.clone())
+        };
+        if is_git && !self.is_loading && self.last_loaded_cwd.as_ref() != Some(&cur_cwd) {
+            self.reload_graph(cx);
+        }
 
         let filtered_commits: Vec<&GitCommitRow> = self
             .commits

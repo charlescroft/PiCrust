@@ -56,13 +56,11 @@ impl FileExplorerPanel {
     pub fn new(app_state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         cx.observe(&tree_state, |_, _, cx| cx.notify()).detach();
-        let mut panel = Self {
+        Self {
             app_state,
             tree_state,
             loaded_cwd: None,
-        };
-        panel.reload(false, cx);
-        panel
+        }
     }
 
     pub fn reload(&mut self, force: bool, cx: &mut Context<Self>) {

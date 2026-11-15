@@ -274,19 +274,61 @@ fn extract_text_content(content: Option<&Value>) -> Option<String> {
     None
 }
 
-/// Fast local scanner across all session files to extract artifact records.
+/// Fast metadata-only signature for `~/.pi/agent/sessions/` so background polling
+/// avoids re-opening and JSON-parsing every session file when nothing changed on disk.
+pub fn sessions_dir_signature(root: &Path) -> (usize, u64) {
+    let Ok(project_dirs) = fs::read_dir(root) else {
+        return (0, 0);
+    };
+    let mut count = 0usize;
+    let mut acc = 0u64;
+    for dir_entry in project_dirs.flatten() {
+        let dir_path = dir_entry.path();
+        if !dir_path.is_dir() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&dir_path) else {
+            continue;
+        };
+        for file_entry in files.flatten() {
+            let file_path = file_entry.path();
+            if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            count += 1;
+            if let Ok(meta) = file_entry.metadata() {
+                acc = acc.wrapping_add(meta.len());
+                if let Ok(mt) = meta.modified() {
+                    if let Ok(d) = mt.duration_since(std::time::UNIX_EPOCH) {
+                        acc = acc.wrapping_add(d.as_secs());
+                    }
+                }
+            }
+        }
+    }
+    (count, acc)
+}
+
+/// Fast local scanner across recent session files to extract artifact records.
 pub fn scan_all_local_artifacts(sessions: &[SessionSummary]) -> Vec<crate::client::types::ArtifactRecord> {
     use std::io::BufRead as _;
     let mut all_artifacts: Vec<crate::client::types::ArtifactRecord> = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
+    let mut buf = Vec::with_capacity(8192);
 
-    for sess in sessions {
+    for sess in sessions.iter().take(30) {
         let Some(ref path_str) = sess.path else { continue; };
         let path = std::path::Path::new(path_str);
         let Ok(file) = std::fs::File::open(path) else { continue; };
-        let reader = std::io::BufReader::new(file);
-        for line in reader.lines().flatten() {
-            if line.contains(":::artifact") {
+        let mut reader = std::io::BufReader::new(file);
+        loop {
+            buf.clear();
+            let Ok(n) = reader.read_until(b'\n', &mut buf) else { break; };
+            if n == 0 {
+                break;
+            }
+            if buf.windows(11).any(|w| w == b":::artifact") {
+                let line = String::from_utf8_lossy(&buf);
                 let sid = sess.id.as_str();
                 let arts = crate::client::session_controller::extract_artifacts_from_markdown(&line, Some(sid));
                 for mut art in arts {

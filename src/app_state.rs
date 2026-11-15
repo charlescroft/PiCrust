@@ -2977,6 +2977,7 @@ impl AppState {
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
             let mut last_file_sig: Option<(String, u64, std::time::SystemTime)> = None;
+            let mut last_dir_sig: Option<(usize, u64)> = None;
             let mut scan_counter = 0usize;
             loop {
                 smol::Timer::after(std::time::Duration::from_millis(500)).await;
@@ -3061,16 +3062,29 @@ impl AppState {
                     }
                 }
 
-                // Periodic check for new sessions created in TUI / CLI (~every 3s) off the UI thread
+                // Periodic check for new sessions created in TUI / CLI (~every 3s) off the UI thread.
+                // Only re-parse session files when the directory metadata signature changes.
                 if scan_counter % 6 == 0 {
                     let root = pi_sessions_root();
-                    let scanned = smol::unblock(move || scan_local_sessions(&root)).await;
-                    let _ = entity.update(cx, |this, cx| {
-                        if !scanned.is_empty() && this.sessions.len() != scanned.len() {
-                            this.sessions = scanned;
-                            cx.notify();
+                    let prev_sig = last_dir_sig;
+                    let (sig, scanned_opt) = smol::unblock(move || {
+                        let sig = crate::client::native_index::sessions_dir_signature(&root);
+                        if prev_sig == Some(sig) {
+                            (sig, None)
+                        } else {
+                            (sig, Some(scan_local_sessions(&root)))
                         }
-                    });
+                    })
+                    .await;
+                    last_dir_sig = Some(sig);
+                    if let Some(scanned) = scanned_opt {
+                        let _ = entity.update(cx, |this, cx| {
+                            if !scanned.is_empty() && this.sessions.len() != scanned.len() {
+                                this.sessions = scanned;
+                                cx.notify();
+                            }
+                        });
+                    }
                 }
             }
         })
