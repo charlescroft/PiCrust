@@ -3456,8 +3456,6 @@ dependencies = [
 [[package]]
 name = "gpui_xterm"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fda19544c64fbbac99fbb0de8cdd67e540721d3c51fb8618761be156463d1aa6"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

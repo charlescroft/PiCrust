@@ -3097,8 +3097,16 @@ impl AppState {
                     let healthy = client.health().await.is_ok();
                     let _ = entity.update(cx, |this, cx| {
                         if healthy && !this.sidecar_connected {
+                            this.sidecar_connected = true;
                             this.refresh_from_sidecar(cx);
-                        } else if !healthy && this.sidecar_connected {
+                            cx.notify();
+                        } else if !healthy {
+                            if this.core_mode == "auto" {
+                                if let Some(ref mut sc) = this._sidecar {
+                                    sc.kill();
+                                }
+                                this._sidecar = None;
+                            }
                             this.sidecar_connected = false;
                             cx.notify();
                         }
@@ -3118,10 +3126,7 @@ impl AppState {
                 let mut alive = false;
                 let _ = entity.update(cx, |this, cx| {
                     alive = true;
-                    let liveness = this.current_worker_liveness();
-                    this.worker_manager.update_liveness(liveness);
-                    let _ = this.worker_manager.reclaim_if_idle();
-
+                    // Keep persistent long connection per user instruction; never terminate the worker for idle memory savings
                     // Native scheduler lease & due-task check when sidecar is not owning scheduler
                     if !this.sidecar_connected
                         && crate::engine::scheduler::try_acquire_scheduler_lease(90_000)

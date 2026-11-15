@@ -39,6 +39,7 @@ wry = { version = "0.53.3", package = "lb-wry" }
 gpui-component = { path = "patches/gpui-component" }
 gpui-fast-macos = { path = "patches/gpui-fast-macos" }
 gpui-pre-macos = { path = "patches/gpui-pre-macos" }
+gpui_xterm = { path = "patches/gpui_xterm" }
 
 [profile.release]
 panic = "abort"

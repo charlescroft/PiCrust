@@ -169,9 +169,12 @@ fn create_pty_session(
 
     let view = cx.new(|cx| {
         TerminalView::new(writer, reader, config, cx).with_resize_callback(move |cols, rows| {
+            if cols < 20 || rows < 5 {
+                return; // Guard against degenerate dimensions when tab is hidden, minimizing, or during layout passes
+            }
             let _ = master_for_resize.lock().resize(PtySize {
-                rows: rows as u16,
-                cols: cols as u16,
+                rows: rows.clamp(5, 500) as u16,
+                cols: cols.clamp(20, 500) as u16,
                 pixel_width: 0,
                 pixel_height: 0,
             });
@@ -225,7 +228,7 @@ fn terminal_config(dark: bool) -> TerminalConfig {
         rows: 24,
         font_family: default_terminal_font(),
         font_size: px(13.0),
-        scrollback: 10_000,
+        scrollback: 2_000,
         line_height_multiplier: 1.15,
         colors: terminal_palette(dark),
         ..Default::default()

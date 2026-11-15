@@ -26,6 +26,7 @@ impl SidecarProcess {
             .env("PI_DESKTOP_INSTANCE_ID", &instance_id)
             .env("PI_PARENT_PID", std::process::id().to_string())
             .env("PI_SIDECAR_BUNDLE", &bundle_path)
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
 
@@ -49,6 +50,13 @@ impl SidecarProcess {
             matches!(child.try_wait(), Ok(None))
         } else {
             false
+        }
+    }
+
+    pub fn kill(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

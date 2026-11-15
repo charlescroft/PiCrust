@@ -112,24 +112,9 @@ impl ScaleToZeroWorkerManager {
         Ok(url)
     }
 
-    /// Checks whether the worker has been idle for `idle_ttl` with `can_reclaim() == true`,
-    /// and if so, drops `SidecarProcess` (sending `SIGTERM` to reclaim Node.js memory to 0 MB).
+    /// Checks whether the worker has been idle for `idle_ttl`.
+    /// Disabled per user instruction: maintain persistent long connection without dropping sidecar.
     pub fn reclaim_if_idle(&self) -> bool {
-        let mut guard = match self.inner.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-        if guard.process.is_none() {
-            return false;
-        }
-        if !guard.liveness.can_reclaim() {
-            guard.last_active_at = Instant::now();
-            return false;
-        }
-        if guard.last_active_at.elapsed() >= guard.idle_ttl {
-            guard.process.take(); // Drop sends SIGTERM to spawned child
-            return true;
-        }
         false
     }
 

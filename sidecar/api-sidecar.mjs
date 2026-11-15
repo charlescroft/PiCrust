@@ -31,15 +31,22 @@ const INSTANCE_ID = process.env.PI_DESKTOP_INSTANCE_ID || "";
 const PARENT_PID = process.env.PI_PARENT_PID ? parseInt(process.env.PI_PARENT_PID, 10) : null;
 
 // Auto-terminate when parent GPUI process exits to prevent orphaned processes and port collisions
-if (PARENT_PID && !isNaN(PARENT_PID)) {
+if (process.platform === "win32") {
+  // On Windows, stdin pipe closure is the canonical, non-failing mechanism for child process exit
+  process.stdin.resume();
+  process.stdin.on("end", () => process.exit(0));
+  process.stdin.on("close", () => process.exit(0));
+} else if (PARENT_PID && !isNaN(PARENT_PID)) {
   const watchParent = () => {
     try {
       process.kill(PARENT_PID, 0);
-    } catch {
-      process.exit(0);
+    } catch (err) {
+      if (err.code === "ESRCH") {
+        process.exit(0);
+      }
     }
   };
-  setInterval(watchParent, 2000).unref();
+  setInterval(watchParent, 3000).unref();
 }
 
 process.on("SIGTERM", () => process.exit(0));

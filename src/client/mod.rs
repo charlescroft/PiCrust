@@ -61,7 +61,10 @@ pub struct PiDaemonClient {
 impl PiDaemonClient {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>, instance_id: impl Into<String>) -> Self {
         let http = Client::builder()
-            .connect_timeout(Duration::from_secs(5))
+            .no_proxy()
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .pool_idle_timeout(None)
+            .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| Client::new());
@@ -114,10 +117,9 @@ impl PiDaemonClient {
     }
 
     pub async fn health(&self) -> Result<Value> {
-        // Works with both Next.js server (/api/home) and standalone api-sidecar.mjs (/health)
-        match self.get_json("/api/home").await {
+        match self.get_json("/health").await {
             Ok(val) => Ok(val),
-            Err(_) => self.get_json("/health").await,
+            Err(_) => self.get_json("/api/home").await,
         }
     }
 
