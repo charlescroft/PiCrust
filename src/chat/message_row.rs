@@ -45,7 +45,6 @@ pub struct CachedRowEntities {
     pub expanded_tools: HashMap<SharedString, bool>,
     pub modified_files_open: Option<bool>,
     pub error_expanded: Option<bool>,
-    pub error_dismissed: bool,
     pub user_expanded: bool,
     pub subagent_notice_expanded: Option<bool>,
 }
@@ -90,7 +89,6 @@ pub fn render_message_row(
             expanded_tools: HashMap::new(),
             modified_files_open: None,
             error_expanded: None,
-            error_dismissed: false,
             user_expanded: false,
             subagent_notice_expanded: None,
         }
@@ -1129,7 +1127,7 @@ fn render_assistant_row(
         }
     });
 
-    if let Some(err) = err_text.filter(|_| !row_cache.error_dismissed) {
+    if let Some(err) = err_text {
         let (code_opt, clean_summary) = parse_error_summary(err.as_ref());
         let err_copy = clean_summary.clone();
         let msg_id = msg.id;
@@ -1241,18 +1239,6 @@ fn render_assistant_row(
                                         ));
                                         window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
                                     }),
-                            )
-                            .child(
-                                Button::new(("dismiss-err", msg.id))
-                                    .ghost()
-                                    .xsmall()
-                                    .h(px(24.))
-                                    .icon(IconName::Close)
-                                    .tooltip(tr(locale, "chat.dismissError"))
-                                    .on_click(cx.listener(move |panel, _, _, cx| {
-                                        cx.stop_propagation();
-                                        panel.dismiss_error(msg_id, cx);
-                                    })),
                             )
                             .child(
                                 Icon::new(if is_err_open {
