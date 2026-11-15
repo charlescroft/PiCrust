@@ -21,8 +21,6 @@ chmod +x "$MACOS_DIR/pi-gpui"
 
 if [[ -f "$SCRIPT_DIR/assets/icon.icns" ]]; then
   cp "$SCRIPT_DIR/assets/icon.icns" "$RESOURCES_DIR/icon.icns"
-elif [[ -f "$REPO_ROOT/src-tauri/icons/icon.icns" ]]; then
-  cp "$REPO_ROOT/src-tauri/icons/icon.icns" "$RESOURCES_DIR/icon.icns"
 fi
 
 if [[ -f "$SCRIPT_DIR/dist-sidecar/server.mjs" || -f "$SCRIPT_DIR/dist-sidecar/server.cjs" ]]; then

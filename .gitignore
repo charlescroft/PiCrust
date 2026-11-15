@@ -2,4 +2,6 @@
 /dist-macos
 /dist-windows
 /dist-linux
+dist-sidecar/server.cjs
 node_modules
+.DS_Store
