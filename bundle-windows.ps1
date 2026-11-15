@@ -13,7 +13,7 @@ if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
 New-Item -ItemType Directory -Path "$ScriptDir\dist-windows" -Force | Out-Null
 New-Item -ItemType Directory -Path "$OutputDir\resources\sidecar" -Force | Out-Null
 
-Copy-Item "$ScriptDir\target\x86_64-pc-windows-msvc\release\pi-gpui.exe" "$OutputDir\PiCrust.exe"
+Copy-Item "$ScriptDir\target\x86_64-pc-windows-msvc\release\PiCrust.exe" "$OutputDir\PiCrust.exe"
 Copy-Item "$OutputDir\PiCrust.exe" "$ScriptDir\dist-windows\PiCrust.exe" -Force
 
 if (Test-Path "$ScriptDir\dist-sidecar\server.mjs") {

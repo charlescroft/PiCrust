@@ -10,14 +10,14 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-echo "[pi-gpui] Building release binary..."
+echo "[picrust] Building release binary..."
 (cd "$SCRIPT_DIR" && cargo build --release)
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-cp "$SCRIPT_DIR/target/release/pi-gpui" "$MACOS_DIR/pi-gpui"
-chmod +x "$MACOS_DIR/pi-gpui"
+cp "$SCRIPT_DIR/target/release/PiCrust" "$MACOS_DIR/PiCrust"
+chmod +x "$MACOS_DIR/PiCrust"
 
 if [[ -f "$SCRIPT_DIR/assets/icon.icns" ]]; then
   cp "$SCRIPT_DIR/assets/icon.icns" "$RESOURCES_DIR/icon.icns"
@@ -39,17 +39,17 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>pi-gpui</string>
+  <string>PiCrust</string>
   <key>CFBundleIconFile</key>
   <string>icon.icns</string>
   <key>CFBundleIdentifier</key>
-  <string>works.earendil.pi-gpui</string>
+  <string>works.earendil.picrust</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
   <string>PiCrust</string>
   <key>CFBundleDisplayName</key>
-  <string>PiCrust (派壳)</string>
+  <string>PiCrust</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -67,6 +67,6 @@ PLIST
 codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 
-echo "[pi-gpui] macOS app bundle ready:"
+echo "[picrust] macOS app bundle ready:"
 du -sh "$APP_DIR"
-ls -lh "$MACOS_DIR/pi-gpui"
+ls -lh "$MACOS_DIR/PiCrust"

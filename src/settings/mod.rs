@@ -239,7 +239,7 @@ pub fn render_settings_overlay(
                         .w_full()
                         .overflow_hidden()
                         .child(
-                            Settings::new("pi-gpui-settings")
+                            Settings::new("picrust-settings")
                                 .sidebar_width(px(200.))
                                 .sidebar_size_range(px(170.)..px(250.))
                                 .with_group_variant(GroupBoxVariant::Outline)

@@ -6205,7 +6205,7 @@ impl AppState {
 
             let entity = cx.entity().clone();
             let reply_text = format!(
-                "Received (`{}`):\n\n> {}\n\nSidecar is not running yet. Build and start it via:\n```bash\nnode pi-gpui/sidecar/build-sidecar.mjs\nnode pi-gpui/sidecar/api-sidecar.mjs\n```",
+                "Received (`{}`):\n\n> {}\n\nSidecar is not running yet. Build and start it via:\n```bash\nnode sidecar/build-sidecar.mjs\nnode sidecar/api-sidecar.mjs\n```",
                 self.active_cwd.display(),
                 text.replace('\n', "\n> ")
             );
@@ -6915,7 +6915,7 @@ fn send_macos_bundle_notification(title: &str, body: &str, _with_sound: bool) ->
 
         let c_title = CString::new(title.replace('\0', "")).unwrap_or_default();
         let c_body = CString::new(body.replace('\0', "")).unwrap_or_default();
-        let id_str = format!("pi-gpui-{}", uuid::Uuid::new_v4());
+        let id_str = format!("picrust-{}", uuid::Uuid::new_v4());
         let c_id = CString::new(id_str).unwrap_or_default();
 
         let ns_title = msg1_cstr(nsstring_cls, sel(b"stringWithUTF8String:\0"), c_title.as_ptr());

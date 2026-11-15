@@ -1,9 +1,13 @@
 [package]
-name = "pi-gpui"
+name = "picrust"
 version = "1.0.0"
 edition = "2024"
 description = "Native GPUI Kit desktop client for Pi Agent"
 license = "Apache-2.0"
+
+[[bin]]
+name = "PiCrust"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

@@ -24,7 +24,7 @@ pub(crate) fn tokio_runtime() -> &'static tokio::runtime::Handle {
             .expect("build single-thread tokio http runtime");
         let handle = rt.handle().clone();
         std::thread::Builder::new()
-            .name("pi-gpui-http".to_string())
+            .name("picrust-http".to_string())
             .stack_size(512 * 1024)
             .spawn(move || {
                 rt.block_on(std::future::pending::<()>());

@@ -17,8 +17,8 @@ mkdir -p "$APPDIR/usr/bin" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
          "$APPDIR/usr/resources/sidecar"
 
-cp "$SCRIPT_DIR/target/release/pi-gpui" "$APPDIR/usr/bin/picrust"
-chmod +x "$APPDIR/usr/bin/picrust"
+cp "$SCRIPT_DIR/target/release/PiCrust" "$APPDIR/usr/bin/PiCrust"
+chmod +x "$APPDIR/usr/bin/PiCrust"
 
 if [ -f "$SCRIPT_DIR/assets/icon.png" ]; then
   cp "$SCRIPT_DIR/assets/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/picrust.png"
@@ -39,7 +39,7 @@ Type=Application
 Name=PiCrust
 GenericName=AI Coding Workbench
 Comment=The crispy, ultra-fast, GPU-native Rust crust baked for Pi Agent
-Exec=picrust %U
+Exec=PiCrust %U
 Icon=picrust
 Terminal=false
 Categories=Development;IDE;
@@ -54,7 +54,7 @@ HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="${HERE}/usr/bin:${PATH}"
 export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS}"
-exec "${HERE}/usr/bin/picrust" "$@"
+exec "${HERE}/usr/bin/PiCrust" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 
