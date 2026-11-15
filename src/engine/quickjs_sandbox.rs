@@ -320,6 +320,10 @@ mod tests {
 
     #[test]
     fn evaluates_js_and_invokes_host_file_tools_in_process() {
+        if !cfg!(target_os = "macos") {
+            // In-process JavaScriptCore framework is currently macOS-exclusive
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("pi-gpui-jsc-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 

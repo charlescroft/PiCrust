@@ -99,6 +99,8 @@ jobs:
             libvulkan-dev \
             vulkan-tools \
             libssl-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
             wget \
             file
 
