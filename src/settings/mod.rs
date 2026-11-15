@@ -8,7 +8,7 @@ use crate::app_state::AppState;
 use crate::i18n::{AppLocale, tr};
 use crate::settings::add_dialog::SettingsAddDialogView;
 use crate::settings::extensions_page::{
-    plugins_setting_page, skills_setting_page, subagents_setting_page,
+    antigravity_setting_page, plugins_setting_page, skills_setting_page, subagents_setting_page,
 };
 use crate::settings::general_page::general_setting_page;
 use crate::settings::mcp_page::mcp_setting_page;
@@ -160,6 +160,7 @@ pub fn render_settings_overlay(
         subagents_setting_page(app_state.clone(), locale, cx),
         skills_setting_page(app_state.clone(), locale, cx),
         plugins_setting_page(app_state.clone(), locale, cx),
+        antigravity_setting_page(app_state.clone(), locale, cx),
     ];
 
     div()
