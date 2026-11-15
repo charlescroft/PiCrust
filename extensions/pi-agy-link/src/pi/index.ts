@@ -801,36 +801,40 @@ export default function (pi: ExtensionAPI): void {
 
   let authWatchTimer: ReturnType<typeof setInterval> | null = null
 
+  function watchPoolAuthCompletion(): void {
+    if (authWatchTimer) {
+      clearInterval(authWatchTimer)
+      authWatchTimer = null
+    }
+    let checks = 0
+    authWatchTimer = setInterval(() => {
+      checks += 1
+      const st = services.poolAuth.status()
+      if (st.phase === 'done') {
+        if (authWatchTimer) {
+          clearInterval(authWatchTimer)
+          authWatchTimer = null
+        }
+        void services.quota.refreshAllQuotas(true).catch(() => undefined).finally(() => {
+          lastQuotaRefreshAt = Date.now()
+          publishAgyUi(lastUiCtx, services)
+        })
+      } else if (st.phase === 'error' || st.phase === 'idle' || checks >= 180) {
+        if (authWatchTimer) {
+          clearInterval(authWatchTimer)
+          authWatchTimer = null
+        }
+        publishAgyUi(lastUiCtx, services)
+      }
+    }, 1000)
+    authWatchTimer.unref?.()
+  }
+
   async function runAddAccount(ctx: ExtensionCommandContext): Promise<void> {
     const res = await services.poolAuth.begin()
     if (res.ok) {
       emitOutput(ctx, res.url ? `Opened Google OAuth in browser (${res.url}). Complete sign-in to add account.` : 'Google OAuth started.')
-      if (authWatchTimer) {
-        clearInterval(authWatchTimer)
-        authWatchTimer = null
-      }
-      let checks = 0
-      authWatchTimer = setInterval(() => {
-        checks += 1
-        const st = services.poolAuth.status()
-        if (st.phase === 'done') {
-          if (authWatchTimer) {
-            clearInterval(authWatchTimer)
-            authWatchTimer = null
-          }
-          void services.quota.refreshAllQuotas(true).catch(() => undefined).finally(() => {
-            lastQuotaRefreshAt = Date.now()
-            publishAgyUi(lastUiCtx, services)
-          })
-        } else if (st.phase === 'error' || st.phase === 'idle' || checks >= 180) {
-          if (authWatchTimer) {
-            clearInterval(authWatchTimer)
-            authWatchTimer = null
-          }
-          publishAgyUi(lastUiCtx, services)
-        }
-      }, 1000)
-      authWatchTimer.unref?.()
+      watchPoolAuthCompletion()
     } else {
       emitOutput(ctx, `Failed to start OAuth: ${res.error || res.code || 'unknown'}`, 'error')
     }
@@ -841,6 +845,7 @@ export default function (pi: ExtensionAPI): void {
     const res = await services.poolAuth.beginPrimary()
     if (res.ok) {
       emitOutput(ctx, 'Opened Google OAuth for primary account in browser.')
+      watchPoolAuthCompletion()
     } else {
       emitOutput(ctx, `Failed to start primary OAuth: ${res.error || res.code || 'unknown'}`, 'error')
     }

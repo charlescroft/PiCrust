@@ -794,6 +794,26 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                 let is_cooldown = acc.cooldown_until.is_some();
                 let is_reauth = acc.auth_required;
                 let is_system_home = acc.system_home;
+                let is_duplicate_email = acc
+                    .email
+                    .as_deref()
+                    .map(|e| {
+                        let norm = e.trim().to_lowercase();
+                        !norm.is_empty()
+                            && st
+                                .accounts
+                                .iter()
+                                .filter(|other| {
+                                    other
+                                        .email
+                                        .as_deref()
+                                        .map(|oe| oe.trim().to_lowercase() == norm)
+                                        .unwrap_or(false)
+                                })
+                                .count()
+                                > 1
+                    })
+                    .unwrap_or(false);
                 let is_details_open = details_id.as_deref() == Some(acc.id.as_str());
 
                 let acc_id_use = acc.id.clone();
@@ -801,6 +821,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                 let acc_id_det = acc.id.clone();
                 let acc_id_rm = acc.id.clone();
                 let app_use = app_state.clone();
+                let app_reauth = app_state.clone();
                 let app_toggle = app_state.clone();
                 let app_det = app_state.clone();
                 let app_rm = app_state.clone();
@@ -819,6 +840,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                         let acc_id_det = acc_id_det.clone();
                         let acc_id_rm = acc_id_rm.clone();
                         let app_use = app_use.clone();
+                        let app_reauth = app_reauth.clone();
                         let app_toggle = app_toggle.clone();
                         let app_det = app_det.clone();
                         let app_rm = app_rm.clone();
@@ -870,6 +892,9 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                             })
                                             .when(is_reauth, |el| {
                                                 el.child(Tag::danger().small().child("Reauth"))
+                                            })
+                                            .when(is_duplicate_email, |el| {
+                                                el.child(Tag::warning().small().child("Duplicate Login"))
                                             }),
                                     )
                                     .when(is_acc_deleting, |el| {
@@ -896,6 +921,21 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                             .items_center()
                                             .gap_1p5()
                                             .flex_shrink_0()
+                                            .when(is_system_home && (is_reauth || is_duplicate_email), |el| {
+                                                el.child(
+                                                    Button::new(("settings-agy-reauth-primary", idx))
+                                                        .outline()
+                                                        .small()
+                                                        .disabled(is_acc_deleting)
+                                                        .label("Re-login")
+                                                        .tooltip("Re-authenticate primary system account (Google OAuth)")
+                                                        .on_click(move |_, _, cx| {
+                                                            app_reauth.update(cx, |s, cx| {
+                                                                s.send_agy_command("/agy primary".to_string(), cx);
+                                                            });
+                                                        }),
+                                                )
+                                            })
                                             .when(!is_active && !is_disabled, |el| {
                                                 el.child(
                                                     Button::new(("settings-agy-use", idx))
