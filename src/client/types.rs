@@ -909,6 +909,53 @@ pub struct AgyLinkAccount {
     pub models: Vec<AgyLinkModelQuota>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLinkSettings {
+    #[serde(default = "default_agy_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub proxy_url: String,
+    #[serde(default = "default_agy_permission")]
+    pub permission_mode: String,
+    #[serde(default)]
+    pub default_effort: String,
+    #[serde(default)]
+    pub parallel_same_account: bool,
+    #[serde(default)]
+    pub max_concurrent: u32,
+    #[serde(default)]
+    pub dispatch_timeout_minutes: u32,
+    #[serde(default)]
+    pub dispatch_retries: u32,
+    #[serde(default)]
+    pub suppress_agy_auto_update: bool,
+}
+
+fn default_agy_mode() -> String {
+    "sequential".to_string()
+}
+
+fn default_agy_permission() -> String {
+    "skip".to_string()
+}
+
+impl Default for AgyLinkSettings {
+    fn default() -> Self {
+        Self {
+            mode: default_agy_mode(),
+            proxy_url: String::new(),
+            permission_mode: default_agy_permission(),
+            default_effort: String::new(),
+            parallel_same_account: false,
+            max_concurrent: 0,
+            dispatch_timeout_minutes: 0,
+            dispatch_retries: 0,
+            suppress_agy_auto_update: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgyLinkState {
@@ -920,6 +967,8 @@ pub struct AgyLinkState {
     pub active_account_id: Option<String>,
     #[serde(default)]
     pub accounts: Vec<AgyLinkAccount>,
+    #[serde(default)]
+    pub settings: AgyLinkSettings,
     #[serde(default)]
     pub updated_at: u64,
 }

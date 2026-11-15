@@ -713,6 +713,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
             .description("Manage Google Antigravity accounts, 5H/7D/Argon quotas, OAuth login, and per-account proxies."),
         );
 
+    let agy_loading = app_state.read(cx).agy_link_loading;
     if let Some(st) = agy_state {
         for (idx, acc) in st.accounts.into_iter().enumerate() {
             let email = acc.email.clone().unwrap_or_else(|| acc.alias.clone());
@@ -747,6 +748,24 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                 .description(desc),
             );
         }
+    } else {
+        group = group.item(
+            SettingItem::new(
+                "Loading Antigravity Pool",
+                SettingField::render(move |_, _, _| {
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Spinner::new().xsmall().icon(Icon::new(crate::icons::LoaderCircleIcon)))
+                        .child(
+                            div()
+                                .text_xs()
+                                .child(if agy_loading { "Refreshing…" } else { "Connecting…" }),
+                        )
+                }),
+            )
+            .description("Waiting for pi-agy-link extension to report account pool and quotas…"),
+        );
     }
 
     SettingPage::new("Antigravity")

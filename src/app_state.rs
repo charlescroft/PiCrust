@@ -226,7 +226,10 @@ pub struct AppState {
     pub agy_link_state: Option<AgyLinkState>,
     pub agy_link_status_text: Option<String>,
     pub agy_link_modal_open: bool,
+    pub agy_link_modal_tab: usize,
+    pub agy_link_loading: bool,
     pub agy_link_details_account_id: Option<String>,
+    pub agy_link_proxy_input: Option<Entity<gpui_kit::component::input::InputState>>,
 }
 
 impl AppState {
@@ -520,7 +523,10 @@ impl AppState {
             agy_link_state: None,
             agy_link_status_text: None,
             agy_link_modal_open: false,
+            agy_link_modal_tab: 0,
+            agy_link_loading: false,
             agy_link_details_account_id: None,
+            agy_link_proxy_input: None,
         };
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
@@ -5243,6 +5249,7 @@ impl AppState {
                             self.subagent_runs = runs;
                         }
                     } else if key == "agy-link-state" {
+                        self.agy_link_loading = false;
                         if lines.is_empty() {
                             self.agy_link_state = None;
                         } else if let Some(parsed) = crate::client::session_controller::parse_agy_link_widget_lines(&lines) {
@@ -5545,12 +5552,21 @@ impl AppState {
             return;
         };
         let client = self.client.clone();
+        self.agy_link_loading = true;
         self.status_banner = Some(SharedString::from(format!("Running {cmd}…")));
         cx.notify();
-        cx.spawn(async move |_, _| {
+        let app_weak = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
             let _ = client
                 .send_agent_command(&sid, json!({ "type": "prompt", "message": cmd }))
                 .await;
+            smol::Timer::after(std::time::Duration::from_secs(12)).await;
+            let _ = app_weak.update(cx, |s, cx| {
+                if s.agy_link_loading {
+                    s.agy_link_loading = false;
+                    cx.notify();
+                }
+            });
         })
         .detach();
     }

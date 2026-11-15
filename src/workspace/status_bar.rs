@@ -309,21 +309,38 @@ pub fn render_status_bar(
         h_flex()
             .items_center()
             .gap_2()
-            .children(agy_badge_label.map(|label| {
+            .child({
                 let app_agy = app_for_agy.clone();
-                Button::new("sb-agy-link")
-                    .ghost()
-                    .small()
-                    .h(px(26.))
-                    .icon(IconName::Bot)
-                    .label(SharedString::from(label))
-                    .tooltip("Open Antigravity (agy-link) Pool & Quotas")
-                    .on_click(move |_, _, cx| {
-                        app_agy.update(cx, |s, cx| {
-                            s.open_agy_link_modal(cx);
-                        });
-                    })
-            }))
+                if let Some(label) = agy_badge_label {
+                    Button::new("sb-agy-link")
+                        .ghost()
+                        .small()
+                        .h(px(26.))
+                        .icon(IconName::Bot)
+                        .label(SharedString::from(label))
+                        .tooltip("Open Antigravity (agy-link) Pool & Quotas")
+                        .on_click(move |_, _, cx| {
+                            app_agy.update(cx, |s, cx| {
+                                s.open_agy_link_modal(cx);
+                            });
+                        })
+                        .into_any_element()
+                } else {
+                    Button::new("sb-agy-link-loading")
+                        .ghost()
+                        .small()
+                        .h(px(26.))
+                        .loading(true)
+                        .label("AGY")
+                        .tooltip("Loading Antigravity (agy-link) Pool…")
+                        .on_click(move |_, _, cx| {
+                            app_agy.update(cx, |s, cx| {
+                                s.open_agy_link_modal(cx);
+                            });
+                        })
+                        .into_any_element()
+                }
+            })
             .child(
                 Button::new("sb-terminal")
                     .ghost()

@@ -48,6 +48,26 @@ pub fn format_compact_relative_time(raw: Option<&str>) -> SharedString {
     SharedString::from(format!("{}y", days / 365))
 }
 
+fn parse_timestamp_millis(val: Option<&Value>) -> Option<i64> {
+    let v = val?;
+    if let Some(ms) = v.as_i64() {
+        return Some(if ms > 10_000_000_000 { ms } else { ms * 1000 });
+    }
+    if let Some(f) = v.as_f64() {
+        let ms = f as i64;
+        return Some(if ms > 10_000_000_000 { ms } else { ms * 1000 });
+    }
+    if let Some(s) = v.as_str() {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+                return Some(dt.timestamp_millis());
+            }
+        }
+    }
+    None
+}
+
 pub fn format_timestamp_value(val: Option<&Value>) -> String {
     let Some(v) = val else {
         return String::new();
@@ -318,9 +338,33 @@ impl SessionTreeIndex {
         if self.entries.is_empty() {
             return (Vec::new(), Vec::new());
         }
-        let resolved_leaf = target_leaf_id.map(|id| self.resolve_leaf_from(id));
-        let (ordered_indices, siblings) =
-            self.build_branch_chain_and_siblings(resolved_leaf.as_deref());
+        let (ordered_indices, siblings) = if let Some(tid) = target_leaf_id {
+            let resolved_leaf = self.resolve_leaf_from(tid);
+            self.build_branch_chain_and_siblings(Some(&resolved_leaf))
+        } else {
+            // Show all messages across branches concatenated in chronological order
+            // so earlier conversation history is never hidden behind a branch switcher.
+            let mut last_ts: i64 = 0;
+            let mut indexed: Vec<(i64, usize)> = self
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(idx, val)| {
+                    let ts = parse_timestamp_millis(
+                        val.get("timestamp")
+                            .or_else(|| val.get("message").and_then(|m| m.get("timestamp"))),
+                    );
+                    if let Some(t) = ts {
+                        last_ts = t;
+                        (t, idx)
+                    } else {
+                        (last_ts, idx)
+                    }
+                })
+                .collect();
+            indexed.sort_by_key(|&(ts, idx)| (ts, idx));
+            (indexed.into_iter().map(|(_, idx)| idx).collect(), Vec::new())
+        };
 
         let mut messages = Vec::new();
         let mut entry_ids = Vec::new();
@@ -2106,13 +2150,13 @@ mod tests {
         assert_eq!(index.resolve_leaf_from("u2-branch-b"), "a2-branch-b");
 
         let mut next_id = 1;
-        let (msgs_b, siblings_b) = index.extract_messages_for_leaf(None, &mut next_id);
-        assert_eq!(msgs_b.len(), 4);
-        assert_eq!(msgs_b[2].content.as_str(), "Option B");
-        assert_eq!(msgs_b[3].content.as_str(), "Outcome B");
-        assert_eq!(siblings_b.len(), 2);
-        assert!(!siblings_b[0].active);
-        assert!(siblings_b[1].active);
+        let (msgs_all, siblings_all) = index.extract_messages_for_leaf(None, &mut next_id);
+        assert_eq!(msgs_all.len(), 6);
+        assert_eq!(msgs_all[2].content.as_str(), "Option A");
+        assert_eq!(msgs_all[3].content.as_str(), "Outcome A");
+        assert_eq!(msgs_all[4].content.as_str(), "Option B");
+        assert_eq!(msgs_all[5].content.as_str(), "Outcome B");
+        assert!(siblings_all.is_empty());
 
         let (msgs_a, siblings_a) =
             index.extract_messages_for_leaf(Some("u2-branch-a"), &mut next_id);
