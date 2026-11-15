@@ -231,6 +231,7 @@ pub struct AppState {
     pub agy_link_details_account_id: Option<String>,
     pub agy_link_proxy_input: Option<Entity<gpui_kit::component::input::InputState>>,
     pub settings_deleting_keys: std::collections::HashSet<String>,
+    pub suppress_next_prompt_reload: bool,
 }
 
 impl AppState {
@@ -529,6 +530,7 @@ impl AppState {
             agy_link_details_account_id: None,
             agy_link_proxy_input: None,
             settings_deleting_keys: std::collections::HashSet::new(),
+            suppress_next_prompt_reload: false,
         };
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
@@ -2688,32 +2690,68 @@ impl AppState {
         if let Some(provs) = config.get_mut("providers").and_then(Value::as_object_mut) {
             provs.remove(&provider_id);
         }
-        self.expanded_configured_providers.remove(&provider_id);
-        let _ = crate::client::local_store::save_models_config_local(&config);
-        self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
-        if self.sidecar_connected {
-            let client = self.client.clone();
-            let entity = cx.entity().clone();
-            cx.spawn(async move |_, cx| {
+        let disable_refs: Vec<String> = self
+            .enabled_models_overview
+            .providers
+            .iter()
+            .filter(|p| p.id == provider_id)
+            .flat_map(|p| p.models.iter().map(|m| m.model_ref.clone()))
+            .collect();
+
+        let sidecar_connected = self.sidecar_connected;
+        let client = self.client.clone();
+        let cwd_str = self.active_cwd.to_string_lossy().into_owned();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            smol::Timer::after(std::time::Duration::from_millis(250)).await;
+            let _ = crate::client::local_store::save_models_config_local(&config);
+            if !disable_refs.is_empty() {
+                let _ = crate::client::local_store::update_enabled_models_local(&json!({
+                    "op": "provider",
+                    "provider": provider_id,
+                    "enabled": false,
+                    "providerModels": disable_refs,
+                }));
+            }
+            if sidecar_connected {
                 let _ = client.put_models_config(config).await;
-                let _ = entity.update(cx, |s, cx| {
-                    s.settings_deleting_keys.remove(&del_key);
+                if !disable_refs.is_empty() {
+                    let _ = client
+                        .set_enabled_model(json!({
+                            "op": "provider",
+                            "provider": provider_id,
+                            "enabled": false,
+                            "cwd": cwd_str,
+                        }))
+                        .await;
+                }
+            }
+            let local_cfg = crate::client::local_store::read_models_config_local();
+            let _ = entity.update(cx, |s, cx| {
+                s.expanded_configured_providers.remove(&provider_id);
+                s.settings_deleting_keys.remove(&del_key);
+                for prov in &mut s.enabled_models_overview.providers {
+                    if prov.id == provider_id {
+                        for m in &mut prov.models {
+                            m.enabled = false;
+                        }
+                        prov.enabled_count = 0;
+                    }
+                }
+                for m in &mut s.models {
+                    if m.provider == provider_id {
+                        m.enabled = Some(false);
+                    }
+                }
+                s.apply_models_config_response(&local_cfg);
+                if sidecar_connected {
                     s.refresh_from_sidecar(cx);
-                });
-            })
-            .detach();
-        } else {
-            let entity = cx.entity().clone();
-            cx.spawn(async move |_, cx| {
-                smol::Timer::after(std::time::Duration::from_millis(250)).await;
-                let _ = entity.update(cx, |s, cx| {
-                    s.settings_deleting_keys.remove(&del_key);
+                } else {
                     cx.notify();
-                });
-            })
-            .detach();
-        }
-        cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn delete_model_from_configured_provider(
@@ -4380,6 +4418,14 @@ impl AppState {
                 }
             }
             AgentSseEvent::PromptDone | AgentSseEvent::AgentSettled => {
+                if self.suppress_next_prompt_reload {
+                    self.suppress_next_prompt_reload = false;
+                    self.is_agent_running = false;
+                    self.is_compacting = false;
+                    self.retry_status = None;
+                    cx.notify();
+                    return;
+                }
                 let was_running = self.is_agent_running;
                 self.is_agent_running = false;
                 self.is_compacting = false;
@@ -4483,7 +4529,10 @@ impl AppState {
                 if role == "user" {
                     if let Some(msg_val) = message.as_ref() {
                         let user_text = flatten_content_text(msg_val.get("content"));
-                        if !user_text.trim().is_empty() {
+                        if !user_text.trim().is_empty()
+                            && !user_text.trim_start().starts_with("/agy ")
+                            && user_text.trim() != "/agy"
+                        {
                             let already_present = self
                                 .messages
                                 .iter()
@@ -4880,7 +4929,10 @@ impl AppState {
                 if role == "user" {
                     if let Some(msg_val) = message.as_ref() {
                         let user_text = flatten_content_text(msg_val.get("content"));
-                        if !user_text.trim().is_empty() {
+                        if !user_text.trim().is_empty()
+                            && !user_text.trim_start().starts_with("/agy ")
+                            && user_text.trim() != "/agy"
+                        {
                             let already_present = self
                                 .messages
                                 .iter()
@@ -5594,6 +5646,7 @@ impl AppState {
         };
         let client = self.client.clone();
         self.agy_link_loading = true;
+        self.suppress_next_prompt_reload = true;
         self.status_banner = Some(SharedString::from(format!("Running {cmd}…")));
         cx.notify();
         let app_weak = cx.entity().downgrade();
@@ -5603,6 +5656,7 @@ impl AppState {
                 .await;
             smol::Timer::after(std::time::Duration::from_secs(12)).await;
             let _ = app_weak.update(cx, |s, cx| {
+                s.suppress_next_prompt_reload = false;
                 if s.agy_link_loading {
                     s.agy_link_loading = false;
                     cx.notify();

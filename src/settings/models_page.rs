@@ -406,7 +406,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                             .w(px(26.))
                                             .icon(Icon::new(TrashIcon))
                                             .text_color(cx.theme().danger)
-                                            .disabled(is_prov_deleting || !has_config)
+                                            .disabled(is_prov_deleting)
                                             .tooltip(tr(locale, "settings.deleteGroup"))
                                             .on_click(move |_, _, cx| {
                                                 app_del_prov.update(cx, |s, cx| {

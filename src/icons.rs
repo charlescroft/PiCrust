@@ -81,3 +81,12 @@ impl IconNamed for ArchiveIcon {
         gpui_kit::assets::IconName::Archive.path()
     }
 }
+
+#[derive(Clone, Copy)]
+pub struct ClockIcon;
+
+impl IconNamed for ClockIcon {
+    fn path(self) -> SharedString {
+        gpui_kit::assets::IconName::Clock.path()
+    }
+}

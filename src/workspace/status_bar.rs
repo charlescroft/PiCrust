@@ -331,7 +331,7 @@ pub fn render_status_bar(
                         .small()
                         .h(px(26.))
                         .loading(true)
-                        .label("AGY")
+                        .label("Loading AGY")
                         .tooltip("Loading Antigravity (agy-link) Pool…")
                         .on_click(move |_, _, cx| {
                             app_agy.update(cx, |s, cx| {
@@ -341,6 +341,7 @@ pub fn render_status_bar(
                         .into_any_element()
                 }
             })
+            .child(div().w(px(1.)).h(px(14.)).bg(cx.theme().border))
             .child(
                 Button::new("sb-terminal")
                     .ghost()

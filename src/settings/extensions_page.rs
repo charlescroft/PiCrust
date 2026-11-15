@@ -2,6 +2,7 @@ use crate::app_state::{AppState, SettingsAddKind};
 use crate::i18n::{AppLocale, format_commas, tr};
 use crate::settings::{SETTINGS_BTN_W, SETTINGS_DROPDOWN_W};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
@@ -684,7 +685,9 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                     let app_refresh = app_refresh.clone();
                     let app_clear_cd = app_clear_cd.clone();
                     h_flex()
-                        .gap_1p5()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
                         .flex_wrap()
                         .items_center()
                         .child(
@@ -725,8 +728,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                 }),
                         )
                 }),
-            )
-            .description("Manage Google Antigravity OAuth accounts, live 5H/7D/Argon quotas, and cooldown states."),
+            ),
         );
 
     if let Some(ref st) = agy_state {
@@ -752,10 +754,13 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
             for (idx, acc) in st.accounts.iter().enumerate() {
                 let email = acc.email.clone().unwrap_or_else(|| acc.alias.clone());
                 let tier_label = acc.tier.clone();
-                let q5 = acc.five_hour_pct.map(|p| format!("Gemini 5H: {p}%")).unwrap_or_else(|| "Gemini 5H: ?".to_string());
-                let q7 = acc.weekly_pct.map(|p| format!("Gemini 7D: {p}%")).unwrap_or_else(|| "Gemini 7D: ?".to_string());
-                let qa = acc.argon_pct.map(|p| format!(" · Argon 7D: {p}%")).unwrap_or_default();
-                let quota_desc = format!("{q5} · {q7}{qa}");
+                let mut quota_bars: Vec<(&'static str, &'static str, Option<i32>, Option<String>)> = vec![
+                    ("Gemini", "5H", acc.five_hour_pct, acc.five_hour_reset.clone()),
+                    ("Gemini", "7D", acc.weekly_pct, acc.weekly_reset.clone()),
+                ];
+                if acc.argon_pct.is_some() || acc.argon_reset.is_some() {
+                    quota_bars.push(("Argon", "7D", acc.argon_pct, acc.argon_reset.clone()));
+                }
 
                 let is_active = acc.active;
                 let is_disabled = acc.disabled;
@@ -781,7 +786,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                     SettingItem::render(move |_, _, cx| {
                         let email = email.clone();
                         let tier_label = tier_label.clone();
-                        let quota_desc = quota_desc.clone();
+                        let quota_bars = quota_bars.clone();
                         let acc_id_use = acc_id_use.clone();
                         let acc_id_toggle = acc_id_toggle.clone();
                         let acc_id_det = acc_id_det.clone();
@@ -791,19 +796,20 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                         let app_det = app_det.clone();
                         let app_rm = app_rm.clone();
 
-                        h_flex()
+                        v_flex()
                             .w_full()
-                            .justify_between()
-                            .items_center()
-                            .gap_3()
+                            .gap_2()
                             .py_1()
                             .child(
-                                v_flex()
-                                    .gap_1()
-                                    .min_w_0()
-                                    .flex_1()
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_center()
+                                    .gap_3()
                                     .child(
                                         h_flex()
+                                            .flex_1()
+                                            .min_w_0()
                                             .items_center()
                                             .gap_1p5()
                                             .flex_wrap()
@@ -830,104 +836,165 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                                 el.child(Tag::danger().small().child("Reauth"))
                                             }),
                                     )
+                                    .when(is_acc_deleting, |el| {
+                                        el.child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap_1p5()
+                                                .px_2()
+                                                .child(
+                                                    Spinner::new()
+                                                        .xsmall()
+                                                        .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("删除中…"),
+                                                ),
+                                        )
+                                    })
                                     .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(quota_desc),
+                                        h_flex()
+                                            .items_center()
+                                            .gap_1p5()
+                                            .flex_shrink_0()
+                                            .when(!is_active && !is_disabled, |el| {
+                                                el.child(
+                                                    Button::new(("settings-agy-use", idx))
+                                                        .outline()
+                                                        .small()
+                                                        .disabled(is_acc_deleting)
+                                                        .label("Use")
+                                                        .on_click(move |_, _, cx| {
+                                                            let id = acc_id_use.clone();
+                                                            app_use.update(cx, |s, cx| {
+                                                                s.send_agy_command(format!("/agy switch {id}"), cx);
+                                                            });
+                                                        }),
+                                                )
+                                            })
+                                            .child({
+                                                let btn = Button::new(("settings-agy-details", idx))
+                                                    .small()
+                                                    .disabled(is_acc_deleting)
+                                                    .label("Models")
+                                                    .on_click(move |_, _, cx| {
+                                                        let id = acc_id_det.clone();
+                                                        app_det.update(cx, |s, cx| {
+                                                            if s.agy_link_details_account_id.as_deref() == Some(id.as_str()) {
+                                                                s.agy_link_details_account_id = None;
+                                                            } else {
+                                                                s.agy_link_details_account_id = Some(id);
+                                                            }
+                                                            cx.notify();
+                                                        });
+                                                    });
+                                                if is_details_open { btn.primary() } else { btn.outline() }
+                                            })
+                                            .child(
+                                                Switch::new(("settings-agy-sw", idx))
+                                                    .checked(!is_disabled)
+                                                    .disabled(is_acc_deleting)
+                                                    .on_click(move |checked, _, cx| {
+                                                        let id = acc_id_toggle.clone();
+                                                        let cmd = if *checked {
+                                                            format!("/agy enable {id}")
+                                                        } else {
+                                                            format!("/agy disable {id}")
+                                                        };
+                                                        app_toggle.update(cx, |s, cx| s.send_agy_command(cmd, cx));
+                                                    }),
+                                            )
+                                            .when(!is_system_home, |el| {
+                                                el.child(
+                                                    Button::new(("settings-agy-remove", idx))
+                                                        .ghost()
+                                                        .small()
+                                                        .h(px(28.))
+                                                        .w(px(28.))
+                                                        .disabled(is_acc_deleting)
+                                                        .icon(Icon::new(crate::icons::TrashIcon))
+                                                        .text_color(cx.theme().danger)
+                                                        .on_click(move |_, _, cx| {
+                                                            let id = acc_id_rm.clone();
+                                                            let del_key = format!("agy:{id}");
+                                                            app_rm.update(cx, |s, cx| {
+                                                                s.settings_deleting_keys.insert(del_key);
+                                                                s.send_agy_command(format!("/agy remove {id}"), cx);
+                                                            });
+                                                        }),
+                                                )
+                                            }),
                                     ),
                             )
-                            .when(is_acc_deleting, |el| {
-                                el.child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap_1p5()
-                                        .px_2()
-                                        .child(
-                                            Spinner::new()
-                                                .xsmall()
-                                                .icon(Icon::new(crate::icons::LoaderCircleIcon)),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child("删除中…"),
-                                        ),
-                                )
-                            })
                             .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .flex_shrink_0()
-                                    .when(!is_active && !is_disabled, |el| {
-                                        el.child(
-                                            Button::new(("settings-agy-use", idx))
-                                                .outline()
-                                                .small()
-                                                .disabled(is_acc_deleting)
-                                                .label("Use")
-                                                .on_click(move |_, _, cx| {
-                                                    let id = acc_id_use.clone();
-                                                    app_use.update(cx, |s, cx| {
-                                                        s.send_agy_command(format!("/agy switch {id}"), cx);
-                                                    });
-                                                }),
-                                        )
-                                    })
-                                    .child({
-                                        let btn = Button::new(("settings-agy-details", idx))
-                                            .small()
-                                            .disabled(is_acc_deleting)
-                                            .label("Models")
-                                            .on_click(move |_, _, cx| {
-                                                let id = acc_id_det.clone();
-                                                app_det.update(cx, |s, cx| {
-                                                    if s.agy_link_details_account_id.as_deref() == Some(id.as_str()) {
-                                                        s.agy_link_details_account_id = None;
-                                                    } else {
-                                                        s.agy_link_details_account_id = Some(id);
-                                                    }
-                                                    cx.notify();
-                                                });
-                                            });
-                                        if is_details_open { btn.primary() } else { btn.outline() }
-                                    })
-                                    .child(
-                                        Switch::new(("settings-agy-sw", idx))
-                                            .checked(!is_disabled)
-                                            .disabled(is_acc_deleting)
-                                            .on_click(move |checked, _, cx| {
-                                                let id = acc_id_toggle.clone();
-                                                let cmd = if *checked {
-                                                    format!("/agy enable {id}")
-                                                } else {
-                                                    format!("/agy disable {id}")
-                                                };
-                                                app_toggle.update(cx, |s, cx| s.send_agy_command(cmd, cx));
-                                            }),
-                                    )
-                                    .when(!is_system_home, |el| {
-                                        el.child(
-                                            Button::new(("settings-agy-remove", idx))
-                                                .ghost()
-                                                .small()
-                                                .h(px(28.))
-                                                .w(px(28.))
-                                                .disabled(is_acc_deleting)
-                                                .icon(Icon::new(crate::icons::TrashIcon))
-                                                .text_color(cx.theme().danger)
-                                                .on_click(move |_, _, cx| {
-                                                    let id = acc_id_rm.clone();
-                                                    let del_key = format!("agy:{id}");
-                                                    app_rm.update(cx, |s, cx| {
-                                                        s.settings_deleting_keys.insert(del_key);
-                                                        s.send_agy_command(format!("/agy remove {id}"), cx);
-                                                    });
-                                                }),
-                                        )
-                                    }),
+                                v_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .pt_1()
+                                    .children(quota_bars.into_iter().enumerate().map(
+                                        |(qidx, (series, window_label, pct_opt, reset_opt))| {
+                                            let pct = pct_opt.unwrap_or(0).clamp(0, 100);
+                                            let pct_text = pct_opt
+                                                .map(|p| format!("{p}%"))
+                                                .unwrap_or_else(|| "—".to_string());
+                                            let reset_text = reset_opt
+                                                .as_deref()
+                                                .map(str::trim)
+                                                .filter(|s| !s.is_empty())
+                                                .unwrap_or("—")
+                                                .to_string();
+                                            v_flex()
+                                                .w_full()
+                                                .gap_1()
+                                                .child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .text_xs()
+                                                        .child(
+                                                            h_flex()
+                                                                .items_center()
+                                                                .gap_2()
+                                                                .child(
+                                                                    div()
+                                                                        .font_medium()
+                                                                        .text_color(cx.theme().foreground)
+                                                                        .child(series),
+                                                                )
+                                                                .child(
+                                                                    Tag::secondary()
+                                                                        .small()
+                                                                        .child(window_label),
+                                                                )
+                                                                .child(
+                                                                    h_flex()
+                                                                        .items_center()
+                                                                        .gap_1()
+                                                                        .text_color(cx.theme().muted_foreground)
+                                                                        .child(
+                                                                            Icon::new(crate::icons::ClockIcon)
+                                                                                .xsmall(),
+                                                                        )
+                                                                        .child(reset_text),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .font_medium()
+                                                                .text_color(cx.theme().foreground)
+                                                                .child(pct_text),
+                                                        ),
+                                                )
+                                                .child(
+                                                    Progress::new(("agy-quota-bar", idx * 10 + qidx))
+                                                        .value(pct as f32),
+                                                )
+                                        },
+                                    )),
                             )
                     }),
                 );
