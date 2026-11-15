@@ -11,7 +11,7 @@ on:
 
 jobs:
   macos:
-    name: Build macOS (Apple Silicon / Intel)
+    name: Build macOS (.app)
     runs-on: macos-latest
     steps:
       - name: Checkout Code
@@ -25,25 +25,25 @@ jobs:
         with:
           workspaces: pi-gpui
 
-      - name: Run Test Suite
+      - name: Run Tests
         run: |
           cd pi-gpui
           cargo test
 
-      - name: Build and Package macOS .app Bundle
+      - name: Build macOS .app Bundle
         run: |
           ./pi-gpui/bundle-macos.sh
           cd pi-gpui/dist-macos
-          tar -czf PiCrust-macos-universal.tar.gz "PiCrust.app"
+          zip -r -y "PiCrust-macos.zip" "PiCrust.app"
 
-      - name: Upload macOS Artifact
+      - name: Upload macOS .app Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PiCrust-macos
-          path: pi-gpui/dist-macos/PiCrust-macos-universal.tar.gz
+          name: PiCrust-macos-app
+          path: pi-gpui/dist-macos/PiCrust-macos.zip
 
   windows:
-    name: Build Windows (x86_64)
+    name: Build Windows (.exe)
     runs-on: windows-latest
     steps:
       - name: Checkout Code
@@ -64,40 +64,32 @@ jobs:
           cd pi-gpui
           cargo test
 
-      - name: Build Windows Binary
-        run: |
-          cd pi-gpui
-          cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Package Windows Portable ZIP
+      - name: Build Windows .exe & Package
         shell: pwsh
         run: |
-          $OutputDir = "pi-gpui/dist-windows/PiCrust"
-          New-Item -ItemType Directory -Path "$OutputDir/resources/sidecar" -Force | Out-Null
-          Copy-Item "pi-gpui/target/x86_64-pc-windows-msvc/release/pi-gpui.exe" "$OutputDir/PiCrust.exe"
-          if (Test-Path "pi-gpui/dist-sidecar/server.mjs") {
-            Copy-Item "pi-gpui/dist-sidecar/server.mjs" "$OutputDir/resources/sidecar/"
-          }
-          if (Test-Path "pi-gpui/sidecar/api-sidecar.mjs") {
-            Copy-Item "pi-gpui/sidecar/api-sidecar.mjs" "$OutputDir/resources/sidecar/"
-            Copy-Item "pi-gpui/sidecar/router-utils.mjs" "$OutputDir/resources/sidecar/"
-          }
-          Compress-Archive -Path "$OutputDir/*" -DestinationPath "pi-gpui/dist-windows/PiCrust-windows-x64.zip" -Force
+          cd pi-gpui
+          .\bundle-windows.ps1
 
-      - name: Upload Windows Artifact
+      - name: Upload Windows Standalone .exe
         uses: actions/upload-artifact@v4
         with:
-          name: PiCrust-windows-x64
+          name: PiCrust-windows-exe
+          path: pi-gpui/dist-windows/PiCrust.exe
+
+      - name: Upload Windows Bundle ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: PiCrust-windows-zip
           path: pi-gpui/dist-windows/PiCrust-windows-x64.zip
 
   linux:
-    name: Build Linux (x86_64)
+    name: Build Linux (.AppImage)
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install System Dependencies
+      - name: Install Linux System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -115,7 +107,9 @@ jobs:
             libwayland-dev \
             libvulkan-dev \
             vulkan-tools \
-            libssl-dev
+            libssl-dev \
+            wget \
+            file
 
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
@@ -130,28 +124,57 @@ jobs:
           cd pi-gpui
           cargo test
 
-      - name: Build Linux Binary
+      - name: Build Linux Standalone AppImage
         run: |
-          cd pi-gpui
-          cargo build --release
+          chmod +x pi-gpui/bundle-linux.sh
+          ./pi-gpui/bundle-linux.sh
 
-      - name: Package Linux Binary Archive
-        run: |
-          mkdir -p pi-gpui/dist-linux/PiCrust/resources/sidecar
-          cp pi-gpui/target/release/pi-gpui pi-gpui/dist-linux/PiCrust/picrust
-          chmod +x pi-gpui/dist-linux/PiCrust/picrust
-          if [ -f "pi-gpui/dist-sidecar/server.mjs" ]; then
-            cp pi-gpui/dist-sidecar/server.mjs pi-gpui/dist-linux/PiCrust/resources/sidecar/
-          fi
-          if [ -f "pi-gpui/sidecar/api-sidecar.mjs" ]; then
-            cp pi-gpui/sidecar/api-sidecar.mjs pi-gpui/dist-linux/PiCrust/resources/sidecar/
-            cp pi-gpui/sidecar/router-utils.mjs pi-gpui/dist-linux/PiCrust/resources/sidecar/
-          fi
-          cd pi-gpui/dist-linux
-          tar -czf PiCrust-linux-x86_64.tar.gz PiCrust/
-
-      - name: Upload Linux Artifact
+      - name: Upload Linux .AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: PiCrust-linux-x86_64
-          path: pi-gpui/dist-linux/PiCrust-linux-x86_64.tar.gz
+          name: PiCrust-linux-appimage
+          path: pi-gpui/dist-linux/PiCrust-x86_64.AppImage
+
+  release:
+    name: Create GitHub Release
+    needs: [macos, windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PiCrust-macos-app
+          path: release-assets
+
+      - name: Download Windows .exe
+        uses: actions/download-artifact@v4
+        with:
+          name: PiCrust-windows-exe
+          path: release-assets
+
+      - name: Download Windows ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: PiCrust-windows-zip
+          path: release-assets
+
+      - name: Download Linux .AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: PiCrust-linux-appimage
+          path: release-assets
+
+      - name: Publish Release with Assets (.app, .exe, .AppImage)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/PiCrust-macos.zip
+            release-assets/PiCrust.exe
+            release-assets/PiCrust-windows-x64.zip
+            release-assets/PiCrust-x86_64.AppImage
+          draft: false
+          prerelease: false
+          generate_release_notes: true

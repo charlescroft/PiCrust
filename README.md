@@ -119,20 +119,25 @@ cargo test --offline
 cargo run --release
 ```
 
-### Packaging macOS `.app` Release Bundle
+### Building Standalone Platform Artifacts
 
-To produce a self-contained, signed macOS application bundle:
-
+#### macOS (PiCrust.app)
 ```bash
-# From repository root
-./pi-gpui/bundle-macos.sh
+./bundle-macos.sh
+# Output: dist-macos/PiCrust.app (~26 MB)
 ```
 
-The output bundle will be generated at:
-```text
-pi-gpui/dist-macos/PiCrust.app  (~26 MB)
+#### Windows (PiCrust.exe)
+```powershell
+.\bundle-windows.ps1
+# Output: dist-windows/PiCrust.exe & dist-windows/PiCrust-windows-x64.zip
 ```
-You can drag `PiCrust.app` into `/Applications` and launch it directly.
+
+#### Linux (PiCrust-x86_64.AppImage)
+```bash
+./bundle-linux.sh
+# Output: dist-linux/PiCrust-x86_64.AppImage
+```
 
 ---
 

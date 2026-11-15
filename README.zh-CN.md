@@ -121,20 +121,25 @@ cargo test --offline
 cargo run --release
 ```
 
-### 打包 macOS 独立 `.app` 发布包
+### 多平台独立产物打包
 
-执行自带的打包脚本，即可一键生成独立自包含的 macOS 应用程序包：
-
+#### macOS 独立应用 (PiCrust.app)
 ```bash
-# 在仓库根目录下执行
-./pi-gpui/bundle-macos.sh
+./bundle-macos.sh
+# 产物生成于：dist-macos/PiCrust.app (约 26 MB)
 ```
 
-生成的应用程序位于：
-```text
-pi-gpui/dist-macos/PiCrust.app  (约 26 MB)
+#### Windows 可执行程序 (PiCrust.exe)
+```powershell
+.\bundle-windows.ps1
+# 产物生成于：dist-windows/PiCrust.exe 与 dist-windows/PiCrust-windows-x64.zip
 ```
-直接将 `PiCrust.app` 拖入 `/Applications` 文件夹即可独立双击运行。
+
+#### Linux 独立镜像 (PiCrust-x86_64.AppImage)
+```bash
+./bundle-linux.sh
+# 产物生成于：dist-linux/PiCrust-x86_64.AppImage
+```
 
 ---
 
