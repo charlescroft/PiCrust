@@ -192,6 +192,7 @@ pub struct AppState {
     pub skills: Vec<SkillRow>,
     pub plugins: Vec<PluginRow>,
     pub plugins_updating: bool,
+    pub settings_loading: bool,
     pub subagents: Vec<SubagentProfileRow>,
     pub subagent_built_in_enabled: bool,
     pub subagent_max_concurrent: usize,
@@ -497,6 +498,7 @@ impl AppState {
             skills: Vec::new(),
             plugins: Vec::new(),
             plugins_updating: false,
+            settings_loading: false,
             subagents: Vec::new(),
             subagent_built_in_enabled: true,
             subagent_max_concurrent: 4,
@@ -1797,6 +1799,7 @@ impl AppState {
                 if let Some(val) = plugins_val {
                     this.apply_plugins_response(&val);
                 }
+                this.settings_loading = false;
                 if let Some(val) = subagent_settings_val {
                     if let Some(en) = val.get("enabled").and_then(Value::as_bool) {
                         this.subagent_built_in_enabled = en;
@@ -6493,6 +6496,7 @@ impl AppState {
     }
 
     pub fn refresh_settings_data(&mut self, cx: &mut Context<Self>) {
+        self.settings_loading = true;
         let client = self.client.clone();
         let cwd_str = self.active_cwd.to_string_lossy().into_owned();
         let entity = cx.entity().clone();
@@ -6501,6 +6505,7 @@ impl AppState {
             if !health_ok {
                 let _ = entity.update(cx, |this, cx| {
                     this.sidecar_connected = false;
+                    this.settings_loading = false;
                     this.load_local_store_snapshot();
                     cx.notify();
                 });
@@ -6547,6 +6552,7 @@ impl AppState {
                 if let Some(val) = plugins_val {
                     this.apply_plugins_response(&val);
                 }
+                this.settings_loading = false;
                 if let Some(val) = proxy_val {
                     this.apply_network_proxy_response(&val);
                 }

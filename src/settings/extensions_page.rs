@@ -393,10 +393,20 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
         );
 
     if plugins.is_empty() {
-        group = group.item(SettingItem::new(
-            tr(locale, "settings.emptySidecar"),
-            SettingField::render(|_, _, _| Tag::secondary().small().child(SharedString::from("0"))),
-        ));
+        let is_loading = app_state.read(cx).settings_loading;
+        if is_loading {
+            group = group.item(SettingItem::new(
+                "Loading plugins…",
+                SettingField::render(|_, _, _| {
+                    Spinner::new().icon(Icon::new(crate::icons::LoaderCircleIcon))
+                }),
+            ));
+        } else {
+            group = group.item(SettingItem::new(
+                tr(locale, "settings.emptySidecar"),
+                SettingField::render(|_, _, _| Tag::secondary().small().child(SharedString::from("0"))),
+            ));
+        }
     } else {
         for (idx, p) in plugins.into_iter().enumerate() {
             let name = p.name.clone();
