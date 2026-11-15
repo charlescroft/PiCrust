@@ -147,11 +147,10 @@ pub fn render_settings_overlay(
     let progress = presence.progress;
 
     let app_close = app_state.clone();
-    let app_footer_close = app_state.clone();
     let app_footer_save = app_state.clone();
     let app_backdrop_close = app_state.clone();
 
-    let initial_page = app_state.read(cx).settings_initial_page.min(1);
+    let initial_page = app_state.read(cx).settings_initial_page.min(6);
 
     let pages = vec![
         general_setting_page(app_state.clone(), locale, cx),
@@ -222,6 +221,8 @@ pub fn render_settings_overlay(
                             Button::new("close-settings-btn")
                                 .ghost()
                                 .small()
+                                .h(px(36.))
+                                .w(px(36.))
                                 .icon(IconName::Close)
                                 .disabled(busy)
                                 .on_click(move |_, _, cx| {
@@ -275,25 +276,6 @@ pub fn render_settings_overlay(
                         } else {
                             None
                         })
-                        .child(
-                            Button::new("settings-footer-close")
-                                .ghost()
-                                .small()
-                                .h(px(28.))
-                                .w(SETTINGS_BTN_W)
-                                .icon(IconName::Close)
-                                .disabled(busy)
-                                .label(tr(locale, "scheduled.cancel"))
-                                .on_click(move |_, _, cx| {
-                                    app_footer_close.update(cx, |s, cx| {
-                                        if !s.settings_busy {
-                                            s.settings_open = false;
-                                            s.settings_add_kind = None;
-                                            cx.notify();
-                                        }
-                                    });
-                                }),
-                        )
                         .child(
                             Button::new("settings-footer-save")
                                 .primary()

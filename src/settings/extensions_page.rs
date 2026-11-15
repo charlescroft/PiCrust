@@ -6,8 +6,8 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
-use gpui_kit::{App, Entity, IntoElement as _, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::{App, Entity, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px};
 use gpui_kit::prelude::FluentBuilder as _;
 use serde_json::json;
 
@@ -684,21 +684,15 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                     let app_refresh = app_refresh.clone();
                     let app_clear_cd = app_clear_cd.clone();
                     h_flex()
-                        .gap_2()
+                        .gap_1p5()
+                        .flex_wrap()
                         .items_center()
-                        .when(agy_loading, |el| {
-                            el.child(
-                                Spinner::new()
-                                    .xsmall()
-                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
-                            )
-                        })
                         .child(
                             Button::new("settings-agy-add-oauth")
                                 .primary()
                                 .small()
                                 .icon(IconName::Plus)
-                                .label("Add Account (OAuth)")
+                                .label("Add Account")
                                 .on_click(move |_, _, cx| {
                                     app_add.update(cx, |s, cx| {
                                         s.send_agy_command("/agy add".to_string(), cx);
@@ -710,6 +704,8 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                 .outline()
                                 .small()
                                 .icon(IconName::RefreshCw)
+                                .loading(agy_loading)
+                                .disabled(agy_loading)
                                 .label("Refresh")
                                 .on_click(move |_, _, cx| {
                                     app_refresh.update(cx, |s, cx| {
@@ -733,8 +729,6 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
             .description("Manage Google Antigravity OAuth accounts, live 5H/7D/Argon quotas, and cooldown states."),
         );
 
-    let mut details_group: Option<SettingGroup> = None;
-
     if let Some(ref st) = agy_state {
         if let Some(ref reason) = st.dormant_reason {
             pool_group = pool_group.item(
@@ -752,37 +746,28 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                     "No Accounts",
                     SettingField::render(|_, _, _| Tag::secondary().small().child("Empty")),
                 )
-                .description("Click 'Add Account (OAuth)' above to sign in with a Google account."),
+                .description("Click 'Add Account' above to sign in with a Google account."),
             );
         } else {
             for (idx, acc) in st.accounts.iter().enumerate() {
                 let email = acc.email.clone().unwrap_or_else(|| acc.alias.clone());
+                let tier_label = acc.tier.clone();
                 let q5 = acc.five_hour_pct.map(|p| format!("Gemini 5H: {p}%")).unwrap_or_else(|| "Gemini 5H: ?".to_string());
                 let q7 = acc.weekly_pct.map(|p| format!("Gemini 7D: {p}%")).unwrap_or_else(|| "Gemini 7D: ?".to_string());
                 let qa = acc.argon_pct.map(|p| format!(" · Argon 7D: {p}%")).unwrap_or_default();
-                let status_str = if acc.auth_required {
-                    "Reauth required"
-                } else if acc.disabled {
-                    "Disabled"
-                } else if acc.cooldown_until.is_some() {
-                    "Cooldown"
-                } else if acc.active {
-                    "Active"
-                } else {
-                    "Ready"
-                };
-                let title = format!("{email} · {}", acc.tier);
-                let desc = format!("{q5} · {q7}{qa} · Status: {status_str}");
+                let quota_desc = format!("{q5} · {q7}{qa}");
+
+                let is_active = acc.active;
+                let is_disabled = acc.disabled;
+                let is_cooldown = acc.cooldown_until.is_some();
+                let is_reauth = acc.auth_required;
+                let is_system_home = acc.system_home;
+                let is_details_open = details_id.as_deref() == Some(acc.id.as_str());
 
                 let acc_id_use = acc.id.clone();
                 let acc_id_toggle = acc.id.clone();
                 let acc_id_det = acc.id.clone();
                 let acc_id_rm = acc.id.clone();
-                let is_active = acc.active;
-                let is_disabled = acc.disabled;
-                let is_system_home = acc.system_home;
-                let is_details_open = details_id.as_deref() == Some(acc.id.as_str());
-
                 let app_use = app_state.clone();
                 let app_toggle = app_state.clone();
                 let app_det = app_state.clone();
@@ -793,164 +778,159 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                     .contains(&format!("agy:{}", acc.id));
 
                 pool_group = pool_group.item(
-                    SettingItem::new(
-                        title,
-                        SettingField::render(move |_, _, cx| {
-                            let acc_id_use = acc_id_use.clone();
-                            let acc_id_toggle = acc_id_toggle.clone();
-                            let acc_id_det = acc_id_det.clone();
-                            let acc_id_rm = acc_id_rm.clone();
-                            let app_use = app_use.clone();
-                            let app_toggle = app_toggle.clone();
-                            let app_det = app_det.clone();
-                            let app_rm = app_rm.clone();
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .when(is_acc_deleting, |el| {
-                                    el.child(
+                    SettingItem::render(move |_, _, cx| {
+                        let email = email.clone();
+                        let tier_label = tier_label.clone();
+                        let quota_desc = quota_desc.clone();
+                        let acc_id_use = acc_id_use.clone();
+                        let acc_id_toggle = acc_id_toggle.clone();
+                        let acc_id_det = acc_id_det.clone();
+                        let acc_id_rm = acc_id_rm.clone();
+                        let app_use = app_use.clone();
+                        let app_toggle = app_toggle.clone();
+                        let app_det = app_det.clone();
+                        let app_rm = app_rm.clone();
+
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .gap_3()
+                            .py_1()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .child(
                                         h_flex()
                                             .items_center()
                                             .gap_1p5()
-                                            .px_2()
-                                            .child(
-                                                Spinner::new()
-                                                    .xsmall()
-                                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
-                                            )
+                                            .flex_wrap()
                                             .child(
                                                 div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("删除中…"),
-                                            ),
-                                    )
-                                })
-                                .child(if is_active {
-                                    Tag::primary().small().child("Active").into_any_element()
-                                } else {
-                                    Button::new(("settings-agy-use", idx))
-                                        .outline()
-                                        .small()
-                                        .disabled(is_acc_deleting || is_disabled)
-                                        .label("Use")
-                                        .on_click(move |_, _, cx| {
-                                            let id = acc_id_use.clone();
-                                            app_use.update(cx, |s, cx| {
-                                                s.send_agy_command(format!("/agy switch {id}"), cx);
-                                            });
-                                        })
-                                        .into_any_element()
-                                })
-                                .child(
-                                    Button::new(("settings-agy-enable", idx))
-                                        .ghost()
-                                        .small()
-                                        .disabled(is_acc_deleting)
-                                        .label(if is_disabled { "Enable" } else { "Disable" })
-                                        .on_click(move |_, _, cx| {
-                                            let id = acc_id_toggle.clone();
-                                            let cmd = if is_disabled {
-                                                format!("/agy enable {id}")
-                                            } else {
-                                                format!("/agy disable {id}")
-                                            };
-                                            app_toggle.update(cx, |s, cx| s.send_agy_command(cmd, cx));
-                                        }),
-                                )
-                                .child({
-                                    let btn = Button::new(("settings-agy-details", idx))
-                                        .small()
-                                        .disabled(is_acc_deleting)
-                                        .label(if is_details_open { "Hide Models" } else { "Models" })
-                                        .on_click(move |_, _, cx| {
-                                            let id = acc_id_det.clone();
-                                            app_det.update(cx, |s, cx| {
-                                                if s.agy_link_details_account_id.as_deref() == Some(id.as_str()) {
-                                                    s.agy_link_details_account_id = None;
-                                                } else {
-                                                    s.agy_link_details_account_id = Some(id);
-                                                }
-                                                cx.notify();
-                                            });
-                                        });
-                                    if is_details_open { btn.primary() } else { btn.outline() }
-                                })
-                                .when(!is_system_home, |el| {
-                                    el.child(
-                                        Button::new(("settings-agy-remove", idx))
-                                            .ghost()
-                                            .small()
-                                            .disabled(is_acc_deleting)
-                                            .icon(IconName::Delete)
-                                            .on_click(move |_, _, cx| {
-                                                let id = acc_id_rm.clone();
-                                                let del_key = format!("agy:{id}");
-                                                app_rm.update(cx, |s, cx| {
-                                                    s.settings_deleting_keys.insert(del_key);
-                                                    s.send_agy_command(format!("/agy remove {id}"), cx);
-                                                });
+                                                    .text_sm()
+                                                    .font_medium()
+                                                    .text_color(cx.theme().foreground)
+                                                    .child(email),
+                                            )
+                                            .when(!tier_label.is_empty(), |el| {
+                                                el.child(Tag::secondary().small().child(tier_label))
+                                            })
+                                            .when(is_active, |el| {
+                                                el.child(Tag::primary().small().child("Active"))
+                                            })
+                                            .when(is_disabled, |el| {
+                                                el.child(Tag::secondary().small().child("Disabled"))
+                                            })
+                                            .when(!is_disabled && is_cooldown, |el| {
+                                                el.child(Tag::warning().small().child("Cooldown"))
+                                            })
+                                            .when(is_reauth, |el| {
+                                                el.child(Tag::danger().small().child("Reauth"))
                                             }),
                                     )
-                                })
-                        }),
-                    )
-                    .description(desc),
-                );
-
-                if is_details_open {
-                    let app_close_det = app_state.clone();
-                    let mut dg = SettingGroup::new()
-                        .title(format!("Sub-models & Quotas: {email}"))
-                        .item(
-                            SettingItem::new(
-                                format!("Tier: {} · Priority: {}", acc.tier, acc.priority),
-                                SettingField::render(move |_, _, _| {
-                                    let app_close_det = app_close_det.clone();
-                                    Button::new("settings-agy-close-det")
-                                        .outline()
-                                        .small()
-                                        .label("Close")
-                                        .on_click(move |_, _, cx| {
-                                            app_close_det.update(cx, |s, cx| {
-                                                s.agy_link_details_account_id = None;
-                                                cx.notify();
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(quota_desc),
+                                    ),
+                            )
+                            .when(is_acc_deleting, |el| {
+                                el.child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .px_2()
+                                        .child(
+                                            Spinner::new()
+                                                .xsmall()
+                                                .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("删除中…"),
+                                        ),
+                                )
+                            })
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .flex_shrink_0()
+                                    .when(!is_active && !is_disabled, |el| {
+                                        el.child(
+                                            Button::new(("settings-agy-use", idx))
+                                                .outline()
+                                                .small()
+                                                .disabled(is_acc_deleting)
+                                                .label("Use")
+                                                .on_click(move |_, _, cx| {
+                                                    let id = acc_id_use.clone();
+                                                    app_use.update(cx, |s, cx| {
+                                                        s.send_agy_command(format!("/agy switch {id}"), cx);
+                                                    });
+                                                }),
+                                        )
+                                    })
+                                    .child({
+                                        let btn = Button::new(("settings-agy-details", idx))
+                                            .small()
+                                            .disabled(is_acc_deleting)
+                                            .label("Models")
+                                            .on_click(move |_, _, cx| {
+                                                let id = acc_id_det.clone();
+                                                app_det.update(cx, |s, cx| {
+                                                    if s.agy_link_details_account_id.as_deref() == Some(id.as_str()) {
+                                                        s.agy_link_details_account_id = None;
+                                                    } else {
+                                                        s.agy_link_details_account_id = Some(id);
+                                                    }
+                                                    cx.notify();
+                                                });
                                             });
-                                        })
-                                }),
+                                        if is_details_open { btn.primary() } else { btn.outline() }
+                                    })
+                                    .child(
+                                        Switch::new(("settings-agy-sw", idx))
+                                            .checked(!is_disabled)
+                                            .disabled(is_acc_deleting)
+                                            .on_click(move |checked, _, cx| {
+                                                let id = acc_id_toggle.clone();
+                                                let cmd = if *checked {
+                                                    format!("/agy enable {id}")
+                                                } else {
+                                                    format!("/agy disable {id}")
+                                                };
+                                                app_toggle.update(cx, |s, cx| s.send_agy_command(cmd, cx));
+                                            }),
+                                    )
+                                    .when(!is_system_home, |el| {
+                                        el.child(
+                                            Button::new(("settings-agy-remove", idx))
+                                                .ghost()
+                                                .small()
+                                                .h(px(28.))
+                                                .w(px(28.))
+                                                .disabled(is_acc_deleting)
+                                                .icon(Icon::new(crate::icons::TrashIcon))
+                                                .text_color(cx.theme().danger)
+                                                .on_click(move |_, _, cx| {
+                                                    let id = acc_id_rm.clone();
+                                                    let del_key = format!("agy:{id}");
+                                                    app_rm.update(cx, |s, cx| {
+                                                        s.settings_deleting_keys.insert(del_key);
+                                                        s.send_agy_command(format!("/agy remove {id}"), cx);
+                                                    });
+                                                }),
+                                        )
+                                    }),
                             )
-                            .description(format!(
-                                "Proxy: {} · {} official sub-models",
-                                acc.proxy_url.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("system / direct"),
-                                acc.models.len()
-                            )),
-                        );
-                    for m in &acc.models {
-                        let pct = m.percentage;
-                        let reset = m.reset_time.clone().unwrap_or_default();
-                        dg = dg.item(
-                            SettingItem::new(
-                                m.name.clone(),
-                                SettingField::render(move |_, _, _| {
-                                    let label = format!("{pct}%");
-                                    if pct > 50 {
-                                        Tag::primary().small().child(label).into_any_element()
-                                    } else if pct > 20 {
-                                        Tag::warning().small().child(label).into_any_element()
-                                    } else {
-                                        Tag::danger().small().child(label).into_any_element()
-                                    }
-                                }),
-                            )
-                            .description(if reset.is_empty() {
-                                "Quota remaining".to_string()
-                            } else {
-                                format!("Resets: {reset}")
-                            }),
-                        );
-                    }
-                    details_group = Some(dg);
-                }
+                    }),
+                );
             }
         }
     } else {
@@ -1066,7 +1046,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
         (SharedString::from("high"), SharedString::from("High")),
     ];
 
-    let mut model_group = SettingGroup::new()
+    let model_group = SettingGroup::new()
         .title("Model Display & Thinking")
         .item(
             SettingItem::new(
@@ -1113,50 +1093,116 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
             .description("Default reasoning effort level passed to effort-capable Antigravity models."),
         );
 
-    if let Some(ref st) = agy_state {
-        for model_id in &st.available_models {
-            let mid_read = model_id.clone();
-            let mid_write = model_id.clone();
-            let app_hm_r = app_state.clone();
-            let app_hm_w = app_state.clone();
-            model_group = model_group.item(
-                SettingItem::new(
-                    format!("Show {model_id}"),
-                    SettingField::switch(
-                        move |cx: &App| {
-                            !app_hm_r
-                                .read(cx)
-                                .agy_link_state
-                                .as_ref()
-                                .map(|s| s.settings.hidden_models.iter().any(|h| h == &mid_read))
-                                .unwrap_or(false)
-                        },
-                        move |visible: bool, cx: &mut App| {
-                            app_hm_w.update(cx, |s, cx| {
-                                let mut list = s
-                                    .agy_link_state
-                                    .as_ref()
-                                    .map(|st| st.settings.hidden_models.clone())
-                                    .unwrap_or_default();
-                                if visible {
-                                    list.retain(|h| h != &mid_write);
-                                } else if !list.iter().any(|h| h == &mid_write) {
-                                    list.push(mid_write.clone());
-                                }
-                                let arg = if list.is_empty() {
-                                    "clear".to_string()
-                                } else {
-                                    list.join(",")
-                                };
-                                s.send_agy_command(format!("/agy hidden-models {arg}"), cx);
-                            });
-                        },
-                    ),
+    let visibility_models = agy_state
+        .as_ref()
+        .map(|s| s.available_models.clone())
+        .unwrap_or_default();
+    let hidden_models_snapshot = agy_state
+        .as_ref()
+        .map(|s| s.settings.hidden_models.clone())
+        .unwrap_or_default();
+    let app_hm_w = app_state.clone();
+
+    let visibility_group = SettingGroup::new()
+        .title("Model Visibility")
+        .item(SettingItem::render(move |_, _, cx| {
+            let models = visibility_models.clone();
+            let hidden = hidden_models_snapshot.clone();
+            let app_hm_w = app_hm_w.clone();
+
+            v_flex()
+                .w_full()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .overflow_hidden()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .bg(cx.theme().muted)
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(div().flex_1().child("Model ID"))
+                        .child(div().w(px(84.)).child("Status"))
+                        .child(div().w(px(64.)).text_right().child("Visible")),
                 )
-                .description("Include this model in the model selector."),
-            );
-        }
-    }
+                .child(
+                    div()
+                        .id("agy-model-visibility-table")
+                        .w_full()
+                        .max_h(px(240.))
+                        .overflow_y_scroll()
+                        .when(models.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .px_3()
+                                    .py_4()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("No models discovered yet. Refresh the account pool above."),
+                            )
+                        })
+                        .children(models.into_iter().enumerate().map(|(idx, model_id)| {
+                            let is_hidden = hidden.iter().any(|h| h == &model_id);
+                            let mid_write = model_id.clone();
+                            let app_hm_w = app_hm_w.clone();
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .px_3()
+                                .py_2()
+                                .when(idx > 0, |el| el.border_t_1().border_color(cx.theme().border))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(cx.theme().foreground)
+                                        .child(model_id),
+                                )
+                                .child(
+                                    div().w(px(84.)).child(if is_hidden {
+                                        Tag::secondary().small().child("Hidden").into_any_element()
+                                    } else {
+                                        Tag::primary().small().child("Shown").into_any_element()
+                                    }),
+                                )
+                                .child(
+                                    h_flex().w(px(64.)).justify_end().child(
+                                        Switch::new(("settings-agy-vis-sw", idx))
+                                            .checked(!is_hidden)
+                                            .on_click(move |visible, _, cx| {
+                                                let mid = mid_write.clone();
+                                                app_hm_w.update(cx, |s, cx| {
+                                                    let mut list = s
+                                                        .agy_link_state
+                                                        .as_ref()
+                                                        .map(|st| st.settings.hidden_models.clone())
+                                                        .unwrap_or_default();
+                                                    if *visible {
+                                                        list.retain(|h| h != &mid);
+                                                    } else if !list.iter().any(|h| h == &mid) {
+                                                        list.push(mid);
+                                                    }
+                                                    let arg = if list.is_empty() {
+                                                        "clear".to_string()
+                                                    } else {
+                                                        list.join(",")
+                                                    };
+                                                    s.send_agy_command(format!("/agy hidden-models {arg}"), cx);
+                                                });
+                                            }),
+                                    ),
+                                )
+                        })),
+                )
+        }));
 
     // 4. Image Generation
     let mut img_model_options = vec![(
@@ -1439,14 +1485,12 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
             .description("Prevent agy CLI background auto-updater from spawning extra child processes."),
         );
 
-    let mut page = SettingPage::new("Antigravity")
+    SettingPage::new("Antigravity")
         .icon(IconName::Bot)
-        .group(pool_group);
-    if let Some(dg) = details_group {
-        page = page.group(dg);
-    }
-    page.group(rotation_group)
+        .group(pool_group)
+        .group(rotation_group)
         .group(model_group)
+        .group(visibility_group)
         .group(image_group)
         .group(exec_group)
 }
