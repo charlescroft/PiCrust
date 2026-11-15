@@ -2,11 +2,9 @@
 
 <img src="assets/icon.png" alt="PiCrust Icon" width="128" height="128" style="margin-bottom: 12px;" />
 
-# 🥧 PiCrust (派壳)
+# 🥧 PiCrust
 
 **The crispy, ultra-fast, GPU-native Rust crust baked for Pi Agent — bite into a slice of pure coding speed.**
-
-*为 Pi 烘焙的一层酥脆、极速、GPU 硬件加速的原生 Rust 外壳，轻咬一口，代码即成。*
 
 <br/>
 
@@ -16,7 +14,7 @@
 [![Bundle Size](https://img.shields.io/badge/Bundle%20Size-~26%20MB-brightgreen.svg?style=flat-square)](#benchmark--performance)
 [![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20MIT-blue.svg?style=flat-square)](#license)
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [Chinese](README.zh-CN.md)
 
 </div>
 
@@ -24,18 +22,18 @@
 
 ## 🚀 Overview
 
-**PiCrust (派壳)** is a next-generation desktop workbench for agentic AI coding. While modern AI code editors (Cursor, Windsurf, VS Code forks) rely on heavy Chromium/Electron runtimes that consume **1GB–2GB of memory** on startup, PiCrust is built from the ground up in **pure Rust** using Zed's high-performance **GPUI** framework.
+**PiCrust** is a next-generation desktop workbench for agentic AI coding. While modern AI code editors (Cursor, Windsurf, VS Code forks) rely on heavy Chromium/Electron runtimes that consume **1GB–2GB of memory** on startup, PiCrust is built from the ground up in **pure Rust** using Zed's high-performance **GPUI** framework.
 
 It delivers **120 FPS butter-smooth rendering**, hardware-accelerated typography, native PTY terminal virtualization, an integrated **Git Graph** DAG visualizer, and a full-featured agentic coding environment—all packed into a tiny **26 MB standalone bundle** that uses **under 80 MB of RAM**.
 
-> **🥧 What is PiCrust (派壳)?**  
-> Just like the crispy, golden crust that holds a pie together, **PiCrust (派壳)** provides a rock-solid, ultra-fast, GPU-accelerated native Rust shell for your AI coding agent. It cuts through latency like a hot knife through butter, giving you instant 0ms responses without the bloat of web technologies.
+> **🥧 What is PiCrust?**  
+> Just like the crispy, golden crust that holds a pie together, **PiCrust** provides a rock-solid, ultra-fast, GPU-accelerated native Rust shell for your AI coding agent. It cuts through latency like a hot knife through butter, giving you instant 0ms responses without the bloat of web technologies.
 
 ---
 
 ## ⚡ Key Highlights & Competitive Edge
 
-| Feature | PiCrust (派壳) | Electron / Chromium IDEs | VS Code Extensions |
+| Feature | PiCrust | Electron / Chromium IDEs | VS Code Extensions |
 | :--- | :--- | :--- | :--- |
 | **GUI Framework** | **GPUI 0.9.1 (Metal / GPU Native)** | Chromium WebView / DOM | Webview Iframe inside Electron |
 | **Startup Memory** | **~75 MB** | 800 MB – 1.8 GB | Bound to host editor (~1 GB+) |
@@ -90,8 +88,8 @@ It delivers **120 FPS butter-smooth rendering**, hardware-accelerated typography
 
 ```bash
 # Clone the repository
-git clone https://github.com/earendil-works/pi-agent-desktop.git
-cd pi-agent-desktop/pi-gpui
+git clone https://github.com/charlescroft/picrust.git
+cd picrust
 
 # Run test suite (38 unit & integration tests)
 cargo test --offline
@@ -151,7 +149,7 @@ Key configuration options include:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│                    PiCrust (派壳)                           │
+│                       PiCrust                               │
 │                                                             │
 │  ┌───────────────────────┐       ┌───────────────────────┐  │
 │  │     WorkspaceView     │       │     ChatPanel         │  │

@@ -90,8 +90,8 @@
 
 ```bash
 # 克隆代码仓库
-git clone https://github.com/earendil-works/pi-agent-desktop.git
-cd pi-agent-desktop/pi-gpui
+git clone https://github.com/charlescroft/picrust.git
+cd picrust
 
 # 执行单元与集成测试（共 38 项自动化测试）
 cargo test --offline
