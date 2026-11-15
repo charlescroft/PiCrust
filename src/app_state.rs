@@ -5742,23 +5742,38 @@ impl AppState {
     }
 
     pub fn copy_agy_auth_url(&mut self, cx: &mut Context<Self>) {
-        if let Some(url) = self
-            .agy_link_state
-            .as_ref()
-            .and_then(|s| s.pending_auth_url.as_ref())
-            .filter(|u| !u.trim().is_empty())
-            .cloned()
-        {
-            cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(url));
-            self.agy_link_copy_auth_url_pending = false;
-            self.agy_link_auth_copied = true;
-            self.status_banner = Some(SharedString::from("Copied Google OAuth login link to clipboard."));
-            cx.notify();
-            return;
+        self.copy_agy_command_auth_url("/agy auth-url", false, cx);
+    }
+
+    pub fn copy_agy_relogin_url(&mut self, account_id: &str, is_system_home: bool, cx: &mut Context<Self>) {
+        let cmd = if is_system_home {
+            "/agy primary-url".to_string()
+        } else {
+            format!("/agy reauth-url {account_id}")
+        };
+        self.copy_agy_command_auth_url(&cmd, true, cx);
+    }
+
+    pub fn copy_agy_command_auth_url(&mut self, cmd: &str, force_new: bool, cx: &mut Context<Self>) {
+        if !force_new {
+            if let Some(url) = self
+                .agy_link_state
+                .as_ref()
+                .and_then(|s| s.pending_auth_url.as_ref())
+                .filter(|u| !u.trim().is_empty())
+                .cloned()
+            {
+                cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(url));
+                self.agy_link_copy_auth_url_pending = false;
+                self.agy_link_auth_copied = true;
+                self.status_banner = Some(SharedString::from("Copied Google OAuth login link to clipboard."));
+                cx.notify();
+                return;
+            }
         }
         self.agy_link_copy_auth_url_pending = true;
         self.agy_link_auth_copied = false;
-        self.send_agy_command("/agy auth-url".to_string(), cx);
+        self.send_agy_command(cmd.to_string(), cx);
     }
 
     pub fn sync_agy_selected_model_visibility(&mut self, cx: &mut Context<Self>) {

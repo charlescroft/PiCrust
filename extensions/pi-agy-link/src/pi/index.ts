@@ -560,7 +560,7 @@ export default function (pi: ExtensionAPI): void {
       if (sub === 'add') return await runAddAccount(ctx)
       if (sub === 'auth-url') {
         const st = services.poolAuth.status()
-        if (st.phase === 'waiting' && st.url) {
+        if (st.phase === 'waiting' && st.url && st.stagingId !== 'acc_primary') {
           publishAgyUi(ctx, services)
           emitOutput(ctx, st.url)
           return
@@ -568,6 +568,34 @@ export default function (pi: ExtensionAPI): void {
         return await runAddAccount(ctx)
       }
       if (sub === 'primary') return await runPrimaryAuth(ctx)
+      if (sub === 'primary-url') {
+        const st = services.poolAuth.status()
+        if (st.phase === 'waiting' && st.url && st.stagingId === 'acc_primary') {
+          publishAgyUi(ctx, services)
+          emitOutput(ctx, st.url)
+          return
+        }
+        return await runPrimaryAuth(ctx)
+      }
+      if ((sub === 'reauth' || sub === 'reauth-url') && rest[0]) {
+        const target = findAccount(rest[0])
+        if (!target) {
+          emitOutput(ctx, `Account not found: ${rest[0]}`, 'error')
+          return
+        }
+        if (target.systemHome || !target.dir) {
+          return await runPrimaryAuth(ctx)
+        }
+        const res = await services.poolAuth.beginAccount(target.id)
+        if (res.ok) {
+          emitOutput(ctx, res.url ? `Opened Google OAuth for ${target.email || target.alias} (${res.url}).` : 'Google OAuth started.')
+          watchPoolAuthCompletion()
+        } else {
+          emitOutput(ctx, `Failed to start OAuth: ${res.error || res.code || 'unknown'}`, 'error')
+        }
+        publishAgyUi(ctx, services)
+        return
+      }
       if (sub === 'details' || sub === 'models') return showDetails(ctx, rest[0])
       if (sub === 'switch' && rest[0]) {
         const target = findAccount(rest[0])

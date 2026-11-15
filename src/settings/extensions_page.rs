@@ -817,11 +817,14 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                 let is_details_open = details_id.as_deref() == Some(acc.id.as_str());
 
                 let acc_id_use = acc.id.clone();
+                let acc_id_reauth = acc.id.clone();
+                let acc_id_reauth_copy = acc.id.clone();
                 let acc_id_toggle = acc.id.clone();
                 let acc_id_det = acc.id.clone();
                 let acc_id_rm = acc.id.clone();
                 let app_use = app_state.clone();
                 let app_reauth = app_state.clone();
+                let app_reauth_copy = app_state.clone();
                 let app_toggle = app_state.clone();
                 let app_det = app_state.clone();
                 let app_rm = app_state.clone();
@@ -836,11 +839,14 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                         let tier_label = tier_label.clone();
                         let quota_bars = quota_bars.clone();
                         let acc_id_use = acc_id_use.clone();
+                        let acc_id_reauth = acc_id_reauth.clone();
+                        let acc_id_reauth_copy = acc_id_reauth_copy.clone();
                         let acc_id_toggle = acc_id_toggle.clone();
                         let acc_id_det = acc_id_det.clone();
                         let acc_id_rm = acc_id_rm.clone();
                         let app_use = app_use.clone();
                         let app_reauth = app_reauth.clone();
+                        let app_reauth_copy = app_reauth_copy.clone();
                         let app_toggle = app_toggle.clone();
                         let app_det = app_det.clone();
                         let app_rm = app_rm.clone();
@@ -921,17 +927,38 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                             .items_center()
                                             .gap_1p5()
                                             .flex_shrink_0()
-                                            .when(is_system_home && (is_reauth || is_duplicate_email), |el| {
+                                            .when(is_reauth || (is_system_home && is_duplicate_email), |el| {
+                                                let relogin_cmd = if is_system_home {
+                                                    "/agy primary".to_string()
+                                                } else {
+                                                    format!("/agy reauth {}", acc_id_reauth)
+                                                };
                                                 el.child(
                                                     Button::new(("settings-agy-reauth-primary", idx))
                                                         .outline()
                                                         .small()
                                                         .disabled(is_acc_deleting)
                                                         .label("Re-login")
-                                                        .tooltip("Re-authenticate primary system account (Google OAuth)")
+                                                        .tooltip("Re-authenticate this account (Google OAuth)")
                                                         .on_click(move |_, _, cx| {
+                                                            let cmd = relogin_cmd.clone();
                                                             app_reauth.update(cx, |s, cx| {
-                                                                s.send_agy_command("/agy primary".to_string(), cx);
+                                                                s.send_agy_command(cmd, cx);
+                                                            });
+                                                        }),
+                                                )
+                                                .child(
+                                                    Button::new(("settings-agy-reauth-copy", idx))
+                                                        .outline()
+                                                        .small()
+                                                        .disabled(is_acc_deleting || agy_copy_pending)
+                                                        .loading(agy_copy_pending)
+                                                        .icon(IconName::Copy)
+                                                        .tooltip("Copy Re-login Link (open in another browser)")
+                                                        .on_click(move |_, _, cx| {
+                                                            let id = acc_id_reauth_copy.clone();
+                                                            app_reauth_copy.update(cx, |s, cx| {
+                                                                s.copy_agy_relogin_url(&id, is_system_home, cx);
                                                             });
                                                         }),
                                                 )
