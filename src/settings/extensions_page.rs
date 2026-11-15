@@ -544,44 +544,61 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                             });
                                         }),
                                 )
-                                .child(
-                                    Button::new(SharedString::from(format!("del-plugin-{}", idx)))
+                                .child({
+                                    let app_del_read = app_del.clone();
+                                    let is_busy = app_del_read.read(cx).plugins_updating;
+                                    let name_for_del = name.clone();
+                                    Button::new(("del-plugin", idx))
                                         .ghost()
                                         .xsmall()
                                         .h(px(24.))
                                         .w(px(24.))
+                                        .disabled(is_busy)
+                                        .loading(is_busy)
+                                        .loading_icon(Icon::new(crate::icons::LoaderCircleIcon))
                                         .icon(Icon::new(crate::icons::TrashIcon))
                                         .text_color(cx.theme().danger)
                                         .tooltip(tr(locale, "settings.deleteGroup"))
                                         .on_click(move |_, _, cx| {
                                             let src = src_for_del.clone();
                                             let sc = sc_for_del.clone();
+                                            let pname = name_for_del.clone();
                                             app_del.update(cx, |s, cx| {
-                                                if s.sidecar_connected {
+                                                if s.sidecar_connected && !s.plugins_updating {
+                                                    s.plugins_updating = true;
+                                                    s.status_banner = Some(SharedString::from(format!("Removing {pname}…")));
+                                                    cx.notify();
                                                     let client = s.client.clone();
                                                     let cwd = s.active_cwd.to_string_lossy().into_owned();
                                                     let entity = cx.entity().clone();
                                                     cx.spawn(async move |_, cx| {
-                                                        if let Ok(res) = client
+                                                        let res = client
                                                             .plugin_action(json!({
                                                                 "cwd": cwd,
                                                                 "action": "remove",
                                                                 "source": src,
                                                                 "scope": sc,
                                                             }))
-                                                            .await
-                                                        {
-                                                            let _ = entity.update(cx, |s, cx| {
-                                                                s.apply_plugins_response(&res);
-                                                                cx.notify();
-                                                            });
-                                                        }
+                                                            .await;
+                                                        let _ = entity.update(cx, |s, cx| {
+                                                            s.plugins_updating = false;
+                                                            match res {
+                                                                Ok(val) => {
+                                                                    s.apply_plugins_response(&val);
+                                                                    s.status_banner = Some(SharedString::from(format!("Removed plugin: {pname}")));
+                                                                }
+                                                                Err(err) => {
+                                                                    s.status_banner = Some(SharedString::from(format!("Failed to remove {pname}: {err}")));
+                                                                }
+                                                            }
+                                                            cx.notify();
+                                                        });
                                                     })
                                                     .detach();
                                                 }
                                             });
-                                        }),
-                                )
+                                        })
+                                })
                         })
                 })
                 .keywords([desc_parts.join(" · ")]),
@@ -589,7 +606,32 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
         }
     }
 
+    let app_agy_open = app_state.clone();
+    let agy_group = SettingGroup::new()
+        .title("Antigravity (pi-agy-link)")
+        .item(
+            SettingItem::new(
+                "Account Pool & Quotas",
+                SettingField::render(move |_, _, _| {
+                    let app_agy = app_agy_open.clone();
+                    Button::new("open-agy-pool-from-settings")
+                        .primary()
+                        .small()
+                        .icon(IconName::Bot)
+                        .label("Open Pool & Quotas")
+                        .on_click(move |_, _, cx| {
+                            app_agy.update(cx, |s, cx| {
+                                s.settings_open = false;
+                                s.open_agy_link_modal(cx);
+                            });
+                        })
+                }),
+            )
+            .description("Manage Google Antigravity accounts, 5H/7D/Argon quotas, OAuth login, and per-account proxies."),
+        );
+
     SettingPage::new(tr(locale, "settings.plugins"))
         .icon(IconName::HardDrive)
+        .group(agy_group)
         .group(group)
 }
