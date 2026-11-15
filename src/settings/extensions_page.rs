@@ -509,9 +509,40 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                     }
                                 )))
                                 .child(Tag::secondary().small().child(SharedString::from(format!("v{}", ver))))
+                                .when(
+                                    app_del
+                                        .read(cx)
+                                        .settings_deleting_keys
+                                        .contains(&format!("plugin:{}", src_for_del)),
+                                    |el| {
+                                        el.child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap_1p5()
+                                                .px_2()
+                                                .child(
+                                                    Spinner::new()
+                                                        .xsmall()
+                                                        .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("删除中…"),
+                                                ),
+                                        )
+                                    },
+                                )
                                 .child(
                                     Switch::new(SharedString::from(format!("plugin-sw-{}", idx)))
                                         .checked(enabled_now)
+                                        .disabled(
+                                            app_del
+                                                .read(cx)
+                                                .settings_deleting_keys
+                                                .contains(&format!("plugin:{}", src_for_del)),
+                                        )
                                         .on_click(move |checked: &bool, _, cx| {
                                             let next = *checked;
                                             let src = src_w.clone();
@@ -557,66 +588,64 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                 )
                                 .child({
                                     let app_del_read = app_del.clone();
+                                    let is_row_deleting = app_del_read
+                                        .read(cx)
+                                        .settings_deleting_keys
+                                        .contains(&format!("plugin:{}", src_for_del));
                                     let is_busy = app_del_read.read(cx).plugins_updating;
                                     let name_for_del = name.clone();
-                                    if is_busy {
-                                        h_flex()
-                                            .h(px(24.))
-                                            .px_1p5()
-                                            .items_center()
-                                            .gap_1()
-                                            .child(Spinner::new().xsmall().icon(Icon::new(crate::icons::LoaderCircleIcon)))
-                                            .into_any_element()
-                                    } else {
-                                        Button::new(("del-plugin", idx))
-                                            .ghost()
-                                            .xsmall()
-                                            .h(px(24.))
-                                            .w(px(24.))
-                                            .icon(Icon::new(crate::icons::TrashIcon))
-                                            .text_color(cx.theme().danger)
-                                            .tooltip(tr(locale, "settings.deleteGroup"))
-                                            .on_click(move |_, _, cx| {
-                                                let src = src_for_del.clone();
-                                                let sc = sc_for_del.clone();
-                                                let pname = name_for_del.clone();
-                                                app_del.update(cx, |s, cx| {
-                                                    if s.sidecar_connected && !s.plugins_updating {
-                                                        s.plugins_updating = true;
-                                                        s.status_banner = Some(SharedString::from(format!("Removing {pname}…")));
-                                                        cx.notify();
-                                                        let client = s.client.clone();
-                                                        let cwd = s.active_cwd.to_string_lossy().into_owned();
-                                                        let entity = cx.entity().clone();
-                                                        cx.spawn(async move |_, cx| {
-                                                            let res = client
-                                                                .plugin_action(json!({
-                                                                    "cwd": cwd,
-                                                                    "action": "remove",
-                                                                    "source": src,
-                                                                    "scope": sc,
-                                                                }))
-                                                                .await;
-                                                            let _ = entity.update(cx, |s, cx| {
-                                                                s.plugins_updating = false;
-                                                                match res {
-                                                                    Ok(val) => {
-                                                                        s.apply_plugins_response(&val);
-                                                                        s.status_banner = Some(SharedString::from(format!("Removed plugin: {pname}")));
-                                                                    }
-                                                                    Err(err) => {
-                                                                        s.status_banner = Some(SharedString::from(format!("Failed to remove {pname}: {err}")));
-                                                                    }
+                                    Button::new(("del-plugin", idx))
+                                        .ghost()
+                                        .small()
+                                        .h(px(26.))
+                                        .w(px(26.))
+                                        .icon(Icon::new(crate::icons::TrashIcon))
+                                        .text_color(cx.theme().danger)
+                                        .disabled(is_row_deleting || is_busy)
+                                        .tooltip(tr(locale, "settings.deleteGroup"))
+                                        .on_click(move |_, _, cx| {
+                                            let src = src_for_del.clone();
+                                            let sc = sc_for_del.clone();
+                                            let pname = name_for_del.clone();
+                                            let del_key = format!("plugin:{src}");
+                                            app_del.update(cx, |s, cx| {
+                                                if s.sidecar_connected && !s.plugins_updating {
+                                                    s.plugins_updating = true;
+                                                    s.settings_deleting_keys.insert(del_key.clone());
+                                                    s.status_banner = Some(SharedString::from(format!("Removing {pname}…")));
+                                                    cx.notify();
+                                                    let client = s.client.clone();
+                                                    let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                                    let entity = cx.entity().clone();
+                                                    cx.spawn(async move |_, cx| {
+                                                        let res = client
+                                                            .plugin_action(json!({
+                                                                "cwd": cwd,
+                                                                "action": "remove",
+                                                                "source": src,
+                                                                "scope": sc,
+                                                            }))
+                                                            .await;
+                                                        let _ = entity.update(cx, |s, cx| {
+                                                            s.plugins_updating = false;
+                                                            s.settings_deleting_keys.remove(&del_key);
+                                                            match res {
+                                                                Ok(val) => {
+                                                                    s.apply_plugins_response(&val);
+                                                                    s.status_banner = Some(SharedString::from(format!("Removed plugin: {pname}")));
                                                                 }
-                                                                cx.notify();
-                                                            });
-                                                        })
-                                                        .detach();
-                                                    }
-                                                });
-                                            })
-                                            .into_any_element()
-                                    }
+                                                                Err(err) => {
+                                                                    s.status_banner = Some(SharedString::from(format!("Failed to remove {pname}: {err}")));
+                                                                }
+                                                            }
+                                                            cx.notify();
+                                                        });
+                                                    })
+                                                    .detach();
+                                                }
+                                            });
+                                        })
+                                        .into_any_element()
                                 })
                         })
                 })
@@ -625,33 +654,8 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
         }
     }
 
-    let app_agy_open = app_state.clone();
-    let agy_group = SettingGroup::new()
-        .title("Antigravity (pi-agy-link)")
-        .item(
-            SettingItem::new(
-                "Account Pool & Quotas",
-                SettingField::render(move |_, _, _| {
-                    let app_agy = app_agy_open.clone();
-                    Button::new("open-agy-pool-from-settings")
-                        .primary()
-                        .small()
-                        .icon(IconName::Bot)
-                        .label("Open Pool & Quotas")
-                        .on_click(move |_, _, cx| {
-                            app_agy.update(cx, |s, cx| {
-                                s.settings_open = false;
-                                s.open_agy_link_modal(cx);
-                            });
-                        })
-                }),
-            )
-            .description("Manage Google Antigravity accounts, 5H/7D/Argon quotas, OAuth login, and per-account proxies."),
-        );
-
     SettingPage::new(tr(locale, "settings.plugins"))
         .icon(IconName::HardDrive)
-        .group(agy_group)
         .group(group)
 }
 
@@ -783,11 +787,15 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                 let app_toggle = app_state.clone();
                 let app_det = app_state.clone();
                 let app_rm = app_state.clone();
+                let is_acc_deleting = app_state
+                    .read(cx)
+                    .settings_deleting_keys
+                    .contains(&format!("agy:{}", acc.id));
 
                 pool_group = pool_group.item(
                     SettingItem::new(
                         title,
-                        SettingField::render(move |_, _, _| {
+                        SettingField::render(move |_, _, cx| {
                             let acc_id_use = acc_id_use.clone();
                             let acc_id_toggle = acc_id_toggle.clone();
                             let acc_id_det = acc_id_det.clone();
@@ -799,13 +807,32 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                             h_flex()
                                 .gap_1p5()
                                 .items_center()
+                                .when(is_acc_deleting, |el| {
+                                    el.child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_1p5()
+                                            .px_2()
+                                            .child(
+                                                Spinner::new()
+                                                    .xsmall()
+                                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("删除中…"),
+                                            ),
+                                    )
+                                })
                                 .child(if is_active {
                                     Tag::primary().small().child("Active").into_any_element()
                                 } else {
                                     Button::new(("settings-agy-use", idx))
                                         .outline()
                                         .small()
-                                        .disabled(is_disabled)
+                                        .disabled(is_acc_deleting || is_disabled)
                                         .label("Use")
                                         .on_click(move |_, _, cx| {
                                             let id = acc_id_use.clone();
@@ -819,6 +846,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                     Button::new(("settings-agy-enable", idx))
                                         .ghost()
                                         .small()
+                                        .disabled(is_acc_deleting)
                                         .label(if is_disabled { "Enable" } else { "Disable" })
                                         .on_click(move |_, _, cx| {
                                             let id = acc_id_toggle.clone();
@@ -833,6 +861,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                 .child({
                                     let btn = Button::new(("settings-agy-details", idx))
                                         .small()
+                                        .disabled(is_acc_deleting)
                                         .label(if is_details_open { "Hide Models" } else { "Models" })
                                         .on_click(move |_, _, cx| {
                                             let id = acc_id_det.clone();
@@ -852,10 +881,13 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                         Button::new(("settings-agy-remove", idx))
                                             .ghost()
                                             .small()
+                                            .disabled(is_acc_deleting)
                                             .icon(IconName::Delete)
                                             .on_click(move |_, _, cx| {
                                                 let id = acc_id_rm.clone();
+                                                let del_key = format!("agy:{id}");
                                                 app_rm.update(cx, |s, cx| {
+                                                    s.settings_deleting_keys.insert(del_key);
                                                     s.send_agy_command(format!("/agy remove {id}"), cx);
                                                 });
                                             }),

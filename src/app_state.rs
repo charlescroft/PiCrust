@@ -230,6 +230,7 @@ pub struct AppState {
     pub agy_link_loading: bool,
     pub agy_link_details_account_id: Option<String>,
     pub agy_link_proxy_input: Option<Entity<gpui_kit::component::input::InputState>>,
+    pub settings_deleting_keys: std::collections::HashSet<String>,
 }
 
 impl AppState {
@@ -527,6 +528,7 @@ impl AppState {
             agy_link_loading: false,
             agy_link_details_account_id: None,
             agy_link_proxy_input: None,
+            settings_deleting_keys: std::collections::HashSet::new(),
         };
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
@@ -2671,6 +2673,13 @@ impl AppState {
     }
 
     pub fn delete_configured_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
+        let del_key = format!("provider:{provider_id}");
+        if self.settings_deleting_keys.contains(&del_key) {
+            return;
+        }
+        self.settings_deleting_keys.insert(del_key.clone());
+        cx.notify();
+
         let mut config = if self.configured_providers_raw.is_object() {
             self.configured_providers_raw.clone()
         } else {
@@ -2688,7 +2697,18 @@ impl AppState {
             cx.spawn(async move |_, cx| {
                 let _ = client.put_models_config(config).await;
                 let _ = entity.update(cx, |s, cx| {
+                    s.settings_deleting_keys.remove(&del_key);
                     s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        } else {
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                smol::Timer::after(std::time::Duration::from_millis(250)).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.settings_deleting_keys.remove(&del_key);
+                    cx.notify();
                 });
             })
             .detach();
@@ -2702,6 +2722,13 @@ impl AppState {
         model_id: String,
         cx: &mut Context<Self>,
     ) {
+        let del_key = format!("model:{provider_id}:{model_id}");
+        if self.settings_deleting_keys.contains(&del_key) {
+            return;
+        }
+        self.settings_deleting_keys.insert(del_key.clone());
+        cx.notify();
+
         let mut config = if self.configured_providers_raw.is_object() {
             self.configured_providers_raw.clone()
         } else {
@@ -2723,7 +2750,18 @@ impl AppState {
             cx.spawn(async move |_, cx| {
                 let _ = client.put_models_config(config).await;
                 let _ = entity.update(cx, |s, cx| {
+                    s.settings_deleting_keys.remove(&del_key);
                     s.refresh_from_sidecar(cx);
+                });
+            })
+            .detach();
+        } else {
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                smol::Timer::after(std::time::Duration::from_millis(250)).await;
+                let _ = entity.update(cx, |s, cx| {
+                    s.settings_deleting_keys.remove(&del_key);
+                    cx.notify();
                 });
             })
             .detach();
@@ -5250,6 +5288,7 @@ impl AppState {
                         }
                     } else if key == "agy-link-state" {
                         self.agy_link_loading = false;
+                        self.settings_deleting_keys.retain(|k| !k.starts_with("agy:"));
                         if lines.is_empty() {
                             self.agy_link_state = None;
                         } else if let Some(parsed) = crate::client::session_controller::parse_agy_link_widget_lines(&lines) {

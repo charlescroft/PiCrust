@@ -1,12 +1,14 @@
 use crate::app_state::{AppState, SettingsAddKind};
 use crate::client::native_index::user_home;
 use crate::i18n::{AppLocale, format_commas, format_tokens_km, tr};
-use crate::icons::{PencilIcon, TrashIcon};
+use crate::icons::{LoaderCircleIcon, PencilIcon, TrashIcon};
 use crate::settings::{SETTINGS_BTN_W, config_path_field};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex,
     v_flex,
@@ -114,7 +116,7 @@ fn merged_providers(state: &AppState) -> Vec<MergedProvider> {
                         slot.name = Some(m.name.clone());
                     }
                 }
-                None => target.models.push(MergedModel {
+                None if !target.has_config => target.models.push(MergedModel {
                     id: m.id.clone(),
                     name: Some(m.name.clone()),
                     context_window: m.context_window,
@@ -126,6 +128,7 @@ fn merged_providers(state: &AppState) -> Vec<MergedProvider> {
                     from_catalog: true,
                     model_ref: m.model_ref.clone(),
                 }),
+                None => {}
             }
         }
     }
@@ -140,6 +143,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
     let expanded = state.expanded_configured_providers.clone();
     let discovering_pid = state.discovering_provider_id.clone();
     let discover_error = state.discover_error.clone();
+    let deleting_keys = state.settings_deleting_keys.clone();
     let app_refresh = app_state.clone();
     let app_add_model = app_state.clone();
 
@@ -259,6 +263,8 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                         let toggle_on = enabled_on;
                         let has_config = prov.has_config;
                         let from_catalog = prov.from_catalog;
+                        let is_prov_deleting =
+                            deleting_keys.contains(&format!("provider:{pid}"));
 
                         let meta_summary = match (&prov.api, &prov.base_url) {
                             (Some(api), Some(url)) => format!("{api} · {url}"),
@@ -332,6 +338,26 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                             .child(SharedString::from(meta_summary))
                                     })),
                             )
+                            .when(is_prov_deleting, |el| {
+                                el.child(
+                                    h_flex()
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .px_2()
+                                        .child(
+                                            Spinner::new()
+                                                .xsmall()
+                                                .icon(Icon::new(LoaderCircleIcon)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("删除中…"),
+                                        ),
+                                )
+                            })
                             // Enable switch + pencil + red trash.
                             .child(
                                 h_flex()
@@ -341,6 +367,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                     .child(
                                         Switch::new(("cfg-prov-enable", pidx))
                                             .checked(toggle_on)
+                                            .disabled(is_prov_deleting)
                                             .on_click({
                                                 let app_hdr_toggle = app_cards.clone();
                                                 move |checked: &bool, _, cx| {
@@ -359,7 +386,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                             .h(px(26.))
                                             .w(px(26.))
                                             .icon(Icon::new(PencilIcon))
-                                            .disabled(!has_config)
+                                            .disabled(is_prov_deleting || !has_config)
                                             .tooltip(tr(locale, "settings.editingProvider"))
                                             .on_click(move |_, _, cx| {
                                                 app_edit_prov.update(cx, |s, cx| {
@@ -379,7 +406,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                             .w(px(26.))
                                             .icon(Icon::new(TrashIcon))
                                             .text_color(cx.theme().danger)
-                                            .disabled(!has_config)
+                                            .disabled(is_prov_deleting || !has_config)
                                             .tooltip(tr(locale, "settings.deleteGroup"))
                                             .on_click(move |_, _, cx| {
                                                 app_del_prov.update(cx, |s, cx| {
@@ -432,6 +459,8 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                     let mid_me = m.id.clone();
                                     let pid_md = pid.clone();
                                     let mid_md = m.id.clone();
+                                    let is_model_deleting = deleting_keys
+                                        .contains(&format!("model:{}:{}", pid, m.id));
 
                                     let title = m
                                         .name
@@ -485,6 +514,28 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                                             )),
                                                     ),
                                             )
+                                            .when(is_model_deleting, |el| {
+                                                el.child(
+                                                    h_flex()
+                                                        .flex_shrink_0()
+                                                        .items_center()
+                                                        .gap_1p5()
+                                                        .px_2()
+                                                        .child(
+                                                            Spinner::new()
+                                                                .xsmall()
+                                                                .icon(Icon::new(LoaderCircleIcon)),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child("删除中…"),
+                                                        ),
+                                                )
+                                            })
                                             .child(
                                                 h_flex()
                                                     .flex_shrink_0()
@@ -495,70 +546,80 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                                             "cfg-model-enable",
                                                             pidx * 1000 + midx,
                                                         ))
-                                                            .checked(m_enabled)
-                                                            .on_click(move |checked: &bool, _, cx| {
-                                                                let next = *checked;
-                                                                let prov = pid_m.clone();
-                                                                let id = mid.clone();
-                                                                let reference = mref.clone();
-                                                                let r = if m_from_catalog {
-                                                                    reference.clone()
-                                                                } else {
-                                                                    format!("{}/{}", prov, id)
-                                                                };
-                                                                app_m_enable.update(cx, |s, cx| {
-                                                                    s.set_model_enabled(r.clone(), next, cx);
-                                                                });
-                                                            }),
+                                                        .checked(m_enabled)
+                                                        .disabled(is_model_deleting)
+                                                        .on_click(move |checked: &bool, _, cx| {
+                                                            let next = *checked;
+                                                            let prov = pid_m.clone();
+                                                            let id = mid.clone();
+                                                            let reference = mref.clone();
+                                                            let r = if m_from_catalog {
+                                                                reference.clone()
+                                                            } else {
+                                                                format!("{}/{}", prov, id)
+                                                            };
+                                                            app_m_enable.update(cx, |s, cx| {
+                                                                s.set_model_enabled(
+                                                                    r.clone(),
+                                                                    next,
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        }),
                                                     )
                                                     .child(
                                                         Button::new((
                                                             "cfg-model-edit",
                                                             pidx * 1000 + midx,
                                                         ))
-                                                            .ghost()
-                                                            .small()
-                                                            .h(px(26.))
-                                                            .w(px(26.))
-                                                            .icon(Icon::new(PencilIcon))
-                                                            .disabled(!m_from_config)
-                                                            .tooltip(tr(locale, "settings.editingModel"))
-                                                            .on_click(move |_, _, cx| {
-                                                                app_m_edit.update(cx, |s, cx| {
-                                                                    s.settings_add_kind = Some(
-                                                                        SettingsAddKind::EditModel {
-                                                                            provider_id: pid_me
-                                                                                .clone(),
-                                                                            model_id: mid_me
-                                                                                .clone(),
-                                                                        },
-                                                                    );
-                                                                    cx.notify();
-                                                                });
-                                                            }),
+                                                        .ghost()
+                                                        .small()
+                                                        .h(px(26.))
+                                                        .w(px(26.))
+                                                        .icon(Icon::new(PencilIcon))
+                                                        .disabled(
+                                                            is_model_deleting || !m_from_config,
+                                                        )
+                                                        .tooltip(tr(
+                                                            locale,
+                                                            "settings.editingModel",
+                                                        ))
+                                                        .on_click(move |_, _, cx| {
+                                                            app_m_edit.update(cx, |s, cx| {
+                                                                s.settings_add_kind = Some(
+                                                                    SettingsAddKind::EditModel {
+                                                                        provider_id: pid_me.clone(),
+                                                                        model_id: mid_me.clone(),
+                                                                    },
+                                                                );
+                                                                cx.notify();
+                                                            });
+                                                        }),
                                                     )
                                                     .child(
                                                         Button::new((
                                                             "cfg-model-del",
                                                             pidx * 1000 + midx,
                                                         ))
-                                                            .ghost()
-                                                            .small()
-                                                            .h(px(26.))
-                                                            .w(px(26.))
-                                                            .icon(Icon::new(TrashIcon))
-                                                            .text_color(cx.theme().danger)
-                                                            .disabled(!m_from_config)
-                                                            .tooltip(tr(locale, "settings.deleteGroup"))
-                                                            .on_click(move |_, _, cx| {
-                                                                app_m_del.update(cx, |s, cx| {
-                                                                    s.delete_model_from_configured_provider(
-                                                                        pid_md.clone(),
-                                                                        mid_md.clone(),
-                                                                        cx,
-                                                                    );
-                                                                });
-                                                            }),
+                                                        .ghost()
+                                                        .small()
+                                                        .h(px(26.))
+                                                        .w(px(26.))
+                                                        .icon(Icon::new(TrashIcon))
+                                                        .text_color(cx.theme().danger)
+                                                        .disabled(
+                                                            is_model_deleting || !m_from_config,
+                                                        )
+                                                        .tooltip(tr(locale, "settings.deleteGroup"))
+                                                        .on_click(move |_, _, cx| {
+                                                            app_m_del.update(cx, |s, cx| {
+                                                                s.delete_model_from_configured_provider(
+                                                                    pid_md.clone(),
+                                                                    mid_md.clone(),
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        }),
                                                     ),
                                             ),
                                     );

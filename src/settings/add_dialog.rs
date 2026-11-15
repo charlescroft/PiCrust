@@ -276,14 +276,9 @@ impl SettingsAddDialogView {
             }
             SettingsAddKind::DiscoveredModelsPicker { discovered, .. } => {
                 self.discovered_models = discovered.clone();
-                // Large catalogs (OpenRouter and friends) start unselected so
-                // one click cannot inject hundreds of models into models.json;
-                // the picker still offers "Select all".
-                self.selected_model_ids = if discovered.len() <= 50 {
-                    discovered.iter().map(|m| m.id.clone()).collect()
-                } else {
-                    std::collections::HashSet::new()
-                };
+                // Always start with zero models selected so the user explicitly
+                // picks which models to enable/add (DSH behavior).
+                self.selected_model_ids = std::collections::HashSet::new();
             }
             SettingsAddKind::EditProvider { provider_id } => {
                 let prefill = {
@@ -568,14 +563,7 @@ impl SettingsAddDialogView {
                                 let _ = client.put_models_config(cfg).await;
                             }
                             reload_local_after_save = true;
-                            // Download the model list right away. Custom
-                            // providers have no catalog in pi, so without this
-                            // step the user would have to type model ids by
-                            // hand (the old behaviour they reported).
-                            let local_host = b.contains("localhost") || b.contains("127.0.0.1");
-                            if !c.is_empty() || local_host {
-                                discover_after_save = Some(pid.clone());
-                            }
+                            expand_provider_id = Some(pid.clone());
                             Ok(())
                         }
                     }
@@ -618,22 +606,45 @@ impl SettingsAddDialogView {
                                     let _ = client.put_models_config(cfg).await;
                                 }
                                 reload_local_after_save = true;
-                                discover_after_save = Some(provider_id.clone());
+                                expand_provider_id = Some(provider_id.clone());
                                 Ok(())
                             }
                             Err(err) => Err(anyhow::anyhow!(err)),
                         }
                     } else {
                         // pi already knows this provider; store the credential
-                        // in auth.json. Persist first: the native engine and a
-                        // restarted sidecar both read auth.json, and the desktop
-                        // must keep working when the sidecar is offline.
+                        // in auth.json AND register an empty provider entry in
+                        // models.json so it appears expanded with empty models
+                        // and offers Fetch Available Models / Add Custom Model.
                         match crate::client::local_store::save_api_key_local(&provider_id, &a) {
                             Ok(()) => {
+                                let mut cfg = crate::client::local_store::read_models_config_local();
+                                if cfg.get("providers").and_then(Value::as_object).is_none() {
+                                    cfg["providers"] = json!({});
+                                }
+                                if let Some(preset) = crate::provider_catalog::find(&provider_id) {
+                                    let entry = cfg["providers"]
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .entry(provider_id.clone())
+                                        .or_insert_with(|| json!({}));
+                                    if entry.get("baseUrl").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) {
+                                        entry["baseUrl"] = json!(preset.base_url);
+                                    }
+                                    if entry.get("api").and_then(Value::as_str).map(|s| s.trim().is_empty()).unwrap_or(true) {
+                                        entry["api"] = json!(preset.api);
+                                    }
+                                    if entry.get("models").and_then(Value::as_array).is_none() {
+                                        entry["models"] = json!([]);
+                                    }
+                                    let _ = crate::client::local_store::save_models_config_local(&cfg);
+                                    if connected {
+                                        let _ = client.put_models_config(cfg).await;
+                                    }
+                                }
                                 reload_local_after_save = true;
+                                expand_provider_id = Some(provider_id.clone());
                                 if connected {
-                                    // Best effort: the sidecar picks the key up
-                                    // from auth.json even if this call fails.
                                     let _ = client.set_api_key(&provider_id, &a).await;
                                 }
                                 Ok(())
