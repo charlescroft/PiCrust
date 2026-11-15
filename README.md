@@ -22,7 +22,7 @@
 
 ## Overview
 
-**PiCrust** is a next-generation desktop workbench for agentic AI coding. While modern AI code editors (Cursor, Windsurf, VS Code forks) rely on heavy Chromium/Electron runtimes that consume **1GB–2GB of memory** on startup, PiCrust is built from the ground up in **pure Rust** using Zed's high-performance **GPUI** framework.
+**PiCrust** is a next-generation desktop workbench for agentic AI coding. While conventional web-based or Electron-backed coding tools rely on heavy Chromium runtimes that consume **1GB–2GB of memory** on startup, PiCrust is built from the ground up in **pure Rust** using Zed's high-performance **GPUI** framework.
 
 It delivers **fluid GPU-accelerated rendering**, hardware-accelerated typography, native PTY terminal virtualization, an integrated **Git Graph** DAG visualizer, and a full-featured agentic coding environment—all packed into a tiny **26 MB standalone bundle** that operates comfortably within **~300 MB – 700 MB of RAM** under active developer workflows (inclusive of syntax trees, terminal scrollback, and diff buffers), compared to 1.5 GB – 3.5 GB+ for Electron-based solutions.
 

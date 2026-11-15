@@ -195,7 +195,7 @@ own icons instead, leave that feature out and name the SVG files as defined in
 
 ## Skills for AI Coding Agents
 
-Install the GPUI Kit skills for your AI coding agent (Cursor, Claude Code, Gemini CLI, Codex, etc.):
+Install the GPUI Kit skills for your AI coding agent:
 
 ```bash
 npx skills add longbridge/gpui-kit
