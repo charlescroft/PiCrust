@@ -50,7 +50,17 @@ pub struct TerminalState {
 
 impl TerminalState {
     pub fn new(cols: usize, rows: usize, event_proxy: GpuiEventProxy) -> Self {
-        let config = Config::default();
+        Self::new_with_scrollback(cols, rows, 2_000, event_proxy)
+    }
+
+    pub fn new_with_scrollback(
+        cols: usize,
+        rows: usize,
+        scrollback: usize,
+        event_proxy: GpuiEventProxy,
+    ) -> Self {
+        let mut config = Config::default();
+        config.scrolling_history = scrollback.min(2_000);
 
         let dimensions = TermDimensions::new(cols, rows);
 

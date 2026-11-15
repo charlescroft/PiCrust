@@ -108,8 +108,8 @@ impl TerminalRenderer {
     }
 
     fn set_cell_metrics(&mut self, advance: Pixels, line_height: Pixels) {
-        self.cell_width = advance.max(px(1.0));
-        self.cell_height = (line_height * self.line_height_multiplier).max(px(1.0));
+        self.cell_width = advance.max(px(4.0));
+        self.cell_height = (line_height * self.line_height_multiplier).max(px(8.0));
     }
 
     pub fn layout_row(

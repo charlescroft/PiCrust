@@ -49,6 +49,20 @@ where
         .map_err(|_| anyhow::anyhow!("HTTP worker cancelled"))?
 }
 
+/// Creates a `std::process::Command` with `CREATE_NO_WINDOW` set on Windows so background
+/// tools (`git`, `node`, etc.) never flash a black console window over the GUI.
+pub fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 #[derive(Clone)]
 pub struct PiDaemonClient {
     http: Client,
@@ -90,37 +104,69 @@ impl PiDaemonClient {
     }
 
     async fn get_json<T: DeserializeOwned + Send + 'static>(&self, path: &str) -> Result<T> {
-        let req = self.request(Method::GET, path);
+        let req1 = self.request(Method::GET, path);
+        let req2 = self.request(Method::GET, path);
         run_on_tokio(async move {
-            let resp = req.send().await?.error_for_status()?;
-            Ok(resp.json::<T>().await?)
+            match req1.send().await {
+                Ok(resp) => Ok(resp.error_for_status()?.json::<T>().await?),
+                Err(e) if e.is_connect() => {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let resp = req2.send().await?.error_for_status()?;
+                    Ok(resp.json::<T>().await?)
+                }
+                Err(e) => Err(e.into()),
+            }
         })
         .await
     }
 
     async fn post_json<B: Serialize, T: DeserializeOwned + Send + 'static>(&self, path: &str, body: &B) -> Result<T> {
-        let req = self.request(Method::POST, path).json(body);
+        let req1 = self.request(Method::POST, path).json(body);
+        let req2 = self.request(Method::POST, path).json(body);
         run_on_tokio(async move {
-            let resp = req.send().await?.error_for_status()?;
-            Ok(resp.json::<T>().await?)
+            match req1.send().await {
+                Ok(resp) => Ok(resp.error_for_status()?.json::<T>().await?),
+                Err(e) if e.is_connect() => {
+                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    let resp = req2.send().await?.error_for_status()?;
+                    Ok(resp.json::<T>().await?)
+                }
+                Err(e) => Err(e.into()),
+            }
         })
         .await
     }
 
     async fn put_json<B: Serialize, T: DeserializeOwned + Send + 'static>(&self, path: &str, body: &B) -> Result<T> {
-        let req = self.request(Method::PUT, path).json(body);
+        let req1 = self.request(Method::PUT, path).json(body);
+        let req2 = self.request(Method::PUT, path).json(body);
         run_on_tokio(async move {
-            let resp = req.send().await?.error_for_status()?;
-            Ok(resp.json::<T>().await?)
+            match req1.send().await {
+                Ok(resp) => Ok(resp.error_for_status()?.json::<T>().await?),
+                Err(e) if e.is_connect() => {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let resp = req2.send().await?.error_for_status()?;
+                    Ok(resp.json::<T>().await?)
+                }
+                Err(e) => Err(e.into()),
+            }
         })
         .await
     }
 
     pub async fn health(&self) -> Result<Value> {
-        match self.get_json("/health").await {
-            Ok(val) => Ok(val),
-            Err(_) => self.get_json("/api/home").await,
-        }
+        let req = self.request(Method::GET, "/health").timeout(Duration::from_millis(2000));
+        let fallback = self.request(Method::GET, "/api/home").timeout(Duration::from_millis(2000));
+        run_on_tokio(async move {
+            match req.send().await.and_then(|r| r.error_for_status()) {
+                Ok(resp) => Ok(resp.json::<Value>().await?),
+                Err(_) => {
+                    let resp = fallback.send().await?.error_for_status()?;
+                    Ok(resp.json::<Value>().await?)
+                }
+            }
+        })
+        .await
     }
 
     pub async fn get_json_path(&self, path: &str) -> Result<Value> {

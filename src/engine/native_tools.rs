@@ -393,6 +393,11 @@ pub async fn execute_bash_tool(cwd: &Path, args: &Value) -> NativeToolResult {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use smol::process::windows::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
 
     let fut = cmd.output();
     let timed = futures::future::select(

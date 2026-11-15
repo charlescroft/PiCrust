@@ -150,7 +150,12 @@ impl Render for WorkspaceView {
                     .h_full()
                     .overflow_hidden()
                     .flex_shrink_0()
-                    .child(render_sidebar(&self.app_state, &mut self.rename_state, window, cx)),
+                    .child(
+                        div()
+                            .w(px(268.))
+                            .h_full()
+                            .child(render_sidebar(&self.app_state, &mut self.rename_state, window, cx)),
+                    ),
             )
         } else {
             None
@@ -171,7 +176,12 @@ impl Render for WorkspaceView {
                             .h_full()
                             .overflow_hidden()
                             .flex_shrink_0()
-                            .child(self.workbench_panel.clone()),
+                            .child(
+                                div()
+                                    .w(px(right_target_w))
+                                    .h_full()
+                                    .child(self.workbench_panel.clone()),
+                            ),
                     ),
             )
         } else {

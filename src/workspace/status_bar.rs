@@ -325,8 +325,7 @@ pub fn render_status_bar(
 }
 
 pub fn get_local_git_branches(cwd: &std::path::Path) -> Vec<String> {
-    use std::process::Command;
-    let Ok(out) = Command::new("git")
+    let Ok(out) = crate::client::hidden_command("git")
         .arg("-C")
         .arg(cwd)
         .args(&["branch", "--format=%(refname:short)"])

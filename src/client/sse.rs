@@ -5,6 +5,24 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::time::Duration;
 
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn build_sse_client() -> Client {
+    Client::builder()
+        .no_proxy()
+        .tcp_keepalive(Some(Duration::from_secs(15)))
+        .pool_idle_timeout(None)
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 #[allow(dead_code)]
@@ -136,7 +154,7 @@ pub enum AgentSseEvent {
 }
 
 pub async fn consume_agent_sse<F>(
-    client: Client,
+    _client: Client,
     url: String,
     token: String,
     instance_id: String,
@@ -145,15 +163,15 @@ pub async fn consume_agent_sse<F>(
 where
     F: FnMut(AgentSseEvent) -> bool,
 {
-    let (tx, rx) = smol::channel::unbounded::<Result<AgentSseEvent, String>>();
+    let (tx, rx) = smol::channel::bounded::<Result<AgentSseEvent, String>>(256);
+    let sse_client = build_sse_client();
 
-    crate::client::tokio_runtime().spawn(async move {
-        let resp = match client
+    let join_handle = crate::client::tokio_runtime().spawn(async move {
+        let resp = match sse_client
             .get(&url)
             .header("x-pi-desktop-token", &token)
             .header("x-pi-desktop-instance", &instance_id)
             .header("accept", "text/event-stream")
-            .timeout(Duration::from_secs(3600))
             .send()
             .await
             .and_then(|r| r.error_for_status())
@@ -185,6 +203,7 @@ where
             }
         }
     });
+    let _abort_guard = AbortOnDrop(join_handle.abort_handle());
 
     while let Ok(msg) = rx.recv().await {
         match msg {
@@ -200,7 +219,7 @@ where
 }
 
 pub async fn consume_json_sse<F>(
-    client: Client,
+    _client: Client,
     url: String,
     token: String,
     instance_id: String,
@@ -209,15 +228,15 @@ pub async fn consume_json_sse<F>(
 where
     F: FnMut(Value) -> bool,
 {
-    let (tx, rx) = smol::channel::unbounded::<Value>();
+    let (tx, rx) = smol::channel::bounded::<Value>(128);
+    let sse_client = build_sse_client();
 
-    crate::client::tokio_runtime().spawn(async move {
-        let Ok(resp) = client
+    let join_handle = crate::client::tokio_runtime().spawn(async move {
+        let Ok(resp) = sse_client
             .get(&url)
             .header("x-pi-desktop-token", &token)
             .header("x-pi-desktop-instance", &instance_id)
             .header("accept", "text/event-stream")
-            .timeout(Duration::from_secs(3600))
             .send()
             .await
             .and_then(|r| r.error_for_status())
@@ -239,6 +258,7 @@ where
             }
         }
     });
+    let _abort_guard = AbortOnDrop(join_handle.abort_handle());
 
     while let Ok(val) = rx.recv().await {
         if !on_payload(val) {

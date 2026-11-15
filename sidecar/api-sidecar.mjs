@@ -2,26 +2,117 @@
 import http from "node:http";
 import { existsSync } from "node:fs";
 import Module, { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
 import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { matchRoute, toWebHeaders } from "./router-utils.mjs";
+
+// Prevent transient stream/socket/undici errors from crashing the persistent sidecar daemon
+process.on("uncaughtException", (err) => {
+  console.error("[pi-gpui sidecar] Uncaught exception (kept alive):", err?.message || err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[pi-gpui sidecar] Unhandled rejection (kept alive):", reason?.message || reason);
+});
+
+// Keep RPC sessions alive indefinitely; never evict idle sessions
+if (!process.env.PI_WEB_IDLE_TIMEOUT_MS) {
+  process.env.PI_WEB_IDLE_TIMEOUT_MS = "0";
+}
 
 const sidecarDir = dirname(fileURLToPath(import.meta.url));
 const piGpuiDir = dirname(sidecarDir);
 const repoRoot = dirname(piGpuiDir);
-const bundlePath = process.env.PI_SIDECAR_BUNDLE || join(piGpuiDir, "dist-sidecar", "server.cjs");
 
-const extraNodePaths = [
+const candidateNodeDirs = [
   process.env.PI_SIDECAR_NODE_PATH,
+  join(sidecarDir, "node_modules"),
+  join(piGpuiDir, "node_modules"),
   join(repoRoot, "node_modules"),
+  join(homedir(), ".pi", "agent", "npm", "node_modules"),
+  join(dirname(process.execPath), "..", "lib", "node_modules"),
+  join(dirname(process.execPath), "node_modules"),
+  process.env.APPDATA ? join(process.env.APPDATA, "npm", "node_modules") : null,
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "npm", "node_modules") : null,
+  "/opt/homebrew/lib/node_modules",
+  "/usr/local/lib/node_modules",
   "/Applications/Pi Agent.app/Contents/Resources/resources/server/node_modules",
 ].filter((p) => p && existsSync(p));
 
+const extraNodePaths = [];
+for (const dir of candidateNodeDirs) {
+  if (!extraNodePaths.includes(dir)) {
+    extraNodePaths.push(dir);
+  }
+  const nestedPiModules = join(dir, "@earendil-works", "pi-coding-agent", "node_modules");
+  if (existsSync(nestedPiModules) && !extraNodePaths.includes(nestedPiModules)) {
+    extraNodePaths.push(nestedPiModules);
+  }
+}
+
 if (extraNodePaths.length > 0) {
-  const existing = process.env.NODE_PATH ? process.env.NODE_PATH.split(":") : [];
-  process.env.NODE_PATH = [...extraNodePaths, ...existing].join(":");
+  const existing = process.env.NODE_PATH ? process.env.NODE_PATH.split(delimiter).filter(Boolean) : [];
+  process.env.NODE_PATH = [...new Set([...extraNodePaths, ...existing])].join(delimiter);
   Module._initPaths();
+}
+
+// Register ESM resolution fallback so packaged .app / .exe / .AppImage bundles resolve
+// external packages from global/system node_modules without requiring a local symlink.
+if (extraNodePaths.length > 0) {
+  const webPushStubUrl =
+    "data:text/javascript,export default { setVapidDetails(){}, sendNotification: async () => ({}), generateVAPIDKeys: () => ({ publicKey: '', privateKey: '' }) };";
+
+  if (typeof Module.registerHooks === "function") {
+    Module.registerHooks({
+      resolve(specifier, context, nextResolve) {
+        try {
+          return nextResolve(specifier, context);
+        } catch (err) {
+          if (specifier === "web-push") {
+            return { url: webPushStubUrl, shortCircuit: true };
+          }
+          for (const dir of extraNodePaths) {
+            try {
+              return nextResolve(specifier, {
+                ...context,
+                parentURL: pathToFileURL(join(dir, "__picrust_resolve__.js")).href,
+              });
+            } catch {
+              // try next candidate
+            }
+          }
+          throw err;
+        }
+      },
+    });
+  } else if (typeof Module.register === "function") {
+    const loaderSource = `
+import { pathToFileURL } from "node:url";
+import { join } from "node:path";
+const searchDirs = ${JSON.stringify(extraNodePaths)};
+const webPushStubUrl = ${JSON.stringify(webPushStubUrl)};
+export async function resolve(specifier, context, nextResolve) {
+  try {
+    return await nextResolve(specifier, context);
+  } catch (err) {
+    if (specifier === "web-push") {
+      return { url: webPushStubUrl, shortCircuit: true };
+    }
+    for (const dir of searchDirs) {
+      try {
+        return await nextResolve(specifier, {
+          ...context,
+          parentURL: pathToFileURL(join(dir, "__picrust_resolve__.js")).href,
+        });
+      } catch {}
+    }
+    throw err;
+  }
+}
+`;
+    Module.register(`data:text/javascript,${encodeURIComponent(loaderSource)}`);
+  }
 }
 
 const HOST = process.env.PI_SIDECAR_HOST || "127.0.0.1";
@@ -41,7 +132,7 @@ if (process.platform === "win32") {
     try {
       process.kill(PARENT_PID, 0);
     } catch (err) {
-      if (err.code === "ESRCH") {
+      if (err && err.code === "ESRCH") {
         process.exit(0);
       }
     }
@@ -53,29 +144,38 @@ process.on("SIGTERM", () => process.exit(0));
 process.on("SIGINT", () => process.exit(0));
 
 async function loadSidecarBundle() {
-  const mjsCandidate = join(piGpuiDir, "dist-sidecar", "server.mjs");
-  if (existsSync(mjsCandidate)) {
-    const { pathToFileURL } = await import("node:url");
-    return await import(pathToFileURL(mjsCandidate).href);
-  }
-  if (!existsSync(bundlePath)) {
+  const candidates = [
+    process.env.PI_SIDECAR_BUNDLE,
+    join(sidecarDir, "server.mjs"),
+    join(piGpuiDir, "dist-sidecar", "server.mjs"),
+    join(sidecarDir, "server.cjs"),
+    join(piGpuiDir, "dist-sidecar", "server.cjs"),
+  ].filter((p) => p && existsSync(p));
+
+  if (candidates.length === 0) {
     throw new Error(
-      `Sidecar bundle not found at ${bundlePath}. Run: node pi-gpui/sidecar/build-sidecar.mjs`,
+      `Sidecar bundle not found. Checked: ${[
+        process.env.PI_SIDECAR_BUNDLE,
+        join(sidecarDir, "server.mjs"),
+        join(piGpuiDir, "dist-sidecar", "server.mjs"),
+      ]
+        .filter(Boolean)
+        .join(", ")}`,
     );
   }
-  if (bundlePath.endsWith(".mjs")) {
-    const { pathToFileURL } = await import("node:url");
-    return await import(pathToFileURL(bundlePath).href);
+
+  const chosen = candidates[0];
+  if (chosen.endsWith(".mjs")) {
+    return await import(pathToFileURL(chosen).href);
   }
   const require = createRequire(import.meta.url);
-  return require(bundlePath);
+  return require(chosen);
 }
 
 async function writeWebResponse(res, webRes) {
   const headerEntries = {};
-  const setCookies = typeof webRes.headers.getSetCookie === "function"
-    ? webRes.headers.getSetCookie()
-    : [];
+  const setCookies =
+    typeof webRes.headers.getSetCookie === "function" ? webRes.headers.getSetCookie() : [];
 
   for (const [k, v] of webRes.headers.entries()) {
     if (k.toLowerCase() === "set-cookie") continue;
@@ -112,7 +212,7 @@ async function writeWebResponse(res, webRes) {
     }
   } catch (err) {
     if (!closed) {
-      console.error("[pi-gpui sidecar] Stream error:", err);
+      console.error("[pi-gpui sidecar] Stream error:", err?.message || err);
     }
   } finally {
     if (!res.writableEnded) {
@@ -122,17 +222,19 @@ async function writeWebResponse(res, webRes) {
 }
 
 function sendJson(res, status, data) {
+  if (res.writableEnded) return;
   const body = JSON.stringify(data);
-  res.writeHead(status, {
-    "content-type": "application/json",
-    "content-length": Buffer.byteLength(body),
-    "cache-control": "no-store",
-  });
+  if (!res.headersSent) {
+    res.writeHead(status, {
+      "content-type": "application/json",
+      "content-length": Buffer.byteLength(body),
+      "cache-control": "no-store",
+    });
+  }
   res.end(body);
 }
 
 function isAuthorizedDesktopRequest(req) {
-  // Allow all loopback requests from local machine without token friction
   const remote = req.socket?.remoteAddress;
   if (
     remote === "127.0.0.1" ||
@@ -150,7 +252,11 @@ function isAuthorizedDesktopRequest(req) {
 async function start() {
   const { routes, registerNodeInstrumentation } = await loadSidecarBundle();
   if (typeof registerNodeInstrumentation === "function") {
-    registerNodeInstrumentation();
+    try {
+      registerNodeInstrumentation();
+    } catch (err) {
+      console.error("[pi-gpui sidecar] Instrumentation warning:", err?.message || err);
+    }
   }
 
   const startedAt = Date.now();
@@ -188,8 +294,9 @@ async function start() {
     }
 
     const method = (req.method || "GET").toUpperCase();
-    const handler = matched.route.handlers[method]
-      || (method === "HEAD" ? matched.route.handlers.GET : undefined);
+    const handler =
+      matched.route.handlers[method] ||
+      (method === "HEAD" ? matched.route.handlers.GET : undefined);
 
     if (typeof handler !== "function") {
       sendJson(res, 405, { error: `Method ${method} not allowed` });
@@ -211,7 +318,6 @@ async function start() {
         ...(hasBody ? { body: Readable.toWeb(req), duplex: "half" } : {}),
       };
       const webReq = new Request(parsedUrl.toString(), webReqInit);
-      // Expose NextRequest-compatible fields in case any handler reads them
       Object.defineProperty(webReq, "nextUrl", { value: parsedUrl, enumerable: false });
 
       const webRes = await handler(webReq, { params: Promise.resolve(matched.params) });
@@ -230,7 +336,8 @@ async function start() {
   });
 
   server.requestTimeout = 0;
-  server.headersTimeout = 60_000;
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 70_000;
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);

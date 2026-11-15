@@ -18,7 +18,6 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Root directory of the Pi agent (`~/.pi/agent` or `$PI_CODING_AGENT_DIR`).
@@ -1249,7 +1248,7 @@ pub fn inspect_git_worktrees_local(cwd: &str) -> LocalWorktreeSnapshot {
         };
     }
 
-    let wt_out = Command::new("git")
+    let wt_out = crate::client::hidden_command("git")
         .args(["-C", cwd, "worktree", "list", "--porcelain"])
         .output();
     let Ok(output) = wt_out else {
@@ -1318,7 +1317,7 @@ pub fn inspect_git_worktrees_local(cwd: &str) -> LocalWorktreeSnapshot {
         .map(|w| w.path.clone())
         .or_else(|| worktrees.first().map(|w| w.path.clone()));
 
-    let branches = Command::new("git")
+    let branches = crate::client::hidden_command("git")
         .args(["-C", cwd, "for-each-ref", "--format=%(refname:short)", "refs/heads/"])
         .output()
         .ok()
@@ -1333,7 +1332,7 @@ pub fn inspect_git_worktrees_local(cwd: &str) -> LocalWorktreeSnapshot {
         })
         .unwrap_or_default();
 
-    let remote_branches = Command::new("git")
+    let remote_branches = crate::client::hidden_command("git")
         .args(["-C", cwd, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"])
         .output()
         .ok()
@@ -1359,7 +1358,7 @@ pub fn inspect_git_worktrees_local(cwd: &str) -> LocalWorktreeSnapshot {
 }
 
 pub fn switch_git_branch_local(cwd: &str, branch: &str) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::client::hidden_command("git")
         .args(["-C", cwd, "checkout", branch])
         .output()
         .map_err(|e| format!("git checkout failed: {e}"))?;
@@ -1389,18 +1388,18 @@ pub fn create_git_worktree_local(cwd: &str, branch: &str) -> Result<(String, Str
     let target_str = target_dir.to_string_lossy().into_owned();
 
     // Check if branch exists locally
-    let branch_exists = Command::new("git")
+    let branch_exists = crate::client::hidden_command("git")
         .args(["-C", cwd, "show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
 
     let out = if branch_exists {
-        Command::new("git")
+        crate::client::hidden_command("git")
             .args(["-C", cwd, "worktree", "add", &target_str, branch])
             .output()
     } else {
-        Command::new("git")
+        crate::client::hidden_command("git")
             .args(["-C", cwd, "worktree", "add", "-b", branch, &target_str])
             .output()
     }
@@ -1413,7 +1412,7 @@ pub fn create_git_worktree_local(cwd: &str, branch: &str) -> Result<(String, Str
 }
 
 pub fn remove_git_worktree_local(cwd: &str, worktree_path: &str, force: bool) -> Result<(), String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::client::hidden_command("git");
     cmd.args(["-C", cwd, "worktree", "remove"]);
     if force {
         cmd.arg("--force");

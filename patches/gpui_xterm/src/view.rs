@@ -138,7 +138,12 @@ impl TerminalView {
 
         let event_proxy = GpuiEventProxy::new(event_tx);
 
-        let state = TerminalState::new(config.cols, config.rows, event_proxy);
+        let state = TerminalState::new_with_scrollback(
+            config.cols,
+            config.rows,
+            config.scrollback,
+            event_proxy,
+        );
 
         let renderer = TerminalRenderer::new(
             config.font_family.clone(),
@@ -162,9 +167,22 @@ impl TerminalView {
         let reader_task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 match bytes_rx.recv_async().await {
-                    Ok(bytes) => {
+                    Ok(first_bytes) => {
+                        // Drain immediately queued chunks in one UI update to prevent
+                        // repaint/layout storms when ConPTY emits bursts of output.
+                        let mut batch = first_bytes;
+                        let mut chunks = 0usize;
+                        while chunks < 64 && batch.len() < 256 * 1024 {
+                            match bytes_rx.try_recv() {
+                                Ok(more) => {
+                                    batch.extend_from_slice(&more);
+                                    chunks += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         let result = this.update(cx, |view: &mut Self, cx: &mut Context<Self>| {
-                            view.state.process_bytes(&bytes);
+                            view.state.process_bytes(&batch);
                             cx.notify();
                         });
                         if result.is_err() {
@@ -746,8 +764,10 @@ impl Render for TerminalView {
                         let cell_width_f32: f32 = measured_renderer.cell_width.into();
                         let cell_height_f32: f32 = measured_renderer.cell_height.into();
 
-                        let cols = ((available_width / cell_width_f32) as usize).max(1);
-                        let rows = ((available_height / cell_height_f32) as usize).max(1);
+                        let cols = ((available_width / cell_width_f32.max(1.0)) as usize)
+                            .clamp(1, 300);
+                        let rows = ((available_height / cell_height_f32.max(1.0)) as usize)
+                            .clamp(1, 150);
 
                         struct TermSize {
                             cols: usize,
@@ -778,7 +798,12 @@ impl Render for TerminalView {
                         let current_cols = term.columns();
                         let current_rows = term.screen_lines();
                         // Guard against degenerate dimensions when tab is hidden, minimizing, or during layout passes
-                        if cols >= 20 && rows >= 5 && (cols != current_cols || rows != current_rows) {
+                        if available_width >= 80.0
+                            && available_height >= 40.0
+                            && cols >= 20
+                            && rows >= 5
+                            && (cols != current_cols || rows != current_rows)
+                        {
                             if let Some(ref callback) = resize_callback {
                                 callback(cols, rows);
                             }

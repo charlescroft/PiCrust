@@ -963,7 +963,7 @@ impl AppState {
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
             let _ = smol::unblock(move || {
-                std::process::Command::new("git")
+                crate::client::hidden_command("git")
                     .arg("-C")
                     .arg(&cwd)
                     .args(&["checkout", &target])
@@ -986,7 +986,7 @@ impl AppState {
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
             let _ = smol::unblock(move || {
-                let mut cmd = std::process::Command::new("git");
+                let mut cmd = crate::client::hidden_command("git");
                 cmd.arg("-C").arg(&cwd).arg("pull");
                 if let Some(b) = branch {
                     cmd.arg("origin").arg(b);
@@ -1006,7 +1006,7 @@ impl AppState {
         let cwd = self.active_cwd.clone();
         cx.spawn(async move |_, _| {
             let _ = smol::unblock(move || {
-                let mut cmd = std::process::Command::new("git");
+                let mut cmd = crate::client::hidden_command("git");
                 cmd.arg("-C").arg(&cwd).arg("push");
                 if let Some(b) = branch {
                     cmd.arg("origin").arg(b);
@@ -1023,7 +1023,7 @@ impl AppState {
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
             let _ = smol::unblock(move || {
-                std::process::Command::new("git")
+                crate::client::hidden_command("git")
                     .arg("-C")
                     .arg(&cwd)
                     .args(&["branch", "-D", &branch])
@@ -1675,18 +1675,57 @@ impl AppState {
     }
 
     pub fn refresh_from_sidecar(&mut self, cx: &mut Context<Self>) {
+        if self.core_mode == "auto" {
+            let needs_spawn = self
+                ._sidecar
+                .as_mut()
+                .map(|sc| !sc.is_alive())
+                .unwrap_or(true);
+            if needs_spawn {
+                let port: u16 = std::env::var("PI_SIDECAR_PORT")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(38471);
+                let token = self.client.token.clone();
+                let inst = self.client.instance_id.clone();
+                if let Some(sc) = SidecarProcess::spawn_if_available(port, token, inst) {
+                    let base_url = sc.base_url();
+                    self.client =
+                        PiDaemonClient::new(base_url.clone(), &sc.token, &sc.instance_id);
+                    self.core_url = base_url;
+                    self._sidecar = Some(sc);
+                    self.controller.stop_sse();
+                    self.running_events_subscribed = false;
+                }
+            }
+        }
+
         let client = self.client.clone();
         let cwd_str = self.active_cwd.to_string_lossy().into_owned();
         let active_sid = self.active_session_id.clone();
         let entity = cx.entity().clone();
 
         cx.spawn(async move |_, cx| {
-            let health_ok = client.health().await.is_ok();
+            let mut health_ok = client.health().await.is_ok();
+            if !health_ok {
+                // Retry briefly in case the sidecar is still finishing cold boot
+                for _ in 0..4 {
+                    smol::Timer::after(std::time::Duration::from_millis(350)).await;
+                    if client.health().await.is_ok() {
+                        health_ok = true;
+                        break;
+                    }
+                }
+            }
             if !health_ok {
                 let _ = entity.update(cx, |this, cx| {
+                    let was_connected = this.sidecar_connected;
                     this.sidecar_connected = false;
-                    this.load_local_store_snapshot();
-                    cx.notify();
+                    if was_connected {
+                        this.controller.stop_sse();
+                        this.running_events_subscribed = false;
+                        cx.notify();
+                    }
                 });
                 return;
             }
@@ -2940,16 +2979,23 @@ impl AppState {
             let mut last_file_sig: Option<(String, u64, std::time::SystemTime)> = None;
             let mut scan_counter = 0usize;
             loop {
-                smol::Timer::after(std::time::Duration::from_millis(300)).await;
+                smol::Timer::after(std::time::Duration::from_millis(500)).await;
                 scan_counter += 1;
-                let mut check_path: Option<(String, PathBuf)> = None;
+                let mut check_path: Option<(String, PathBuf, u64)> = None;
+                let mut skip_active_parse = false;
                 let mut alive = false;
                 entity.update(cx, |this, _| {
                     alive = true;
+                    skip_active_parse = this.sidecar_connected && this.is_agent_running;
                     if let Some(sid) = this.active_session_id.as_deref() {
                         if let Some(sess) = this.sessions.iter().find(|s| s.id == sid) {
                             if let Some(p) = &sess.path {
-                                check_path = Some((sid.to_string(), PathBuf::from(p)));
+                                let cw = this
+                                    .selected_model
+                                    .as_ref()
+                                    .and_then(|m| m.context_window)
+                                    .unwrap_or(200_000);
+                                check_path = Some((sid.to_string(), PathBuf::from(p), cw));
                             }
                         }
                     }
@@ -2958,53 +3004,68 @@ impl AppState {
                     break;
                 }
 
-                // Check active session file for new messages from TUI / CLI
-                if let Some((sid, path)) = check_path {
-                    if let Ok(meta) = std::fs::metadata(&path) {
-                        let len = meta.len();
-                        if let Ok(mt) = meta.modified() {
-                            let changed = last_file_sig
-                                .as_ref()
-                                .map(|(id, prev_len, prev_mt)| id != &sid || *prev_len != len || *prev_mt != mt)
-                                .unwrap_or(true);
-                            last_file_sig = Some((sid.clone(), len, mt));
-                            if changed {
-                                let _ = entity.update(cx, |this, cx| {
-                                    if this.active_session_id.as_deref() == Some(sid.as_str()) {
+                // Check active session file for new messages from TUI / CLI off the UI thread.
+                // Skip while sidecar SSE is actively streaming to avoid redundant 40MB+ re-parses.
+                if !skip_active_parse {
+                    if let Some((sid, path, cw)) = check_path {
+                        if let Ok(meta) = std::fs::metadata(&path) {
+                            let len = meta.len();
+                            if let Ok(mt) = meta.modified() {
+                                let changed = last_file_sig
+                                    .as_ref()
+                                    .map(|(id, prev_len, prev_mt)| {
+                                        id != &sid || *prev_len != len || *prev_mt != mt
+                                    })
+                                    .unwrap_or(true);
+                                last_file_sig = Some((sid.clone(), len, mt));
+                                if changed {
+                                    let path_bg = path.clone();
+                                    let (parsed, siblings, stats, todos) = smol::unblock(move || {
+                                        let mut dummy_id = 1u64;
                                         let (parsed, siblings) = parse_session_jsonl_with_siblings(
-                                            &path,
+                                            &path_bg,
                                             None,
-                                            &mut this.controller.next_local_msg_id,
+                                            &mut dummy_id,
                                         );
-                                        if !parsed.is_empty()
-                                            && (parsed.len() != this.messages.len()
-                                                || parsed.last().map(|m| &m.content)
-                                                    != this.messages.last().map(|m| &m.content))
+                                        let stats = compute_stats_from_jsonl(&path_bg, cw);
+                                        let todos = extract_todos_from_jsonl(&path_bg);
+                                        (parsed, siblings, stats, todos)
+                                    })
+                                    .await;
+
+                                    let _ = entity.update(cx, |this, cx| {
+                                        if this.active_session_id.as_deref() == Some(sid.as_str())
+                                            && !(this.sidecar_connected && this.is_agent_running)
                                         {
-                                            this.messages = parsed;
-                                            this.branch_siblings = siblings;
-                                            let cw = this
-                                                .selected_model
-                                                .as_ref()
-                                                .and_then(|m| m.context_window)
-                                                .unwrap_or(200_000);
-                                            this.stats = compute_stats_from_jsonl(&path, cw);
-                                            this.set_todos(extract_todos_from_jsonl(&path));
-                                            this.sync_tool_subagent_runs_from_messages();
-                                            cx.notify();
+                                            if !parsed.is_empty()
+                                                && (parsed.len() != this.messages.len()
+                                                    || parsed.last().map(|m| &m.content)
+                                                        != this.messages.last().map(|m| &m.content))
+                                            {
+                                                let mut next_parsed = parsed;
+                                                for m in &mut next_parsed {
+                                                    m.id = this.controller.alloc_msg_id();
+                                                }
+                                                this.messages = next_parsed;
+                                                this.branch_siblings = siblings;
+                                                this.stats = stats;
+                                                this.set_todos(todos);
+                                                this.sync_tool_subagent_runs_from_messages();
+                                                cx.notify();
+                                            }
                                         }
-                                    }
-                                });
+                                    });
+                                }
                             }
                         }
                     }
                 }
 
-                // Periodic check for new sessions created in TUI / CLI (~every 1.5s)
-                if scan_counter % 5 == 0 {
+                // Periodic check for new sessions created in TUI / CLI (~every 3s) off the UI thread
+                if scan_counter % 6 == 0 {
                     let root = pi_sessions_root();
+                    let scanned = smol::unblock(move || scan_local_sessions(&root)).await;
                     let _ = entity.update(cx, |this, cx| {
-                        let scanned = scan_local_sessions(&root);
                         if !scanned.is_empty() && this.sessions.len() != scanned.len() {
                             this.sessions = scanned;
                             cx.notify();
@@ -3043,22 +3104,24 @@ impl AppState {
         }
     }
 
-    /// Persistent connection watchdog: ensures the sidecar stays alive and
-    /// automatically reconnects if the initial boot took >250ms or if the sidecar dropped.
+    /// Persistent connection watchdog: keeps the sidecar permanently connected,
+    /// tolerates transient slowness, and seamlessly respawns + rebinds SSE if it ever drops.
     pub fn start_sidecar_watchdog(&mut self, cx: &mut Context<Self>) {
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
+            let mut consecutive_failures = 0u32;
+            let mut boot_grace_ticks = 0u32;
+
             loop {
-                let mut wait_secs = 15u64;
+                let mut wait_ms = 5000u64;
                 let mut client_opt = None;
-                let mut was_connected = false;
                 let mut alive = false;
+                let mut process_alive = false;
 
                 let _ = entity.update(cx, |this, cx| {
                     alive = true;
-                    was_connected = this.sidecar_connected;
-                    if !was_connected {
-                        wait_secs = 2;
+                    if !this.sidecar_connected {
+                        wait_ms = 500;
                     }
 
                     if this.core_mode == "auto" {
@@ -3075,13 +3138,25 @@ impl AppState {
                             let inst = this.client.instance_id.clone();
                             if let Some(sc) = SidecarProcess::spawn_if_available(port, token, inst) {
                                 let base_url = sc.base_url();
-                                this.client = PiDaemonClient::new(base_url.clone(), &sc.token, &sc.instance_id);
+                                this.client =
+                                    PiDaemonClient::new(base_url.clone(), &sc.token, &sc.instance_id);
                                 this.core_url = base_url;
                                 this._sidecar = Some(sc);
-                                wait_secs = 1;
+                                this.controller.stop_sse();
+                                this.running_events_subscribed = false;
+                                boot_grace_ticks = 0;
+                                consecutive_failures = 0;
+                                wait_ms = 400;
                                 cx.notify();
                             }
                         }
+                        process_alive = this
+                            ._sidecar
+                            .as_mut()
+                            .map(|sc| sc.is_alive())
+                            .unwrap_or(false);
+                    } else {
+                        process_alive = true;
                     }
 
                     client_opt = Some(this.client.clone());
@@ -3091,24 +3166,51 @@ impl AppState {
                     break;
                 }
 
-                smol::Timer::after(std::time::Duration::from_secs(wait_secs)).await;
+                smol::Timer::after(std::time::Duration::from_millis(wait_ms)).await;
 
                 if let Some(client) = client_opt {
                     let healthy = client.health().await.is_ok();
                     let _ = entity.update(cx, |this, cx| {
-                        if healthy && !this.sidecar_connected {
-                            this.sidecar_connected = true;
-                            this.refresh_from_sidecar(cx);
-                            cx.notify();
-                        } else if !healthy {
-                            if this.core_mode == "auto" {
-                                if let Some(ref mut sc) = this._sidecar {
-                                    sc.kill();
+                        if healthy {
+                            consecutive_failures = 0;
+                            boot_grace_ticks = 0;
+                            if !this.sidecar_connected {
+                                this.sidecar_connected = true;
+                                this.refresh_from_sidecar(cx);
+                                cx.notify();
+                            } else {
+                                // Ensure running events & active session SSE stay bound
+                                if !this.running_events_subscribed {
+                                    this.subscribe_running_events(cx);
                                 }
-                                this._sidecar = None;
+                                if let Some(sid) = this.active_session_id.clone() {
+                                    if sid != "demo-welcome-session" && this.controller.sse_task.is_none() {
+                                        this.connect_session_sse(sid, cx);
+                                    }
+                                }
                             }
-                            this.sidecar_connected = false;
-                            cx.notify();
+                        } else if process_alive && !this.sidecar_connected && boot_grace_ticks < 20 {
+                            // Node.js is still booting up (up to ~10s); keep polling fast without killing
+                            boot_grace_ticks += 1;
+                        } else {
+                            consecutive_failures += 1;
+                            // Require 3 consecutive failures before marking disconnected / respawning
+                            // so transient load spikes never cause spurious disconnects.
+                            if consecutive_failures >= 3 {
+                                if this.core_mode == "auto" {
+                                    if let Some(ref mut sc) = this._sidecar {
+                                        sc.kill();
+                                    }
+                                    this._sidecar = None;
+                                }
+                                if this.sidecar_connected {
+                                    this.sidecar_connected = false;
+                                    this.controller.stop_sse();
+                                    this.running_events_subscribed = false;
+                                    cx.notify();
+                                }
+                                consecutive_failures = 0;
+                            }
                         }
                     });
                 }
@@ -3645,20 +3747,43 @@ impl AppState {
             return;
         }
         self.running_events_subscribed = true;
-        let client = self.client.clone();
         let entity = cx.entity().clone();
-        let url = client.running_events_url();
-        let http = client.raw_http();
-        let token = client.token.clone();
-        let instance_id = client.instance_id.clone();
 
         cx.spawn(async move |_, cx| {
             loop {
+                let mut conn_info: Option<(reqwest::Client, String, String, String)> = None;
+                let mut is_connected = false;
+                let mut alive = false;
+                let _ = entity.update(cx, |this, _| {
+                    alive = true;
+                    is_connected = this.sidecar_connected;
+                    if is_connected {
+                        conn_info = Some((
+                            this.client.raw_http(),
+                            this.client.running_events_url(),
+                            this.client.token.clone(),
+                            this.client.instance_id.clone(),
+                        ));
+                    }
+                });
+                if !alive {
+                    break;
+                }
+                if !is_connected {
+                    smol::Timer::after(std::time::Duration::from_millis(600)).await;
+                    continue;
+                }
+
+                let Some((http, url, token, instance_id)) = conn_info else {
+                    smol::Timer::after(std::time::Duration::from_millis(600)).await;
+                    continue;
+                };
+
                 let res = crate::client::sse::consume_json_sse(
-                    http.clone(),
-                    url.clone(),
-                    token.clone(),
-                    instance_id.clone(),
+                    http,
+                    url,
+                    token,
+                    instance_id,
                     |val| {
                         let ids_opt = val
                             .get("runningSessionIds")
@@ -3676,9 +3801,7 @@ impl AppState {
                                     .any(|rid| !this.sessions.iter().any(|s| &s.id == rid));
                                 this.apply_running_ids(running_set);
                                 // The running list is the server's truth for the active
-                                // session: it both starts and *ends* a run. Only setting
-                                // it here left `is_agent_running` pinned true, which hid a
-                                // settled turn's footer and modified-files summary.
+                                // session: it both starts and *ends* a run.
                                 if let Some(sid) = this.active_session_id.clone() {
                                     let running = this.running_session_ids.contains(&sid);
                                     this.is_agent_running = running;
@@ -3725,19 +3848,12 @@ impl AppState {
                 )
                 .await;
 
-                let mut keep_going = false;
-                let _ = entity.update(cx, |this, _| {
-                    keep_going = this.sidecar_connected;
-                    if !keep_going {
-                        this.running_events_subscribed = false;
-                    }
-                });
-                if !keep_going {
-                    break;
-                }
-                let delay_ms = if res.is_err() { 1500 } else { 800 };
+                let delay_ms = if res.is_err() { 1000 } else { 500 };
                 smol::Timer::after(std::time::Duration::from_millis(delay_ms)).await;
             }
+            let _ = entity.update(cx, |this, _| {
+                this.running_events_subscribed = false;
+            });
         })
         .detach();
     }
@@ -4070,24 +4186,48 @@ impl AppState {
     }
 
     pub fn connect_session_sse(&mut self, session_id: String, cx: &mut Context<Self>) {
-        if !self.sidecar_connected {
+        if !self.sidecar_connected || session_id == "demo-welcome-session" {
             return;
         }
-        let client = self.client.clone();
         let entity = cx.entity().clone();
-        let url = client.agent_events_url(&session_id);
-        let http = client.raw_http();
-        let token = client.token.clone();
-        let instance_id = client.instance_id.clone();
 
         let task = cx.spawn(async move |_, cx| {
             let sid = session_id.clone();
             loop {
+                let mut conn_info: Option<(reqwest::Client, String, String, String)> = None;
+                let mut still_active = false;
+                let mut is_connected = false;
+                let _ = entity.update(cx, |this, _| {
+                    still_active = this.active_session_id.as_deref() == Some(sid.as_str());
+                    is_connected = this.sidecar_connected;
+                    if still_active && is_connected {
+                        conn_info = Some((
+                            this.client.raw_http(),
+                            this.client.agent_events_url(&sid),
+                            this.client.token.clone(),
+                            this.client.instance_id.clone(),
+                        ));
+                    }
+                });
+
+                if !still_active {
+                    break;
+                }
+                if !is_connected {
+                    // Sidecar is momentarily reconnecting; wait seamlessly without exiting SSE task
+                    smol::Timer::after(std::time::Duration::from_millis(500)).await;
+                    continue;
+                }
+                let Some((http, url, token, instance_id)) = conn_info else {
+                    smol::Timer::after(std::time::Duration::from_millis(500)).await;
+                    continue;
+                };
+
                 let res = consume_agent_sse(
-                    http.clone(),
-                    url.clone(),
-                    token.clone(),
-                    instance_id.clone(),
+                    http,
+                    url,
+                    token,
+                    instance_id,
                     |event| {
                         let mut keep_going = true;
                         let _ = entity.update(cx, |this, cx| {
@@ -4102,17 +4242,22 @@ impl AppState {
                 )
                 .await;
 
-                let mut should_retry = false;
+                let mut still_same_session = false;
                 let _ = entity.update(cx, |this, _| {
-                    should_retry = this.sidecar_connected
-                        && this.active_session_id.as_deref() == Some(sid.as_str());
+                    still_same_session = this.active_session_id.as_deref() == Some(sid.as_str());
                 });
-                if !should_retry {
+                if !still_same_session {
                     break;
                 }
-                let delay_ms = if res.is_err() { 1200 } else { 800 };
+                let delay_ms = if res.is_err() { 800 } else { 400 };
                 smol::Timer::after(std::time::Duration::from_millis(delay_ms)).await;
             }
+            let _ = entity.update(cx, |this, _| {
+                if this.active_session_id.as_deref() != Some(sid.as_str()) {
+                    return;
+                }
+                this.controller.sse_task = None;
+            });
         });
         self.controller.sse_task = Some(task);
     }
@@ -6263,7 +6408,7 @@ impl AppState {
                 };
 
                 let git_diff = if diff_patch.is_none() {
-                    let out = std::process::Command::new("git")
+                    let out = crate::client::hidden_command("git")
                         .arg("-C")
                         .arg(&cwd_clone)
                         .args(["diff", "HEAD", "--"])
@@ -6379,7 +6524,7 @@ fn parse_thinking_level_str(raw: &str) -> Option<ThinkingLevel> {
 }
 
 fn resolve_git_branch(cwd: &Path) -> Option<SharedString> {
-    let out = std::process::Command::new("git")
+    let out = crate::client::hidden_command("git")
         .arg("-C")
         .arg(cwd)
         .args(["rev-parse", "--is-inside-work-tree"])
@@ -6390,7 +6535,7 @@ fn resolve_git_branch(cwd: &Path) -> Option<SharedString> {
         return None;
     }
 
-    if let Ok(branch_out) = std::process::Command::new("git")
+    if let Ok(branch_out) = crate::client::hidden_command("git")
         .arg("-C")
         .arg(cwd)
         .args(["branch", "--show-current"])
@@ -6404,7 +6549,7 @@ fn resolve_git_branch(cwd: &Path) -> Option<SharedString> {
         }
     }
 
-    if let Ok(head_out) = std::process::Command::new("git")
+    if let Ok(head_out) = crate::client::hidden_command("git")
         .arg("-C")
         .arg(cwd)
         .args(["rev-parse", "--short", "HEAD"])

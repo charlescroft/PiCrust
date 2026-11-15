@@ -17,9 +17,13 @@ pub struct TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        // Windows ConPTY does not support POSIX signal names; call kill() directly.
-        let mut child = self.child.lock();
-        let _ = child.kill();
+        // Windows ConPTY does not support POSIX signal names; call kill() and reap off-thread.
+        let child_arc = self.child.clone();
+        std::thread::spawn(move || {
+            let mut child = child_arc.lock();
+            let _ = child.kill();
+            let _ = child.wait();
+        });
     }
 }
 
@@ -242,7 +246,7 @@ fn default_terminal_font() -> String {
     }
     #[cfg(target_os = "windows")]
     {
-        "Cascadia Mono".to_string()
+        "Consolas".to_string()
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {

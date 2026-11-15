@@ -9,7 +9,6 @@
 //! - Direct Git actions: checkout, create branch, create tag, copy commit SHA
 
 use std::path::Path;
-use std::process::Command;
 
 use chrono::{Local, TimeZone};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -319,7 +318,7 @@ pub fn load_git_graph_commits(
     branch_filter: Option<&str>,
     max_count: usize,
 ) -> Result<Vec<GitCommitRow>, String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::client::hidden_command("git");
     cmd.current_dir(cwd);
     cmd.arg("log");
     if let Some(b) = branch_filter {
@@ -347,7 +346,7 @@ pub fn load_git_graph_commits(
 }
 
 pub fn load_commit_files(cwd: &Path, hash: &str) -> Vec<GitFileChange> {
-    let out = Command::new("git")
+    let out = crate::client::hidden_command("git")
         .current_dir(cwd)
         .args(["show", "--numstat", "--format=", hash])
         .output();
@@ -387,7 +386,7 @@ pub fn load_commit_files(cwd: &Path, hash: &str) -> Vec<GitFileChange> {
 }
 
 pub fn load_commit_file_diff(cwd: &Path, hash: &str, file_path: &str) -> String {
-    let out = Command::new("git")
+    let out = crate::client::hidden_command("git")
         .current_dir(cwd)
         .args(["show", "--format=", hash, "--", file_path])
         .output();
@@ -399,7 +398,7 @@ pub fn load_commit_file_diff(cwd: &Path, hash: &str, file_path: &str) -> String 
 }
 
 pub fn git_checkout_target(cwd: &Path, target: &str) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::client::hidden_command("git")
         .current_dir(cwd)
         .args(["checkout", target])
         .output()
@@ -412,7 +411,7 @@ pub fn git_checkout_target(cwd: &Path, target: &str) -> Result<String, String> {
 }
 
 pub fn git_create_branch(cwd: &Path, branch_name: &str, target_hash: &str) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::client::hidden_command("git")
         .current_dir(cwd)
         .args(["branch", branch_name, target_hash])
         .output()
@@ -425,7 +424,7 @@ pub fn git_create_branch(cwd: &Path, branch_name: &str, target_hash: &str) -> Re
 }
 
 pub fn git_create_tag(cwd: &Path, tag_name: &str, target_hash: &str) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::client::hidden_command("git")
         .current_dir(cwd)
         .args(["tag", tag_name, target_hash])
         .output()
@@ -438,7 +437,7 @@ pub fn git_create_tag(cwd: &Path, tag_name: &str, target_hash: &str) -> Result<S
 }
 
 pub fn git_fetch_all(cwd: &Path) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::client::hidden_command("git")
         .current_dir(cwd)
         .args(["fetch", "--all", "--prune"])
         .output()

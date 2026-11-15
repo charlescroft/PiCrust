@@ -73,7 +73,11 @@ impl FileExplorerPanel {
         self.loaded_cwd = Some(cwd.clone());
         let tree_state = self.tree_state.clone();
         cx.spawn(async move |_, cx| {
-            let nodes = smol::unblock(move || build_tree_nodes(&cwd, 0)).await;
+            let nodes = smol::unblock(move || {
+                let mut budget = 4_000usize;
+                build_tree_nodes(&cwd, 0, &mut budget)
+            })
+            .await;
             let _ = tree_state.update(cx, |state, cx| {
                 state.set_items(nodes_to_tree_items(nodes), cx);
             });
@@ -209,8 +213,8 @@ impl FileExplorerPanel {
     }
 }
 
-fn build_tree_nodes(dir: &Path, depth: usize) -> Vec<FileNode> {
-    if depth > 4 || !dir.is_dir() {
+fn build_tree_nodes(dir: &Path, depth: usize, budget: &mut usize) -> Vec<FileNode> {
+    if depth > 4 || *budget == 0 || !dir.is_dir() {
         return Vec::new();
     }
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -220,7 +224,7 @@ fn build_tree_nodes(dir: &Path, depth: usize) -> Vec<FileNode> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
 
-    for entry in rd.flatten() {
+    for entry in rd.flatten().take(300) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if matches!(
@@ -241,7 +245,11 @@ fn build_tree_nodes(dir: &Path, depth: usize) -> Vec<FileNode> {
 
     let mut items = Vec::new();
     for (name, path) in dirs {
-        let children = build_tree_nodes(&path, depth + 1);
+        if *budget == 0 {
+            break;
+        }
+        *budget = budget.saturating_sub(1);
+        let children = build_tree_nodes(&path, depth + 1, budget);
         items.push(FileNode::Dir {
             id: path.to_string_lossy().into_owned(),
             name,
@@ -250,6 +258,10 @@ fn build_tree_nodes(dir: &Path, depth: usize) -> Vec<FileNode> {
         });
     }
     for (name, path) in files {
+        if *budget == 0 {
+            break;
+        }
+        *budget = budget.saturating_sub(1);
         items.push(FileNode::File {
             id: path.to_string_lossy().into_owned(),
             name,
