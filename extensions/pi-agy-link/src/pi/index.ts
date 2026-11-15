@@ -68,7 +68,9 @@ function formatResetShort(iso?: string): string | undefined {
 }
 
 function mapCatalogToPiModels(services: ReturnType<typeof createHostServices>) {
-  const catalog = services.catalog.get()
+  const poolData = services.pool.getPoolData()
+  const activeId = services.pool.getActiveAccountId('google') ?? poolData.lastActiveAccountId ?? poolData.primaryAccountId ?? undefined
+  const catalog = services.catalog.get(activeId)
   const cfg = services.getConfig()
   const hidden = new Set(
     (Array.isArray(cfg.hiddenModels) ? cfg.hiddenModels : [])
@@ -264,6 +266,7 @@ function emitOutput(ctx: ExtensionCommandContext, text: string, type: 'info' | '
 }
 
 export default function (pi: ExtensionAPI): void {
+  let onAdaptersUpdated = () => {}
   const mockCtx: CordisContext = {
     logger: {
       info: (msg: string) => console.log(msg),
@@ -273,7 +276,11 @@ export default function (pi: ExtensionAPI): void {
     get: () => undefined,
     effect: () => () => {},
     on: () => () => {},
-    emit: () => {},
+    emit: (event?: string) => {
+      if (event === 'llm/adapters-updated') {
+        onAdaptersUpdated()
+      }
+    },
   }
 
   const services = createHostServices(mockCtx, {})
@@ -331,26 +338,11 @@ export default function (pi: ExtensionAPI): void {
     await services.catalog.refreshIfNeeded(activeId).catch(() => undefined)
     await services.quota.refreshAllQuotas(false).catch(() => undefined)
     lastQuotaRefreshAt = Date.now()
+    registerAgyProvider()
     publishAgyUi(lastUiCtx, services)
   }
 
-  void refreshBootState()
-
-  const initialModels = mapCatalogToPiModels(services)
-
-  pi.registerProvider(AGY_PROVIDER_ID, {
-    name: AGY_PROVIDER_NAME,
-    baseUrl: 'agy-cli://local',
-    api: AGY_PROVIDER_ID,
-    apiKey: 'agy-cli-local',
-    models: initialModels,
-    refreshModels: async () => {
-      const poolData = services.pool.getPoolData()
-      const activeId = services.pool.getActiveAccountId('google') ?? poolData.lastActiveAccountId ?? poolData.primaryAccountId
-      await services.catalog.refreshIfNeeded(activeId).catch(() => undefined)
-      return mapCatalogToPiModels(services)
-    },
-    streamSimple: (model: any, context: any, options?: any) => {
+  const streamSimpleImpl = (model: any, context: any, options?: any) => {
       const stream = createAssistantMessageEventStream()
       const partial: any = {
         role: 'assistant',
@@ -452,8 +444,32 @@ export default function (pi: ExtensionAPI): void {
       })()
 
       return stream
-    },
-  } as any)
+    }
+
+  const registerAgyProvider = () => {
+    pi.registerProvider(AGY_PROVIDER_ID, {
+      name: AGY_PROVIDER_NAME,
+      baseUrl: 'agy-cli://local',
+      api: AGY_PROVIDER_ID,
+      apiKey: 'agy-cli-local',
+      models: mapCatalogToPiModels(services),
+      refreshModels: async () => {
+        const poolData = services.pool.getPoolData()
+        const activeId = services.pool.getActiveAccountId('google') ?? poolData.lastActiveAccountId ?? poolData.primaryAccountId
+        await services.catalog.refreshIfNeeded(activeId).catch(() => undefined)
+        return mapCatalogToPiModels(services)
+      },
+      streamSimple: streamSimpleImpl,
+    } as any)
+  }
+
+  onAdaptersUpdated = () => {
+    registerAgyProvider()
+    publishAgyUi(lastUiCtx, services)
+  }
+
+  registerAgyProvider()
+  void refreshBootState()
 
   pi.on('session_start', async (_event, ctx) => {
     lastUiCtx = ctx
@@ -560,7 +576,9 @@ export default function (pi: ExtensionAPI): void {
           return
         }
         services.pool.setActiveAccount(target.id, 'google')
+        registerAgyProvider()
         publishAgyUi(ctx, services)
+        void services.catalog.forceRefreshAndNotify(target.id).catch(() => undefined)
         void maybeRefreshActiveQuotaInBackground(true)
         emitOutput(ctx, `Switched active AGY account to ${target.email || target.alias}`)
         return
@@ -675,6 +693,7 @@ export default function (pi: ExtensionAPI): void {
       if (sub === 'pool-wide' && rest[0]) {
         const on = rest[0].toLowerCase() === 'on' || rest[0].toLowerCase() === 'true'
         services.setOverride('poolWideCatalog', on)
+        registerAgyProvider()
         publishAgyUi(ctx, services)
         emitOutput(ctx, `Pool-wide model catalog ${on ? 'enabled' : 'disabled'}`)
         return
@@ -703,6 +722,7 @@ export default function (pi: ExtensionAPI): void {
                 .map((s) => s.trim())
                 .filter(Boolean)
         services.setOverride('hiddenModels', list)
+        registerAgyProvider()
         publishAgyUi(ctx, services)
         emitOutput(ctx, list.length > 0 ? `Hidden models: ${list.join(', ')}` : 'Cleared hidden models')
         return

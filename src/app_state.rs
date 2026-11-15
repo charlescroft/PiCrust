@@ -5438,7 +5438,16 @@ impl AppState {
                                     self.status_banner = Some(SharedString::from("Copied Google OAuth login link to clipboard."));
                                 }
                             }
+                            let catalog_changed = self.agy_link_state.as_ref().map(|prev| {
+                                prev.active_account_id != parsed.active_account_id
+                                    || prev.available_models != parsed.available_models
+                                    || prev.settings.hidden_models != parsed.settings.hidden_models
+                            }).unwrap_or(true);
                             self.agy_link_state = Some(parsed);
+                            self.sync_agy_selected_model_visibility(cx);
+                            if catalog_changed {
+                                self.refresh_available_models_async(cx);
+                            }
                         }
                     } else if key.contains("todo") {
                         let parsed = parse_todo_widget_lines(&lines);
@@ -5750,6 +5759,60 @@ impl AppState {
         self.agy_link_copy_auth_url_pending = true;
         self.agy_link_auth_copied = false;
         self.send_agy_command("/agy auth-url".to_string(), cx);
+    }
+
+    pub fn sync_agy_selected_model_visibility(&mut self, cx: &mut Context<Self>) {
+        let Some(ref sel) = self.selected_model else {
+            return;
+        };
+        if sel.provider != "agy-link" {
+            return;
+        }
+        let is_hidden = self
+            .agy_link_state
+            .as_ref()
+            .map(|st| st.settings.hidden_models.iter().any(|h| h == &sel.id))
+            .unwrap_or(false);
+        if !is_hidden {
+            return;
+        }
+        if let Some(next_model) = self.visible_picker_models().into_iter().next() {
+            self.selected_model = Some(next_model.clone());
+            self.clamp_thinking_level_to_model();
+            let clamped_lvl = self.thinking_level;
+            if let Some(sid) = self.active_session_id.clone() {
+                if self.sidecar_connected {
+                    let client = self.client.clone();
+                    cx.spawn(async move |_, _| {
+                        let _ = client
+                            .set_session_model(&sid, &next_model.provider, &next_model.id)
+                            .await;
+                        let _ = client.set_thinking_level(&sid, clamped_lvl).await;
+                    })
+                    .detach();
+                }
+            }
+        }
+    }
+
+    pub fn refresh_available_models_async(&mut self, cx: &mut Context<Self>) {
+        if !self.sidecar_connected {
+            return;
+        }
+        let client = self.client.clone();
+        let cwd_str = self.active_cwd.to_string_lossy().into_owned();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            if let Ok(val) = client.get_models(Some(&cwd_str)).await {
+                let _ = entity.update(cx, |this, cx| {
+                    this.apply_models_response(&val);
+                    this.enrich_thinking_levels_from_config();
+                    this.sync_agy_selected_model_visibility(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     pub fn send_agy_command(&mut self, cmd: String, cx: &mut Context<Self>) {

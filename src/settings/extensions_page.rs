@@ -1299,6 +1299,10 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                                     } else if !list.iter().any(|h| h == &mid) {
                                                         list.push(mid);
                                                     }
+                                                    if let Some(st) = s.agy_link_state.as_mut() {
+                                                        st.settings.hidden_models = list.clone();
+                                                    }
+                                                    s.sync_agy_selected_model_visibility(cx);
                                                     let arg = if list.is_empty() {
                                                         "clear".to_string()
                                                     } else {
