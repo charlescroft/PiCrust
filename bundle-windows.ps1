@@ -10,6 +10,7 @@ cargo build --release --target x86_64-pc-windows-msvc
 
 Write-Host "[picrust] 2. Packaging distribution layout..." -ForegroundColor Cyan
 if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
+New-Item -ItemType Directory -Path "$ScriptDir\dist-windows" -Force | Out-Null
 New-Item -ItemType Directory -Path "$OutputDir\resources\sidecar" -Force | Out-Null
 
 Copy-Item "$ScriptDir\target\x86_64-pc-windows-msvc\release\pi-gpui.exe" "$OutputDir\PiCrust.exe"

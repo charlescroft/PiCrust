@@ -22,25 +22,22 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pi-gpui
 
       - name: Run Tests
-        run: |
-          cd pi-gpui
-          cargo test
+        run: cargo test
 
       - name: Build macOS .app Bundle
         run: |
-          ./pi-gpui/bundle-macos.sh
-          cd pi-gpui/dist-macos
+          chmod +x ./bundle-macos.sh
+          ./bundle-macos.sh
+          cd dist-macos
           zip -r -y "PiCrust-macos.zip" "PiCrust.app"
 
       - name: Upload macOS .app Artifact
         uses: actions/upload-artifact@v4
         with:
           name: PiCrust-macos-app
-          path: pi-gpui/dist-macos/PiCrust-macos.zip
+          path: dist-macos/PiCrust-macos.zip
 
   windows:
     name: Build Windows (.exe)
@@ -56,31 +53,25 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pi-gpui
 
       - name: Run Tests
-        run: |
-          cd pi-gpui
-          cargo test
+        run: cargo test
 
       - name: Build Windows .exe & Package
         shell: pwsh
-        run: |
-          cd pi-gpui
-          .\bundle-windows.ps1
+        run: .\bundle-windows.ps1
 
       - name: Upload Windows Standalone .exe
         uses: actions/upload-artifact@v4
         with:
           name: PiCrust-windows-exe
-          path: pi-gpui/dist-windows/PiCrust.exe
+          path: dist-windows/PiCrust.exe
 
       - name: Upload Windows Bundle ZIP
         uses: actions/upload-artifact@v4
         with:
           name: PiCrust-windows-zip
-          path: pi-gpui/dist-windows/PiCrust-windows-x64.zip
+          path: dist-windows/PiCrust-windows-x64.zip
 
   linux:
     name: Build Linux (.AppImage)
@@ -116,24 +107,20 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pi-gpui
 
       - name: Run Tests
-        run: |
-          cd pi-gpui
-          cargo test
+        run: cargo test
 
       - name: Build Linux Standalone AppImage
         run: |
-          chmod +x pi-gpui/bundle-linux.sh
-          ./pi-gpui/bundle-linux.sh
+          chmod +x ./bundle-linux.sh
+          ./bundle-linux.sh
 
       - name: Upload Linux .AppImage
         uses: actions/upload-artifact@v4
         with:
           name: PiCrust-linux-appimage
-          path: pi-gpui/dist-linux/PiCrust-x86_64.AppImage
+          path: dist-linux/PiCrust-x86_64.AppImage
 
   release:
     name: Create GitHub Release

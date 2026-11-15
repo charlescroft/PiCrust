@@ -1,4 +1,5 @@
 /target
 /dist-macos
-/dist-sidecar
+/dist-windows
+/dist-linux
 node_modules

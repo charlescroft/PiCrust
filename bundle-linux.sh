@@ -10,6 +10,7 @@ echo "[picrust] 1. Compiling PiCrust (Release x86_64-unknown-linux-gnu)..."
 
 echo "[picrust] 2. Preparing AppDir layout..."
 rm -rf "$APPDIR"
+mkdir -p "$OUTDIR"
 mkdir -p "$APPDIR/usr/bin" \
          "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/applications" \
