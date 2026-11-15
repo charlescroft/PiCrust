@@ -1251,6 +1251,11 @@ fn strip_outer_fence(body: &str) -> (Option<String>, String) {
     (None, trimmed.to_string())
 }
 
+pub fn parse_agy_link_widget_lines(lines: &[String]) -> Option<crate::client::types::AgyLinkState> {
+    let raw = lines.iter().find(|l| !l.trim().is_empty())?;
+    serde_json::from_str::<crate::client::types::AgyLinkState>(raw).ok()
+}
+
 pub fn parse_subagent_async_json_widget(lines: &[String]) -> Option<Vec<SubagentRunInfo>> {
     const PREFIX: &str = "PI_SUBAGENT_ASYNC_JSON:";
     let raw_line = lines.iter().find_map(|l| l.strip_prefix(PREFIX))?;
@@ -1880,6 +1885,19 @@ mod tests {
         assert!(matches!(parsed[1].process_steps[2], ProcessStep::Thinking(_)));
         assert!(parsed[1].tool_calls.is_empty());
         assert_eq!(parsed[1].content, "Done!");
+    }
+
+    #[test]
+    fn parses_agy_link_widget_json() {
+        let lines = vec![
+            r#"{"version":"1.5.9","dormantReason":null,"activeAccountId":"acc_1","accounts":[{"id":"acc_1","alias":"Primary","email":"user@example.com","tier":"PRO/ULTRA","priority":1,"disabled":false,"active":true,"systemHome":true,"authRequired":false,"fiveHourPct":92,"fiveHourReset":"3h 10m","weeklyPct":85,"weeklyReset":"5d 2h","models":[{"name":"gemini-3.6-flash","percentage":92,"resetTime":"3h 10m"}]}],"updatedAt":1700000000000}"#.to_string(),
+        ];
+        let parsed = parse_agy_link_widget_lines(&lines).unwrap();
+        assert_eq!(parsed.version.as_deref(), Some("1.5.9"));
+        assert_eq!(parsed.accounts.len(), 1);
+        assert_eq!(parsed.accounts[0].email.as_deref(), Some("user@example.com"));
+        assert_eq!(parsed.accounts[0].five_hour_pct, Some(92));
+        assert_eq!(parsed.accounts[0].models.len(), 1);
     }
 
     #[test]

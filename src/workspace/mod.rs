@@ -315,6 +315,11 @@ impl Render for WorkspaceView {
                 window,
                 cx,
             ))
+            .child(crate::panels::agy_link_modal::render_agy_link_overlay(
+                &self.app_state,
+                window,
+                cx,
+            ))
     }
 }
 

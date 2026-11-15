@@ -856,3 +856,70 @@ pub struct ConfiguredProviderInfo {
     pub has_api_key: bool,
     pub models: Vec<ConfiguredModelInfo>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLinkModelQuota {
+    pub name: String,
+    pub percentage: i32,
+    #[serde(default)]
+    pub reset_time: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLinkAccount {
+    pub id: String,
+    pub alias: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default)]
+    pub priority: usize,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
+    pub system_home: bool,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+    #[serde(default)]
+    pub auth_required: bool,
+    #[serde(default)]
+    pub auth_error: Option<String>,
+    #[serde(default)]
+    pub cooldown_until: Option<u64>,
+    #[serde(default)]
+    pub cooldown_reason: Option<String>,
+    #[serde(default)]
+    pub five_hour_pct: Option<i32>,
+    #[serde(default)]
+    pub five_hour_reset: Option<String>,
+    #[serde(default)]
+    pub weekly_pct: Option<i32>,
+    #[serde(default)]
+    pub weekly_reset: Option<String>,
+    #[serde(default)]
+    pub argon_pct: Option<i32>,
+    #[serde(default)]
+    pub argon_reset: Option<String>,
+    #[serde(default)]
+    pub models: Vec<AgyLinkModelQuota>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLinkState {
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub dormant_reason: Option<String>,
+    #[serde(default)]
+    pub active_account_id: Option<String>,
+    #[serde(default)]
+    pub accounts: Vec<AgyLinkAccount>,
+    #[serde(default)]
+    pub updated_at: u64,
+}

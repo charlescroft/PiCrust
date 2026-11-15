@@ -55,6 +55,20 @@ pub fn render_status_bar(
     let app_for_reconnect = app_state.clone();
     let app_for_term = app_state.clone();
     let app_for_settings = app_state.clone();
+    let app_for_agy = app_state.clone();
+    let agy_badge_label = state.agy_link_status_text.clone().or_else(|| {
+        state.agy_link_state.as_ref().map(|agy| {
+            if let Some(active) = agy.accounts.iter().find(|a| a.active).or_else(|| agy.accounts.first()) {
+                let name = active.email.as_deref().unwrap_or(&active.alias);
+                match active.five_hour_pct {
+                    Some(pct) => format!("AGY: {name} ({pct}%)"),
+                    None => format!("AGY: {name}"),
+                }
+            } else {
+                "AGY".to_string()
+            }
+        })
+    });
 
     let mut bar = StatusBar::new()
         .py_1()
@@ -295,6 +309,21 @@ pub fn render_status_bar(
         h_flex()
             .items_center()
             .gap_2()
+            .children(agy_badge_label.map(|label| {
+                let app_agy = app_for_agy.clone();
+                Button::new("sb-agy-link")
+                    .ghost()
+                    .small()
+                    .h(px(26.))
+                    .icon(IconName::Bot)
+                    .label(SharedString::from(label))
+                    .tooltip("Open Antigravity (agy-link) Pool & Quotas")
+                    .on_click(move |_, _, cx| {
+                        app_agy.update(cx, |s, cx| {
+                            s.open_agy_link_modal(cx);
+                        });
+                    })
+            }))
             .child(
                 Button::new("sb-terminal")
                     .ghost()

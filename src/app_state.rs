@@ -222,6 +222,10 @@ pub struct AppState {
     pub pending_composer_mention: Option<String>,
     #[allow(dead_code)]
     pub status_banner: Option<SharedString>,
+    pub agy_link_state: Option<AgyLinkState>,
+    pub agy_link_status_text: Option<String>,
+    pub agy_link_modal_open: bool,
+    pub agy_link_details_account_id: Option<String>,
 }
 
 impl AppState {
@@ -511,6 +515,10 @@ impl AppState {
             draft_restore_text: None,
             pending_composer_mention: None,
             status_banner: None,
+            agy_link_state: None,
+            agy_link_status_text: None,
+            agy_link_modal_open: false,
+            agy_link_details_account_id: None,
         };
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
@@ -5231,6 +5239,12 @@ impl AppState {
                         } else if let Some(runs) = parse_subagent_async_json_widget(&lines) {
                             self.subagent_runs = runs;
                         }
+                    } else if key == "agy-link-state" {
+                        if lines.is_empty() {
+                            self.agy_link_state = None;
+                        } else if let Some(parsed) = crate::client::session_controller::parse_agy_link_widget_lines(&lines) {
+                            self.agy_link_state = Some(parsed);
+                        }
                     } else if key.contains("todo") {
                         let parsed = parse_todo_widget_lines(&lines);
                         if !self.todos_from_tool && (!parsed.is_empty() || lines.is_empty()) {
@@ -5244,12 +5258,19 @@ impl AppState {
                             .get("statusText")
                             .and_then(Value::as_str)
                             .map(String::from);
+                    } else if key == "agy-link" {
+                        self.agy_link_status_text = payload
+                            .get("statusText")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.trim().is_empty())
+                            .map(String::from);
                     }
                 } else if method == "notify" {
                     if let Some(msg) = payload.get("message").and_then(Value::as_str) {
                         let notify_type = payload.get("notifyType").and_then(Value::as_str).unwrap_or("info");
-                        if notify_type == "error" || notify_type == "warning" {
-                            self.status_banner = Some(SharedString::from(msg.to_string()));
+                        if notify_type == "error" || notify_type == "warning" || notify_type == "info" {
+                            let summary = msg.lines().take(3).collect::<Vec<_>>().join(" | ");
+                            self.status_banner = Some(SharedString::from(summary));
                         }
                     }
                 } else if let Ok(req) = serde_json::from_value::<ExtensionUiRequest>(payload) {
@@ -5496,6 +5517,39 @@ impl AppState {
             self.pending_ui_request = Some(next);
         }
         cx.notify();
+    }
+
+    pub fn open_agy_link_modal(&mut self, cx: &mut Context<Self>) {
+        self.agy_link_modal_open = true;
+        cx.notify();
+    }
+
+    pub fn close_agy_link_modal(&mut self, cx: &mut Context<Self>) {
+        self.agy_link_modal_open = false;
+        self.agy_link_details_account_id = None;
+        cx.notify();
+    }
+
+    pub fn send_agy_command(&mut self, cmd: String, cx: &mut Context<Self>) {
+        if !self.sidecar_connected {
+            self.status_banner = Some(SharedString::from("AGY commands require Pi sidecar to be connected."));
+            cx.notify();
+            return;
+        }
+        let Some(sid) = self.active_session_id.clone() else {
+            self.status_banner = Some(SharedString::from("Open or start a session first to run AGY commands."));
+            cx.notify();
+            return;
+        };
+        let client = self.client.clone();
+        self.status_banner = Some(SharedString::from(format!("Running {cmd}…")));
+        cx.notify();
+        cx.spawn(async move |_, _| {
+            let _ = client
+                .send_agent_command(&sid, json!({ "type": "prompt", "message": cmd }))
+                .await;
+        })
+        .detach();
     }
 
     fn record_assistant_error(&mut self, err: String) {

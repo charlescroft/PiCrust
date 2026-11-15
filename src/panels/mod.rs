@@ -1,3 +1,4 @@
+pub mod agy_link_modal;
 pub mod artifact_panel;
 pub mod file_explorer;
 pub mod file_viewer;
