@@ -449,15 +449,6 @@ impl ChatPanel {
             )
         };
 
-        // A review position must survive tail updates: remember the exact top offset
-        // and restore it after any mutation, otherwise a growing thinking block or a
-        // new tool step below drags the viewport along with it.
-        let pinned_offset = self
-            .scroller
-            .read(cx)
-            .is_scrolled_up()
-            .then(|| self.scroller.read(cx).logical_scroll_top());
-
         if font_sz != self.last_font_size {
             self.last_font_size = font_sz;
             self.scroller.update(cx, |s, cx| s.remeasure(cx));
@@ -543,9 +534,7 @@ impl ChatPanel {
             return;
         }
 
-        let mut mutated = false;
         if new_count > self.last_message_count {
-            mutated = true;
             let added = new_count - self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
@@ -555,11 +544,20 @@ impl ChatPanel {
             if let Some(ids) = next_msg_ids {
                 self.cached_msg_ids = ids;
             }
+            let is_new_turn_start = app.read(cx).messages.last().is_some_and(|m| {
+                m.role == MessageRole::User
+                    || (m.role == MessageRole::Assistant
+                        && m.is_streaming
+                        && m.content.is_empty()
+                        && m.thinking.is_empty())
+            });
             self.scroller.update(cx, |s, cx| {
                 let _ = s.append(added, cx);
+                if is_new_turn_start || !s.is_scrolled_up() {
+                    s.scroll_to_end(cx);
+                }
             });
         } else if new_count < self.last_message_count {
-            mutated = true;
             let old_count = self.last_message_count;
             self.last_message_count = new_count;
             self.last_tail_sig = tail_sig;
@@ -577,7 +575,6 @@ impl ChatPanel {
                 }
             });
         } else if new_count > 0 && tail_sig != self.last_tail_sig {
-            mutated = true;
             self.last_tail_sig = tail_sig;
             let idx = new_count - 1;
             self.scroller.update(cx, |s, cx| {
@@ -588,18 +585,6 @@ impl ChatPanel {
         // Bound row_cache memory on long sessions by keeping recent/visible message caches
         if let Some(ids) = keep_ids {
             self.row_cache.retain(|id, _| ids.contains(id));
-        }
-
-        if mutated {
-            if let Some(offset) = pinned_offset {
-                let moved = {
-                    let s = self.scroller.read(cx);
-                    s.logical_scroll_top() != offset || s.is_following_tail()
-                };
-                if moved {
-                    self.scroller.update(cx, |s, cx| s.scroll_to_offset(offset, cx));
-                }
-            }
         }
     }
 }
