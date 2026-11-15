@@ -228,6 +228,8 @@ pub struct AppState {
     pub agy_link_modal_open: bool,
     pub agy_link_modal_tab: usize,
     pub agy_link_loading: bool,
+    pub agy_link_copy_auth_url_pending: bool,
+    pub agy_link_auth_copied: bool,
     pub agy_link_details_account_id: Option<String>,
     pub agy_link_proxy_input: Option<Entity<gpui_kit::component::input::InputState>>,
     pub settings_deleting_keys: std::collections::HashSet<String>,
@@ -528,6 +530,8 @@ impl AppState {
             agy_link_modal_open: false,
             agy_link_modal_tab: 0,
             agy_link_loading: false,
+            agy_link_copy_auth_url_pending: false,
+            agy_link_auth_copied: false,
             agy_link_details_account_id: None,
             agy_link_proxy_input: None,
             settings_deleting_keys: std::collections::HashSet::new(),
@@ -5426,6 +5430,14 @@ impl AppState {
                         if lines.is_empty() {
                             self.agy_link_state = None;
                         } else if let Some(parsed) = crate::client::session_controller::parse_agy_link_widget_lines(&lines) {
+                            if self.agy_link_copy_auth_url_pending {
+                                if let Some(url) = parsed.pending_auth_url.as_ref().filter(|u| !u.trim().is_empty()) {
+                                    cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(url.clone()));
+                                    self.agy_link_copy_auth_url_pending = false;
+                                    self.agy_link_auth_copied = true;
+                                    self.status_banner = Some(SharedString::from("Copied Google OAuth login link to clipboard."));
+                                }
+                            }
                             self.agy_link_state = Some(parsed);
                         }
                     } else if key.contains("todo") {
@@ -5718,6 +5730,26 @@ impl AppState {
         self.agy_link_modal_open = false;
         self.agy_link_details_account_id = None;
         cx.notify();
+    }
+
+    pub fn copy_agy_auth_url(&mut self, cx: &mut Context<Self>) {
+        if let Some(url) = self
+            .agy_link_state
+            .as_ref()
+            .and_then(|s| s.pending_auth_url.as_ref())
+            .filter(|u| !u.trim().is_empty())
+            .cloned()
+        {
+            cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(url));
+            self.agy_link_copy_auth_url_pending = false;
+            self.agy_link_auth_copied = true;
+            self.status_banner = Some(SharedString::from("Copied Google OAuth login link to clipboard."));
+            cx.notify();
+            return;
+        }
+        self.agy_link_copy_auth_url_pending = true;
+        self.agy_link_auth_copied = false;
+        self.send_agy_command("/agy auth-url".to_string(), cx);
     }
 
     pub fn send_agy_command(&mut self, cmd: String, cx: &mut Context<Self>) {

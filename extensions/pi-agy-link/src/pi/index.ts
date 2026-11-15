@@ -43,6 +43,7 @@ interface AgyWidgetState {
   version?: string | null
   dormantReason?: string | null
   activeAccountId?: string | null
+  pendingAuthUrl?: string
   accounts: AgyWidgetAccount[]
   updatedAt: number
 }
@@ -158,10 +159,14 @@ function buildWidgetState(services: ReturnType<typeof createHostServices>): AgyW
     .get(activeId)
     .models.map((m) => m.id)
 
+  const authSt = services.poolAuth.status()
+  const pendingAuthUrl = authSt.phase === 'waiting' ? authSt.url : undefined
+
   return {
     version: services.status.version,
     dormantReason: services.status.dormantReason,
     activeAccountId: activeId,
+    pendingAuthUrl,
     accounts: mappedAccounts,
     availableModels,
     settings: {
@@ -275,8 +280,35 @@ export default function (pi: ExtensionAPI): void {
   runBootHygiene(services)
 
   let lastUiCtx: ExtensionContext | undefined
+  let lastQuotaRefreshAt = 0
+  let bgQuotaRefreshing = false
+
+  const maybeRefreshActiveQuotaInBackground = async (force = false) => {
+    if (bgQuotaRefreshing) return
+    const now = Date.now()
+    if (!force && now - lastQuotaRefreshAt < 20_000) return
+    const poolData = services.pool.getPoolData()
+    const activeId = services.pool.getActiveAccountId('google') ?? poolData.lastActiveAccountId ?? poolData.primaryAccountId
+    const activeAcc = activeId ? services.pool.getAccounts().find((a) => a.id === activeId) : undefined
+    if (!activeAcc) return
+    bgQuotaRefreshing = true
+    try {
+      await services.quota.refreshAccountQuota(activeAcc, force).catch(() => undefined)
+      lastQuotaRefreshAt = Date.now()
+      publishAgyUi(lastUiCtx, services)
+    } finally {
+      bgQuotaRefreshing = false
+    }
+  }
+
+  const bgQuotaTimer = setInterval(() => {
+    if (!lastUiCtx) return
+    void maybeRefreshActiveQuotaInBackground(false)
+  }, 45_000)
+  bgQuotaTimer.unref?.()
 
   const refreshBootState = async () => {
+    publishAgyUi(lastUiCtx, services)
     const currentBin = services.bin()
     if (!currentBin) {
       services.status.dormantReason = 'agy binary not found'
@@ -298,6 +330,7 @@ export default function (pi: ExtensionAPI): void {
     const activeId = services.pool.getActiveAccountId('google') ?? poolData.lastActiveAccountId ?? poolData.primaryAccountId
     await services.catalog.refreshIfNeeded(activeId).catch(() => undefined)
     await services.quota.refreshAllQuotas(false).catch(() => undefined)
+    lastQuotaRefreshAt = Date.now()
     publishAgyUi(lastUiCtx, services)
   }
 
@@ -430,6 +463,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on('turn_end', async (_event, ctx) => {
     lastUiCtx = ctx
     publishAgyUi(ctx, services)
+    void maybeRefreshActiveQuotaInBackground(false)
   })
 
   pi.on('session_shutdown', async () => {
@@ -508,6 +542,15 @@ export default function (pi: ExtensionAPI): void {
 
       if (sub === 'refresh' || sub === 'quota') return await runRefresh(ctx)
       if (sub === 'add') return await runAddAccount(ctx)
+      if (sub === 'auth-url') {
+        const st = services.poolAuth.status()
+        if (st.phase === 'waiting' && st.url) {
+          publishAgyUi(ctx, services)
+          emitOutput(ctx, st.url)
+          return
+        }
+        return await runAddAccount(ctx)
+      }
       if (sub === 'primary') return await runPrimaryAuth(ctx)
       if (sub === 'details' || sub === 'models') return showDetails(ctx, rest[0])
       if (sub === 'switch' && rest[0]) {
@@ -518,6 +561,7 @@ export default function (pi: ExtensionAPI): void {
         }
         services.pool.setActiveAccount(target.id, 'google')
         publishAgyUi(ctx, services)
+        void maybeRefreshActiveQuotaInBackground(true)
         emitOutput(ctx, `Switched active AGY account to ${target.email || target.alias}`)
         return
       }
@@ -729,15 +773,44 @@ export default function (pi: ExtensionAPI): void {
   async function runRefresh(ctx: ExtensionCommandContext): Promise<void> {
     emitOutput(ctx, 'Refreshing Antigravity quotas…')
     await services.quota.refreshAllQuotas(true).catch(() => undefined)
+    lastQuotaRefreshAt = Date.now()
     await services.catalog.refreshIfNeeded().catch(() => undefined)
     publishAgyUi(ctx, services)
     emitOutput(ctx, 'Antigravity quotas refreshed.')
   }
 
+  let authWatchTimer: ReturnType<typeof setInterval> | null = null
+
   async function runAddAccount(ctx: ExtensionCommandContext): Promise<void> {
     const res = await services.poolAuth.begin()
     if (res.ok) {
       emitOutput(ctx, res.url ? `Opened Google OAuth in browser (${res.url}). Complete sign-in to add account.` : 'Google OAuth started.')
+      if (authWatchTimer) {
+        clearInterval(authWatchTimer)
+        authWatchTimer = null
+      }
+      let checks = 0
+      authWatchTimer = setInterval(() => {
+        checks += 1
+        const st = services.poolAuth.status()
+        if (st.phase === 'done') {
+          if (authWatchTimer) {
+            clearInterval(authWatchTimer)
+            authWatchTimer = null
+          }
+          void services.quota.refreshAllQuotas(true).catch(() => undefined).finally(() => {
+            lastQuotaRefreshAt = Date.now()
+            publishAgyUi(lastUiCtx, services)
+          })
+        } else if (st.phase === 'error' || st.phase === 'idle' || checks >= 180) {
+          if (authWatchTimer) {
+            clearInterval(authWatchTimer)
+            authWatchTimer = null
+          }
+          publishAgyUi(lastUiCtx, services)
+        }
+      }, 1000)
+      authWatchTimer.unref?.()
     } else {
       emitOutput(ctx, `Failed to start OAuth: ${res.error || res.code || 'unknown'}`, 'error')
     }

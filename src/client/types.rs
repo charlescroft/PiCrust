@@ -1005,6 +1005,8 @@ pub struct AgyLinkState {
     #[serde(default)]
     pub active_account_id: Option<String>,
     #[serde(default)]
+    pub pending_auth_url: Option<String>,
+    #[serde(default)]
     pub accounts: Vec<AgyLinkAccount>,
     #[serde(default)]
     pub available_models: Vec<String>,

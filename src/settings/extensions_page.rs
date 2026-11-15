@@ -661,16 +661,19 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
 }
 
 pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale, cx: &App) -> SettingPage {
-    let (agy_state, agy_loading, details_id) = {
+    let (agy_state, agy_loading, agy_copy_pending, agy_auth_copied, details_id) = {
         let s = app_state.read(cx);
         (
             s.agy_link_state.clone(),
             s.agy_link_loading,
+            s.agy_link_copy_auth_url_pending,
+            s.agy_link_auth_copied,
             s.agy_link_details_account_id.clone(),
         )
     };
 
     let app_add = app_state.clone();
+    let app_copy_auth = app_state.clone();
     let app_refresh = app_state.clone();
     let app_clear_cd = app_state.clone();
 
@@ -682,6 +685,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                 "Account Actions",
                 SettingField::render(move |_, _, _| {
                     let app_add = app_add.clone();
+                    let app_copy_auth = app_copy_auth.clone();
                     let app_refresh = app_refresh.clone();
                     let app_clear_cd = app_clear_cd.clone();
                     h_flex()
@@ -699,6 +703,29 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                 .on_click(move |_, _, cx| {
                                     app_add.update(cx, |s, cx| {
                                         s.send_agy_command("/agy add".to_string(), cx);
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("settings-agy-copy-auth-url")
+                                .outline()
+                                .small()
+                                .icon(if agy_auth_copied {
+                                    IconName::Check
+                                } else {
+                                    IconName::Copy
+                                })
+                                .loading(agy_copy_pending)
+                                .disabled(agy_copy_pending)
+                                .label(if agy_auth_copied {
+                                    "Copied Link"
+                                } else {
+                                    "Copy Login Link"
+                                })
+                                .tooltip("Copy Google OAuth login URL to open in another browser")
+                                .on_click(move |_, _, cx| {
+                                    app_copy_auth.update(cx, |s, cx| {
+                                        s.copy_agy_auth_url(cx);
                                     });
                                 }),
                         )
@@ -799,7 +826,16 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                         v_flex()
                             .w_full()
                             .gap_2()
-                            .py_1()
+                            .px_3()
+                            .py_2p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(if is_active {
+                                cx.theme().primary
+                            } else {
+                                cx.theme().border
+                            })
+                            .bg(cx.theme().background)
                             .child(
                                 h_flex()
                                     .w_full()
