@@ -232,6 +232,8 @@ pub struct AppState {
     pub agy_link_proxy_input: Option<Entity<gpui_kit::component::input::InputState>>,
     pub settings_deleting_keys: std::collections::HashSet<String>,
     pub suppress_next_prompt_reload: bool,
+    pub settings_open_nonce: u64,
+    pub agy_visibility_scroll: gpui_kit::ScrollHandle,
 }
 
 impl AppState {
@@ -531,6 +533,8 @@ impl AppState {
             agy_link_proxy_input: None,
             settings_deleting_keys: std::collections::HashSet::new(),
             suppress_next_prompt_reload: false,
+            settings_open_nonce: 0,
+            agy_visibility_scroll: gpui_kit::ScrollHandle::new(),
         };
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
@@ -3719,7 +3723,9 @@ impl AppState {
         if running {
             let streaming = st.get("isStreaming").and_then(Value::as_bool).unwrap_or(false)
                 || st.get("isPromptRunning").and_then(Value::as_bool).unwrap_or(false);
-            self.is_agent_running = streaming;
+            if !self.suppress_next_prompt_reload || !streaming {
+                self.is_agent_running = streaming;
+            }
             self.is_compacting = st.get("isCompacting").and_then(Value::as_bool).unwrap_or(false);
         }
         if let Some(ac) = st.get("autoCompactionEnabled").and_then(Value::as_bool) {
@@ -3916,7 +3922,9 @@ impl AppState {
                                 // session: it both starts and *ends* a run.
                                 if let Some(sid) = this.active_session_id.clone() {
                                     let running = this.running_session_ids.contains(&sid);
-                                    this.is_agent_running = running;
+                                    if !this.suppress_next_prompt_reload || !running {
+                                        this.is_agent_running = running;
+                                    }
                                     if running {
                                         if this.controller.sse_task.is_none() {
                                             this.connect_session_sse(sid.clone(), cx);
@@ -4084,7 +4092,9 @@ impl AppState {
         self.pending_ui_request = None;
         self.dialog_queue.clear();
         self.questionnaire_request_id = None;
-        self.is_agent_running = self.running_session_ids.contains(&session_id);
+        if !self.suppress_next_prompt_reload {
+            self.is_agent_running = self.running_session_ids.contains(&session_id);
+        }
         self.is_compacting = false;
         self.retry_status = None;
         self.subagent_runs.clear();
@@ -4371,7 +4381,7 @@ impl AppState {
     fn apply_sse_event(&mut self, event: AgentSseEvent, cx: &mut Context<Self>) {
         match event {
             AgentSseEvent::Connected { is_streaming } => {
-                if is_streaming {
+                if is_streaming && !self.suppress_next_prompt_reload {
                     self.is_agent_running = true;
                     if let Some(sid) = self.active_session_id.clone() {
                         self.sync_active_agent_state(sid, cx);
@@ -5632,6 +5642,7 @@ impl AppState {
     pub fn open_agy_link_modal(&mut self, cx: &mut Context<Self>) {
         self.agy_link_modal_open = false;
         self.settings_initial_page = 6;
+        self.settings_open_nonce = self.settings_open_nonce.wrapping_add(1);
         self.settings_open = true;
         cx.notify();
     }
@@ -6600,6 +6611,7 @@ impl AppState {
 
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_initial_page = 0;
+        self.settings_open_nonce = self.settings_open_nonce.wrapping_add(1);
         self.settings_open = true;
         self.refresh_settings_data(cx);
         cx.notify();
@@ -6609,6 +6621,7 @@ impl AppState {
     /// onboarding button in the empty chat state).
     pub fn open_model_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_initial_page = 1;
+        self.settings_open_nonce = self.settings_open_nonce.wrapping_add(1);
         self.settings_open = true;
         self.refresh_settings_data(cx);
         cx.notify();

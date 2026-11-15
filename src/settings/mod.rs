@@ -150,7 +150,10 @@ pub fn render_settings_overlay(
     let app_footer_save = app_state.clone();
     let app_backdrop_close = app_state.clone();
 
-    let initial_page = app_state.read(cx).settings_initial_page.min(6);
+    let (initial_page, open_nonce) = {
+        let s = app_state.read(cx);
+        (s.settings_initial_page.min(6), s.settings_open_nonce)
+    };
 
     let pages = vec![
         general_setting_page(app_state.clone(), locale, cx),
@@ -243,11 +246,9 @@ pub fn render_settings_overlay(
                         .w_full()
                         .overflow_hidden()
                         .child(
-                            Settings::new(match initial_page {
-                                1 => "picrust-settings-models",
-                                6 => "picrust-settings-antigravity",
-                                _ => "picrust-settings",
-                            })
+                            Settings::new(SharedString::from(format!(
+                                "picrust-settings-{open_nonce}"
+                            )))
                                 .default_selected_index(SelectIndex {
                                     page_ix: initial_page,
                                     group_ix: None,
