@@ -68,19 +68,20 @@ function formatResetShort(iso?: string): string | undefined {
 
 function mapCatalogToPiModels(services: ReturnType<typeof createHostServices>) {
   const catalog = services.catalog.get()
-  const rawModels = catalog.models
+  const cfg = services.getConfig()
+  const hidden = new Set(
+    (Array.isArray(cfg.hiddenModels) ? cfg.hiddenModels : [])
+      .map((s) => s.trim())
+      .filter(Boolean)
+  )
+  const rawModels = catalog.models.filter((m) => !hidden.has(m.id))
   return rawModels.map((m) => {
     const efforts = Array.isArray(m.efforts) ? m.efforts : []
     const supportsReasoning = efforts.length > 0
     const thinkingLevelMap: Record<string, string | null> = {}
     if (supportsReasoning) {
-      for (const lvl of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
-        if (efforts.includes(lvl)) thinkingLevelMap[lvl] = lvl
-        else if (lvl === 'xhigh' && efforts.includes('high')) thinkingLevelMap[lvl] = 'high'
-        else if (lvl === 'max' && efforts.includes('xhigh')) thinkingLevelMap[lvl] = 'xhigh'
-        else if (lvl === 'max' && efforts.includes('high')) thinkingLevelMap[lvl] = 'high'
-        else if (lvl === 'minimal' && efforts.includes('low')) thinkingLevelMap[lvl] = 'low'
-        else thinkingLevelMap[lvl] = null
+      for (const lvl of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+        thinkingLevelMap[lvl] = efforts.includes(lvl) ? lvl : null
       }
     }
     return {

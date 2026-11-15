@@ -1900,6 +1900,65 @@ impl AppState {
         .detach();
     }
 
+    pub fn sanitize_thinking_levels(
+        levels: &mut Vec<String>,
+        map: &std::collections::HashMap<String, String>,
+        nulled: &std::collections::HashSet<String>,
+    ) {
+        let filtered: Vec<String> = levels
+            .iter()
+            .filter(|l| !nulled.contains(l.as_str()))
+            .cloned()
+            .collect();
+        let canonical_self_targets: std::collections::HashSet<String> = filtered
+            .iter()
+            .filter_map(|l| {
+                let lower = l.to_lowercase();
+                let target = map
+                    .get(l.as_str())
+                    .map(|v| v.to_lowercase())
+                    .unwrap_or_else(|| lower.clone());
+                if lower == target {
+                    Some(target)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut seen_targets = std::collections::HashSet::new();
+        let mut deduped = Vec::with_capacity(filtered.len());
+        for l in filtered {
+            let lower = l.to_lowercase();
+            let target = map
+                .get(l.as_str())
+                .map(|v| v.to_lowercase())
+                .unwrap_or_else(|| lower.clone());
+            if lower != target && canonical_self_targets.contains(&target) {
+                continue;
+            }
+            if seen_targets.insert(target) {
+                deduped.push(l);
+            }
+        }
+        *levels = deduped;
+    }
+
+    pub fn visible_picker_models(&self) -> Vec<ModelInfo> {
+        let hidden: std::collections::HashSet<&str> = self
+            .agy_link_state
+            .as_ref()
+            .map(|s| s.settings.hidden_models.iter().map(|id| id.trim()).collect())
+            .unwrap_or_default();
+        if hidden.is_empty() {
+            return self.models.clone();
+        }
+        self.models
+            .iter()
+            .filter(|m| !(m.provider == "agy-link" && hidden.contains(m.id.as_str())))
+            .cloned()
+            .collect()
+    }
+
     fn apply_models_response(&mut self, val: &Value) {
         let arr = val
             .get("modelList")
@@ -1921,13 +1980,17 @@ impl AppState {
                         .map(String::from)
                         .collect();
                 }
+                let mut nulled = std::collections::HashSet::new();
                 if let Some(map_obj) = maps_obj.and_then(|o| o.get(&key)).and_then(Value::as_object) {
                     for (k, v) in map_obj {
-                        if let Some(lbl) = v.as_str() {
+                        if v.is_null() {
+                            nulled.insert(k.clone());
+                        } else if let Some(lbl) = v.as_str() {
                             m.thinking_level_map.insert(k.clone(), lbl.to_string());
                         }
                     }
                 }
+                Self::sanitize_thinking_levels(&mut m.thinking_levels, &m.thinking_level_map, &nulled);
             }
             // Trust an empty model list too, so removing the last provider
             // immediately clears the composer's model picker.
@@ -6987,6 +7050,34 @@ mod thinking_enrichment_tests {
         assert!(should_offer_thinking_ladder(&declared(true, true)));
         // explicitly disabled reasoning stays hidden
         assert!(!should_offer_thinking_ladder(&declared(false, true)));
+    }
+
+    #[test]
+    fn sanitize_thinking_levels_drops_aliases_and_nulled_entries() {
+        let mut levels: Vec<String> = vec![
+            "off".into(),
+            "minimal".into(),
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "xhigh".into(),
+            "max".into(),
+        ];
+        let map: std::collections::HashMap<String, String> = [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "high"),
+            ("max", "high"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let nulled: std::collections::HashSet<String> = ["off".to_string()].into_iter().collect();
+
+        AppState::sanitize_thinking_levels(&mut levels, &map, &nulled);
+        assert_eq!(levels, vec!["low", "medium", "high"]);
     }
 }
 

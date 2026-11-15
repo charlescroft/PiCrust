@@ -350,7 +350,8 @@ impl ComposerView {
         });
         let disabled_bottom_input = cx.new(|cx| InputState::new(window, cx));
 
-        let initial_delegate = ModelGroupDelegate::from_models(&app_state.read(cx).models);
+        let initial_visible_models = app_state.read(cx).visible_picker_models();
+        let initial_delegate = ModelGroupDelegate::from_models(&initial_visible_models);
         let initial_selected_ix = app_state.read(cx).selected_model.as_ref().and_then(|sel| {
             let key = SharedString::from(format!("{}:{}", sel.provider, sel.id));
             initial_delegate.position(&key)
@@ -438,7 +439,7 @@ impl ComposerView {
 
         let synced_model_keys: Vec<String> = app_state
             .read(cx)
-            .models
+            .visible_picker_models()
             .iter()
             .map(|m| format!("{}:{}", m.provider, m.id))
             .collect();
@@ -774,8 +775,8 @@ impl ComposerView {
         // Sync grouped model_select items & active selection whenever sidecar models or session model update
         let (model_keys, models_snapshot, selected_key) = {
             let s = self.app_state.read(cx);
-            let keys: Vec<String> = s
-                .models
+            let visible = s.visible_picker_models();
+            let keys: Vec<String> = visible
                 .iter()
                 .map(|m| format!("{}:{}", m.provider, m.id))
                 .collect();
@@ -783,7 +784,7 @@ impl ComposerView {
                 .selected_model
                 .as_ref()
                 .map(|m| (m.provider.clone(), m.id.clone()));
-            (keys, s.models.clone(), sel_key)
+            (keys, visible, sel_key)
         };
         if model_keys != self.synced_model_keys {
             self.synced_model_keys = model_keys;
@@ -1942,11 +1943,16 @@ impl ComposerView {
                     .child((|| {
                         // Only the levels the selected model actually advertises are shown;
                         // a model without extended reasoning gets no control at all.
-                        let levels: Vec<String> = supported_thinking
+                        let mut levels: Vec<String> = supported_thinking
                             .iter()
                             .filter(|l| parse_thinking_level_str_local(l).is_some())
                             .cloned()
                             .collect();
+                        crate::app_state::AppState::sanitize_thinking_levels(
+                            &mut levels,
+                            &thinking_map,
+                            &Default::default(),
+                        );
                         // Hidden only for models that advertise no thinking levels at
                         // all; a model whose only level is `off` still shows the chip.
                         if levels.is_empty() {
