@@ -4,7 +4,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, IconName, StyledExt as _, TitleBar, h_flex};
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, svg,
 };
 
 pub fn render_title_bar(
@@ -55,11 +55,23 @@ pub fn render_title_bar(
                         }),
                 )
                 .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .text_color(cx.theme().foreground)
-                        .child("PiCrust"),
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(
+                            svg()
+                                .path("picrust-mark.svg")
+                                .size(px(18.))
+                                .flex_shrink_0()
+                                .text_color(cx.theme().foreground),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_semibold()
+                                .text_color(cx.theme().foreground)
+                                .child("PiCrust"),
+                        ),
                 ),
         )
         .child(

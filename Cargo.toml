@@ -1,6 +1,6 @@
 [package]
 name = "picrust"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 description = "Native GPUI Kit desktop client for Pi Agent"
 license = "Apache-2.0"
@@ -8,6 +8,11 @@ license = "Apache-2.0"
 [[bin]]
 name = "PiCrust"
 path = "src/main.rs"
+
+[target.'cfg(windows)'.build-dependencies]
+# Release builds run on windows-latest; the build script embeds assets/icon.ico
+# as resource id 1. Kept target-gated so non-Windows hosts don't need rc.exe.
+winresource = "0.1"
 
 [dependencies]
 anyhow = "1"

@@ -50,6 +50,11 @@
 
 ## 核心特性
 
+### 模型供应商与接入
+- **内置 30+ 家供应商**：OpenAI、Anthropic、Google Gemini、xAI (Grok)、DeepSeek、Mistral、Groq、Together、Fireworks、Cerebras、NVIDIA NIM、Hugging Face、Baseten、OpenRouter、Vercel AI Gateway、SiliconFlow、火山方舟（豆包）、Moonshot/Kimi、MiniMax、Z.AI/GLM、通义千问、小米 MiMo、GitHub Copilot、Ollama、LM Studio、vLLM 等。
+- **自动获取模型列表**：保存供应商后自动请求 `GET /models`，勾选即可添加模型，无需手输模型名称；sidecar 离线时也可用。
+- **一键接入**：粘贴 API Key 后写入 `~/.pi/agent/auth.json`，自动解析端点并立即显示可用模型。
+
 ### 智能 Agent 交互与 Composer 编写器
 - **虚拟化会话滚动流**：自研 `ConversationScrollerState` 支持数百轮长会话高频滚动与实时流式输出，顺滑无闪烁。
 - **全格式富文本排版**：硬件加速文本渲染，原生支持 LaTeX 数学公式（KaTeX）、Mermaid 图表（流程图、时序图、类图、状态图、甘特图）、带代码复制的代码高亮块，以及 Unified/Split 双模代码对比卡片。
@@ -112,10 +117,10 @@ PiCrust 是专为 **Pi 编码智能体生态**（`@earendil-works/pi-coding-agen
 ```bash
 # 克隆代码仓库
 git clone https://github.com/charlescroft/picrust.git
-cd picrust/pi-gpui
+cd picrust
 
-# 执行单元与集成测试（共 38 项自动化测试）
-cargo test --offline
+# 执行单元与集成测试
+cargo test
 
 # 编译并运行 Release 优化版
 cargo run --release
@@ -126,19 +131,19 @@ cargo run --release
 #### macOS 独立应用 (PiCrust.app)
 ```bash
 ./bundle-macos.sh
-# 产物生成于：dist-macos/PiCrust.app (约 26 MB)
+# 产物生成于：dist-macos/PiCrust.app 与 dist-macos/PiCrust-macOS-<arch>-<version>.zip
 ```
 
-#### Windows 可执行程序 (PiCrust.exe)
+#### Windows 可执行程序 (PiCrust-windows-x64-<version>.exe)
 ```powershell
 .\bundle-windows.ps1
-# 产物生成于：dist-windows/PiCrust.exe 与 dist-windows/PiCrust-windows-x64.zip
+# 产物生成于：dist-windows/PiCrust-windows-x64-<version>.exe 与 .zip
 ```
 
-#### Linux 独立镜像 (PiCrust-x86_64.AppImage)
+#### Linux 独立镜像 (PiCrust-Linux-x86_64-<version>.AppImage)
 ```bash
 ./bundle-linux.sh
-# 产物生成于：dist-linux/PiCrust-x86_64.AppImage
+# 产物生成于：dist-linux/PiCrust-Linux-x86_64-<version>.AppImage
 ```
 
 ---
@@ -214,10 +219,10 @@ cargo run --release
 ## 参与贡献
 
 欢迎提交 Issue 与 Pull Request！参与贡献时请注意：
-1. 所有代码、修改与补丁均须保持在 `pi-gpui/` 目录下，严禁污染外层目录。
+1. 所有代码、修改与补丁均须保持在仓库根目录内，严禁污染外层目录。
 2. 提交前确保所有测试全数通过：
    ```bash
-   cargo test --offline
+   cargo test
    ```
 3. 严格遵循 `docs/ui-design-system.md` 中规范的互斥控件原则（选项 `<= 3` 使用 `TabBar`，`> 3` 使用 `Button::dropdown_menu`）、虚拟化列表规范与统一图标策略。
 

@@ -158,7 +158,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                             .h(px(28.))
                             .w(SETTINGS_BTN_W)
                             .icon(IconName::Plus)
-                            .label(tr(locale, "settings.add"))
+                            .label(tr(locale, "settings.addProvider"))
                             .on_click(move |_, _, cx| {
                                 app_btn.update(cx, |s, cx| {
                                     s.settings_add_kind = Some(SettingsAddKind::AddProviderPicker);
@@ -574,7 +574,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                     .justify_end()
                                     .gap_2()
                                     .pt_1()
-                                    .children(from_catalog.then(|| {
+                                    .children((from_catalog || has_config).then(|| {
                                         let app_d = app_discover.clone();
                                         let target = pid_disc.clone();
                                         Button::new(("cfg-prov-discover", pidx))

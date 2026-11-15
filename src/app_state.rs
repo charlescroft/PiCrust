@@ -84,6 +84,8 @@ pub struct AppState {
     pub open_right_tabs: Vec<RightPanelTab>,
     pub right_panel_width: Pixels,
     pub settings_open: bool,
+    /// Page the settings modal should open on (0 = General, 1 = Models).
+    pub settings_initial_page: usize,
     pub settings_busy: bool,
     /// Shows a transient "Saved" confirmation in the settings footer.
     pub settings_saved_flash: bool,
@@ -264,112 +266,49 @@ impl AppState {
             _ => client,
         };
 
-        let mut cwd = std::env::current_dir().unwrap_or_else(|_| user_home());
-        let mut sessions = scan_local_sessions(&pi_sessions_root());
+        // A fresh install has no workspace: start at the home directory rather
+        // than whatever directory the process happened to inherit, and never
+        // fabricate a demo project/session. The chat panel renders its empty
+        // state and the model picker stays empty until the user configures a
+        // provider.
+        let mut cwd = user_home();
+        let sessions = scan_local_sessions(&pi_sessions_root());
         let mut ctrl = SessionController::default();
 
-        // Seed rich Phase 1 demo state if no local sessions exist yet so the UI
-        // immediately showcases Markdown, Math, Mermaid, Diff, and Artifacts.
         let mut messages = Vec::new();
         let mut initial_siblings = Vec::new();
         let mut artifacts = Vec::new();
         let mut todos = Vec::new();
-        let active_session_id;
         let mut active_workspace_kind = WorkspaceKind::Project;
-
         let mut initial_stats = SessionStats::default();
-        let mut models = Vec::new();
+        let models: Vec<ModelInfo> = Vec::new();
 
-        if sessions.is_empty() {
-            let demo_id = "demo-welcome-session".to_string();
-            sessions.push(SessionSummary {
-                id: demo_id.clone(),
-                name: Some("Architecture Overview".to_string()),
-                first_message: Some("Summarize project structure and build workflow".to_string()),
-                cwd: Some(cwd.to_string_lossy().into_owned()),
-                project_name: cwd
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(String::from),
-                updated_at: Some(current_local_hhmm().to_string()),
-                created_at: None,
-                parent_session: None,
-                message_count: 4,
-                is_running: false,
-                awaiting_input: false,
-                pinned: false,
-                archived: false,
-                workspace_kind: Some(WorkspaceKind::Project),
-                relation: None,
-                path: None,
-            });
-            active_session_id = Some(demo_id.clone());
-            messages = build_demo_messages(&mut ctrl);
-            for msg in &messages {
-                artifacts.extend(extract_artifacts_from_markdown(&msg.content, Some(&demo_id)));
+        let active_session_id = sessions.first().map(|s| s.id.clone());
+        if let Some(first) = sessions.first() {
+            if let Some(ref first_cwd) = first.cwd {
+                cwd = PathBuf::from(first_cwd);
             }
-            todos = vec![
-                TodoWidgetItem {
-                    id: SharedString::from("t1"),
-                    content: SharedString::from("Inspect workspace layout and session scanner"),
-                    done: true,
-                },
-                TodoWidgetItem {
-                    id: SharedString::from("t2"),
-                    content: SharedString::from("Verify tool call diff & bash output cards"),
-                    done: true,
-                },
-                TodoWidgetItem {
-                    id: SharedString::from("t3"),
-                    content: SharedString::from("Run cargo test & release bundle"),
-                    done: false,
-                },
-            ];
-            models = vec![
-                ModelInfo {
-                    provider: "anthropic".to_string(),
-                    id: "claude-sonnet-4-6".to_string(),
-                    name: Some("Claude Sonnet 4.6".to_string()),
-                    provider_name: Some("Anthropic".to_string()),
-                    reasoning: true,
-                    context_window: Some(200_000),
-                    enabled: Some(true),
-                    thinking_levels: vec![
-                        "off".into(),
-                        "low".into(),
-                        "medium".into(),
-                        "high".into(),
-                    ],
-                    thinking_level_map: HashMap::new(),
-                },
-            ];
-        } else {
-            active_session_id = sessions.first().map(|s| s.id.clone());
-            if let Some(first) = sessions.first() {
-                if let Some(ref first_cwd) = first.cwd {
-                    cwd = PathBuf::from(first_cwd);
+            active_workspace_kind = first.workspace_kind.unwrap_or(WorkspaceKind::Project);
+            if let Some(ref first_path) = first.path {
+                let p = PathBuf::from(first_path);
+                let (parsed_msgs, siblings) =
+                    parse_session_jsonl_with_siblings(&p, None, &mut ctrl.next_local_msg_id);
+                messages = parsed_msgs;
+                initial_siblings = siblings;
+                initial_stats = compute_stats_from_jsonl(&p, 200_000);
+                todos = extract_todos_from_jsonl(&p);
+                let sid_ref = active_session_id.as_deref();
+                for msg in &messages {
+                    artifacts.extend(extract_artifacts_from_markdown(&msg.content, sid_ref));
                 }
-                active_workspace_kind = first.workspace_kind.unwrap_or(WorkspaceKind::Project);
-                if let Some(ref first_path) = first.path {
-                    let p = PathBuf::from(first_path);
-                    let (parsed_msgs, siblings) =
-                        parse_session_jsonl_with_siblings(&p, None, &mut ctrl.next_local_msg_id);
-                    messages = parsed_msgs;
-                    initial_siblings = siblings;
-                    initial_stats = compute_stats_from_jsonl(&p, 200_000);
-                    todos = extract_todos_from_jsonl(&p);
-                    let sid_ref = active_session_id.as_deref();
-                    for msg in &messages {
-                        artifacts.extend(extract_artifacts_from_markdown(&msg.content, sid_ref));
+                let mut scanned_arts =
+                    crate::client::native_index::scan_all_local_artifacts(&sessions);
+                for a in artifacts {
+                    if !scanned_arts.iter().any(|sa| sa.identifier == a.identifier) {
+                        scanned_arts.push(a);
                     }
-                    let mut scanned_arts = crate::client::native_index::scan_all_local_artifacts(&sessions);
-                    for a in artifacts {
-                        if !scanned_arts.iter().any(|sa| sa.identifier == a.identifier) {
-                            scanned_arts.push(a);
-                        }
-                    }
-                    artifacts = scanned_arts;
                 }
+                artifacts = scanned_arts;
             }
         }
 
@@ -460,6 +399,7 @@ impl AppState {
             open_right_tabs: Vec::new(),
             right_panel_width: px(440.),
             settings_open: false,
+            settings_initial_page: 0,
             settings_busy: false,
             settings_saved_flash: false,
             settings_add_kind: None,
@@ -685,94 +625,113 @@ impl AppState {
         }
 
         // Include built-in providers that have credentials in auth.json or env vars
-        let builtin_catalog: &[(&str, &str, &str, &[(&str, &str, bool, u64)])] = &[
-            (
-                "anthropic",
-                "Anthropic",
-                "ANTHROPIC_API_KEY",
-                &[
-                    ("claude-sonnet-4-6", "Claude Sonnet 4.6", true, 200_000),
-                    ("claude-opus-4-6", "Claude Opus 4.6", true, 200_000),
-                    ("claude-haiku-4-5", "Claude Haiku 4.5", true, 200_000),
-                ],
-            ),
-            (
-                "openai",
-                "OpenAI",
-                "OPENAI_API_KEY",
-                &[
-                    ("gpt-4o", "GPT-4o", false, 128_000),
-                    ("o3", "o3", true, 200_000),
-                ],
-            ),
-            (
-                "google",
-                "Google Gemini",
-                "GEMINI_API_KEY",
-                &[("gemini-2.5-pro", "Gemini 2.5 Pro", true, 1_000_000)],
-            ),
-        ];
-
-        let mut local_auth = Vec::new();
-        for (pid, pname, env_var, defaults) in builtin_catalog {
-            let has_auth = auth_map.contains_key(*pid)
-                || std::env::var(env_var)
-                    .map(|v| !v.trim().is_empty())
-                    .unwrap_or(false);
-            local_auth.push(((*pid).to_string(), (*pname).to_string(), has_auth));
-            if has_auth && !self.configured_providers.iter().any(|cp| cp.id == *pid) {
-                let mut prov_items = Vec::new();
-                let mut enabled_cnt = 0usize;
-                for (mid, mname, reasoning, cw) in *defaults {
-                    let model_ref = format!("{pid}/{mid}");
-                    let is_enabled = all_enabled
-                        || enabled_patterns
-                            .iter()
-                            .any(|pat| pat == &model_ref || pat == &format!("{pid}/*"));
-                    if is_enabled {
-                        enabled_cnt += 1;
-                    }
-                    local_models.push(ModelInfo {
-                        provider: (*pid).to_string(),
-                        id: (*mid).to_string(),
-                        name: Some((*mname).to_string()),
-                        provider_name: Some((*pname).to_string()),
-                        reasoning: *reasoning,
-                        context_window: Some(*cw),
-                        enabled: Some(is_enabled),
-                        thinking_levels: if *reasoning {
-                            vec![
-                                "off".into(),
-                                "low".into(),
-                                "medium".into(),
-                                "high".into(),
-                            ]
-                        } else {
-                            vec!["off".into()]
-                        },
-                        thinking_level_map: HashMap::new(),
+        // Every known provider is listed even before the sidecar answers, and
+        // providers with a stored credential get a short curated model seed so
+        // the first run works without waiting for a remote model list. The
+        // seeds are not persisted and are replaced by pi's catalog as soon as
+        // the sidecar reports its models.
+        let mut local_auth: Vec<(String, String, bool)> = Vec::new();
+        for preset in crate::provider_catalog::all() {
+            let has_auth = auth_map.contains_key(preset.id)
+                || preset.env_vars.iter().any(|var| {
+                    std::env::var(var)
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false)
+                });
+            local_auth.push((
+                preset.id.to_string(),
+                preset.name.to_string(),
+                has_auth,
+            ));
+            if !has_auth || preset.models.is_empty() {
+                continue;
+            }
+            if local_models.iter().any(|m| m.provider == preset.id) {
+                continue;
+            }
+            let mut prov_items = Vec::new();
+            let mut enabled_cnt = 0usize;
+            for seed in preset.models {
+                let model_ref = format!("{}/{}", preset.id, seed.id);
+                let is_enabled = all_enabled
+                    || enabled_patterns.iter().any(|pat| {
+                        pat == &model_ref || pat == &format!("{}/*", preset.id)
                     });
-                    prov_items.push(EnabledModelItem {
-                        id: (*mid).to_string(),
-                        name: (*mname).to_string(),
-                        model_ref,
-                        enabled: is_enabled,
-                        context_window: Some(*cw),
-                    });
+                if is_enabled {
+                    enabled_cnt += 1;
                 }
-                overview_providers.push(EnabledProviderGroup {
-                    id: (*pid).to_string(),
-                    name: (*pname).to_string(),
-                    kind: "builtin".to_string(),
-                    enabled_count: enabled_cnt,
-                    models: prov_items,
+                local_models.push(ModelInfo {
+                    provider: preset.id.to_string(),
+                    id: seed.id.to_string(),
+                    name: Some(seed.name.to_string()),
+                    provider_name: Some(preset.name.to_string()),
+                    reasoning: seed.reasoning,
+                    context_window: Some(seed.context_window),
+                    enabled: Some(is_enabled),
+                    thinking_levels: if seed.reasoning {
+                        vec![
+                            "off".into(),
+                            "low".into(),
+                            "medium".into(),
+                            "high".into(),
+                        ]
+                    } else {
+                        vec!["off".into()]
+                    },
+                    thinking_level_map: HashMap::new(),
+                });
+                prov_items.push(EnabledModelItem {
+                    id: seed.id.to_string(),
+                    name: seed.name.to_string(),
+                    model_ref,
+                    enabled: is_enabled,
+                    context_window: Some(seed.context_window),
                 });
             }
+            overview_providers.push(EnabledProviderGroup {
+                id: preset.id.to_string(),
+                name: preset.name.to_string(),
+                kind: "builtin".to_string(),
+                enabled_count: enabled_cnt,
+                models: prov_items,
+            });
         }
 
-        if self.auth_providers.is_empty() {
-            self.auth_providers = local_auth;
+        // Custom providers configured in models.json (including catalog
+        // entries pi does not ship, such as SiliconFlow or Ollama) are
+        // configured even though they have no auth.json credential.
+        let configured_snapshot = self.configured_providers.clone();
+        for cp in &configured_snapshot {
+            let name = cp.display_name.clone().unwrap_or_else(|| cp.id.clone());
+            merge_auth_provider(&mut local_auth, &cp.id, &name, true, true);
         }
+
+        // Merge the static catalog with whatever the sidecar has already
+        // reported (custom providers, OAuth providers, configured flags).
+        // The old code only replaced the list while it was empty, which left
+        // the picker stuck on a tiny offline fallback.
+        let mut merged_auth = local_auth;
+        for (id, name, configured) in self.auth_providers.drain(..) {
+            if let Some(existing) = merged_auth.iter_mut().find(|(i, _, _)| *i == id) {
+                existing.2 = existing.2 || configured;
+                if existing.1.is_empty() {
+                    existing.1 = name;
+                }
+            } else {
+                merged_auth.push((id, name, configured));
+            }
+        }
+        self.auth_providers = merged_auth;
+
+        let mut merged_oauth: Vec<(String, String, bool)> = crate::provider_catalog::all()
+            .iter()
+            .filter(|p| p.oauth)
+            .map(|p| (p.id.to_string(), p.name.to_string(), false))
+            .collect();
+        for (id, name, logged_in) in self.oauth_providers.drain(..) {
+            merge_auth_provider(&mut merged_oauth, &id, &name, logged_in, false);
+        }
+        self.oauth_providers = merged_oauth;
 
         if !local_models.is_empty() && (self.models.is_empty() || !self.sidecar_connected) {
             let enabled_total = local_models
@@ -1750,10 +1709,8 @@ impl AppState {
             let artifacts_val = client.get_artifacts(None).await.ok();
             let worktrees_val = client.list_worktrees(&cwd_str).await.ok();
             let agent_state_val = match active_sid {
-                Some(ref sid) if sid != "demo-welcome-session" => {
-                    client.get_agent_state(sid).await.ok()
-                }
-                _ => None,
+                Some(ref sid) => client.get_agent_state(sid).await.ok(),
+                None => None,
             };
 
             let _ = entity.update(cx, |this, cx| {
@@ -1765,9 +1722,10 @@ impl AppState {
                             .iter()
                             .filter_map(|v| serde_json::from_value(v.clone()).ok())
                             .collect();
-                        if !parsed.is_empty() {
-                            this.sessions = parsed;
-                        }
+                        // Always trust the sidecar's session list, including an
+                        // empty one: otherwise deleted sessions (and the old
+                        // demo workspace) survived in the sidebar forever.
+                        this.sessions = parsed;
                     }
                     if let Some(ids) = val.get("runningSessionIds").and_then(Value::as_array) {
                         let running_set: HashSet<String> = ids
@@ -1861,12 +1819,10 @@ impl AppState {
                 }
                 this.sync_tool_subagent_runs_from_messages();
                 if let Some(sid) = this.active_session_id.clone() {
-                    if sid != "demo-welcome-session" {
-                        if this.messages.is_empty() {
-                            this.select_session(sid, cx);
-                        } else if this.controller.sse_task.is_none() {
-                            this.connect_session_sse(sid, cx);
-                        }
+                    if this.messages.is_empty() {
+                        this.select_session(sid, cx);
+                    } else if this.controller.sse_task.is_none() {
+                        this.connect_session_sse(sid, cx);
                     }
                 }
                 cx.notify();
@@ -1898,7 +1854,7 @@ impl AppState {
     }
 
     pub fn sync_active_agent_state(&mut self, session_id: String, cx: &mut Context<Self>) {
-        if !self.sidecar_connected || session_id == "demo-welcome-session" {
+        if !self.sidecar_connected {
             return;
         }
         let client = self.client.clone();
@@ -1945,8 +1901,21 @@ impl AppState {
                     }
                 }
             }
-            if !parsed.is_empty() {
-                self.models = parsed;
+            // Trust an empty model list too, so removing the last provider
+            // immediately clears the composer's model picker.
+            self.models = parsed;
+            let selected_missing = self
+                .selected_model
+                .as_ref()
+                .map(|selected| {
+                    !self
+                        .models
+                        .iter()
+                        .any(|m| m.provider == selected.provider && m.id == selected.id)
+                })
+                .unwrap_or(false);
+            if selected_missing {
+                self.selected_model = None;
             }
         }
         if let Some(def) = val.get("defaultModel") {
@@ -2201,9 +2170,11 @@ impl AppState {
 
     fn apply_auth_providers_response(&mut self, val: &Value) {
         if let Some(arr) = val.get("providers").and_then(Value::as_array) {
-            let mut out = Vec::new();
             for p in arr {
                 let id = p.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                if id.is_empty() {
+                    continue;
+                }
                 let name = p
                     .get("name")
                     .or_else(|| p.get("displayName"))
@@ -2216,11 +2187,8 @@ impl AppState {
                     .or_else(|| p.get("loggedIn"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                if !id.is_empty() {
-                    out.push((id, name, configured));
-                }
+                merge_auth_provider(&mut self.auth_providers, &id, &name, configured, true);
             }
-            self.auth_providers = out;
         }
     }
 
@@ -2246,28 +2214,50 @@ impl AppState {
                     out.push((id, name, logged_in));
                 }
             }
-            self.oauth_providers = out;
+            for (id, name, logged_in) in out {
+                merge_auth_provider(&mut self.oauth_providers, &id, &name, logged_in, false);
+            }
         }
-        if self.auth_providers.is_empty() {
-            if let Some(arr) = val.get("apiKeyProviders").and_then(Value::as_array) {
-                let mut out = Vec::new();
-                for p in arr {
-                    let id = p.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                    let name = p
-                        .get("displayName")
-                        .or_else(|| p.get("name"))
-                        .and_then(Value::as_str)
-                        .unwrap_or(&id)
-                        .to_string();
-                    let configured = p
-                        .get("configured")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    if !id.is_empty() {
-                        out.push((id, name, configured));
+        // `/api/auth/providers` also carries the API-key provider list. Merge
+        // it into the static catalog instead of only accepting it while the
+        // list is empty (which is what left OpenRouter & friends invisible).
+        if let Some(arr) = val.get("apiKeyProviders").and_then(Value::as_array) {
+            for p in arr {
+                let id = p.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                if id.is_empty() {
+                    continue;
+                }
+                let name = p
+                    .get("displayName")
+                    .or_else(|| p.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(&id)
+                    .to_string();
+                let configured = p
+                    .get("configured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                merge_auth_provider(&mut self.auth_providers, &id, &name, configured, true);
+            }
+        }
+        if let Some(names) = val.get("providerNames").and_then(Value::as_object) {
+            for (id, name) in names {
+                if let Some(name) = name.as_str() {
+                    if let Some(existing) =
+                        self.auth_providers.iter_mut().find(|(i, _, _)| i == id)
+                    {
+                        if existing.1 == *id {
+                            existing.1 = name.to_string();
+                        }
+                    }
+                    if let Some(existing) =
+                        self.oauth_providers.iter_mut().find(|(i, _, _)| i == id)
+                    {
+                        if existing.1 == *id {
+                            existing.1 = name.to_string();
+                        }
                     }
                 }
-                self.auth_providers = out;
             }
         }
     }
@@ -2841,20 +2831,35 @@ impl AppState {
     }
 
     pub fn discover_models_for_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
-        if !self.sidecar_connected || self.discovering_provider_id.is_some() {
+        if self.discovering_provider_id.is_some() {
             return;
         }
-        let provider_raw = self
+        // Discovery is a direct HTTP request from the desktop to the provider,
+        // so it must work while the sidecar is disconnected too.
+        let mut provider_raw = self
             .configured_providers_raw
             .get("providers")
             .and_then(|p| p.get(&provider_id))
             .cloned()
             .unwrap_or_else(|| json!({}));
-        let mut config = if self.configured_providers_raw.is_object() {
-            self.configured_providers_raw.clone()
-        } else {
-            json!({ "providers": {} })
-        };
+        if let Some(preset) = crate::provider_catalog::find(&provider_id) {
+            if provider_raw
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true)
+            {
+                provider_raw["baseUrl"] = json!(preset.base_url);
+            }
+            if provider_raw
+                .get("api")
+                .and_then(Value::as_str)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true)
+            {
+                provider_raw["api"] = json!(preset.api);
+            }
+        }
         self.discovering_provider_id = Some(provider_id.clone());
         self.discover_error = None;
         let client = self.client.clone();
@@ -3198,7 +3203,7 @@ impl AppState {
                                     this.subscribe_running_events(cx);
                                 }
                                 if let Some(sid) = this.active_session_id.clone() {
-                                    if sid != "demo-welcome-session" && this.controller.sse_task.is_none() {
+                                    if this.controller.sse_task.is_none() {
                                         this.connect_session_sse(sid, cx);
                                     }
                                 }
@@ -4023,12 +4028,6 @@ impl AppState {
             self.close_right_tab(RightPanelTab::GitGraph, cx);
         }
 
-        if session_id == "demo-welcome-session" {
-            self.messages = build_demo_messages(&mut self.controller);
-            cx.notify();
-            return;
-        }
-
         let ctx_win = self
             .selected_model
             .as_ref()
@@ -4200,7 +4199,7 @@ impl AppState {
     }
 
     pub fn connect_session_sse(&mut self, session_id: String, cx: &mut Context<Self>) {
-        if !self.sidecar_connected || session_id == "demo-welcome-session" {
+        if !self.sidecar_connected {
             return;
         }
         let entity = cx.entity().clone();
@@ -5822,6 +5821,16 @@ impl AppState {
     }
 
     fn dispatch_single_prompt(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.selected_model.is_none() {
+            self.controller.send_in_flight = false;
+            self.is_agent_running = false;
+            self.record_assistant_error(
+                "No model is configured yet. Open Settings → Models, pick a provider (for example OpenRouter or DeepSeek), paste its API key, and fetch the model list."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
         self.controller.send_in_flight = true;
 
         let msg_id = self.controller.alloc_msg_id();
@@ -6180,57 +6189,16 @@ impl AppState {
                 return;
             }
 
-            let think_str = SharedString::from("Preparing response preview (sidecar not connected)...");
-            self.messages.push(ChatMessage {
-                id: reply_id,
-                entry_id: None,
-                role: MessageRole::Assistant,
-                model_label,
-                timestamp: SharedString::from("Offline Preview"),
-                thinking: think_str.clone(),
-                process_steps: vec![ProcessStep::Thinking(think_str)],
-                process_message_count: 1,
-                thinking_ms: Some(120),
-                thinking_expanded: false,
-                content: String::new(),
-                tool_calls: Vec::new(),
-                attachments: Vec::new(),
-                is_streaming: true,
-                turn_duration_ms: None,
-                token_summary: None,
-                turn_usage: None,
-                stop_reason: None,
-                error_message: None,
-            });
-
-            let entity = cx.entity().clone();
-            let reply_text = format!(
-                "Received (`{}`):\n\n> {}\n\nSidecar is not running yet. Build and start it via:\n```bash\nnode sidecar/build-sidecar.mjs\nnode sidecar/api-sidecar.mjs\n```",
-                self.active_cwd.display(),
-                text.replace('\n', "\n> ")
+            let provider_label = self
+                .selected_model
+                .as_ref()
+                .map(ModelInfo::display_label)
+                .unwrap_or_else(|| SharedString::from("the selected model"));
+            let message = format!(
+                "No usable credentials or endpoint for {provider_label}. Open Settings → Models, add a provider, and paste an API key. The desktop never fabricates an assistant reply."
             );
-            cx.spawn(async move |_, cx| {
-                for chunk in reply_text.as_bytes().chunks(18) {
-                    smol::Timer::after(std::time::Duration::from_millis(24)).await;
-                    let s = String::from_utf8_lossy(chunk).into_owned();
-                    let _ = entity.update(cx, |this, cx| {
-                        if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
-                            m.content.push_str(&s);
-                        }
-                        cx.notify();
-                    });
-                }
-                let _ = entity.update(cx, |this, cx| {
-                    if let Some(m) = this.messages.iter_mut().find(|m| m.id == reply_id) {
-                        m.is_streaming = false;
-                        m.timestamp = current_local_hhmm();
-                        m.turn_duration_ms = Some(640);
-                    }
-                    this.is_agent_running = false;
-                    cx.notify();
-                });
-            })
-            .detach();
+            self.record_assistant_error(message);
+            self.is_agent_running = false;
             cx.notify();
             return;
         }
@@ -6455,6 +6423,16 @@ impl AppState {
     }
 
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_initial_page = 0;
+        self.settings_open = true;
+        self.refresh_settings_data(cx);
+        cx.notify();
+    }
+
+    /// Opens Settings directly on the Models page (used by the no-model
+    /// onboarding button in the empty chat state).
+    pub fn open_model_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_initial_page = 1;
         self.settings_open = true;
         self.refresh_settings_data(cx);
         cx.notify();
@@ -6580,209 +6558,33 @@ fn resolve_git_branch(cwd: &Path) -> Option<SharedString> {
     None
 }
 
-fn build_demo_messages(ctrl: &mut SessionController) -> Vec<ChatMessage> {
-    let id1 = ctrl.alloc_msg_id();
-    let id2 = ctrl.alloc_msg_id();
-    let id3 = ctrl.alloc_msg_id();
-    let id4 = ctrl.alloc_msg_id();
-    let tc_bash = ToolCallItem {
-        id: SharedString::from("tc-demo-bash"),
-        name: SharedString::from("bash"),
-        arguments: vec![(
-            SharedString::from("command"),
-            SharedString::from("cargo test --quiet"),
-        )],
-        output: SharedString::from("test result: ok. 4 passed; 0 failed"),
-        diff_patch: None,
-        subagent_session_id: None,
-        is_running: false,
-        is_error: false,
-        expanded: false,
-    };
-    let tc_edit = ToolCallItem {
-        id: SharedString::from("tc-demo-edit"),
-        name: SharedString::from("edit"),
-        arguments: vec![(
-            SharedString::from("path"),
-            SharedString::from("src/main.rs"),
-        )],
-        output: SharedString::from("Updated configuration"),
-        diff_patch: Some(SharedString::from(
-            "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,4 @@\n fn main() {\n-    start_default();\n+    start_agent_session();\n }\n",
-        )),
-        subagent_session_id: None,
-        is_running: false,
-        is_error: false,
-        expanded: false,
-    };
-    let tc_write = ToolCallItem {
-        id: SharedString::from("tc-demo-write"),
-        name: SharedString::from("write"),
-        arguments: vec![
-            (
-                SharedString::from("path"),
-                SharedString::from("config.toml"),
-            ),
-            (
-                SharedString::from("content"),
-                SharedString::from("[agent]\nmodel = \"claude-sonnet-4-6\"\nthinking = \"medium\"\n"),
-            ),
-        ],
-        output: SharedString::from("Wrote 3 lines to config.toml"),
-        diff_patch: None,
-        subagent_session_id: None,
-        is_running: false,
-        is_error: false,
-        expanded: false,
-    };
-    vec![
-        ChatMessage {
-            id: id1,
-            entry_id: Some(SharedString::from("demo-e1")),
-            role: MessageRole::User,
-            model_label: None,
-            timestamp: SharedString::from("09:58"),
-            thinking: SharedString::default(),
-            process_steps: Vec::new(),
-            process_message_count: 1,
-            thinking_ms: None,
-            thinking_expanded: false,
-            content: "Summarize the agent architecture and check the sidecar setup.".to_string(),
-            tool_calls: Vec::new(),
-            attachments: vec![AttachmentItem {
-                name: SharedString::from("README.md"),
-                mime: SharedString::from("text/markdown"),
-                size_bytes: 14_949,
-            }],
-            is_streaming: false,
-            turn_duration_ms: None,
-            token_summary: None,
-            turn_usage: None,
-            stop_reason: None,
-            error_message: None,
-        },
-        ChatMessage {
-            id: id2,
-            entry_id: Some(SharedString::from("demo-e2")),
-            role: MessageRole::Assistant,
-            model_label: Some(SharedString::from("Claude Sonnet 4.6")),
-            timestamp: SharedString::from("09:59"),
-            thinking: SharedString::from("Reviewing session lifecycle, tool execution pipeline, and sidecar endpoints."),
-            process_steps: vec![
-                ProcessStep::Thinking(SharedString::from(
-                    "Reviewing session lifecycle, tool execution pipeline, and sidecar endpoints.",
-                )),
-                ProcessStep::ToolCall(tc_bash.clone()),
-            ],
-            process_message_count: 2,
-            thinking_ms: Some(420),
-            thinking_expanded: false,
-            content: r##"### Pi Agent Architecture
-
-Session events stream over SSE while context usage tracks $U = \frac{T_{\text{used}}}{T_{\text{window}}}$.
-
-```rust
-fn start_agent_session(cwd: &str) {
-    println!("Session started in {cwd}");
+/// Inserts or updates a provider entry, preserving catalog metadata and the
+/// strongest known "configured" state (`merge_configured`) or the exact state
+/// reported by the sidecar (false, used for OAuth login/logout).
+fn merge_auth_provider(
+    list: &mut Vec<(String, String, bool)>,
+    id: &str,
+    name: &str,
+    configured: bool,
+    merge_configured: bool,
+) {
+    if let Some(existing) = list.iter_mut().find(|(i, _, _)| i == id) {
+        if !name.is_empty() && (existing.1 == existing.0 || existing.1.is_empty()) {
+            existing.1 = name.to_string();
+        }
+        existing.2 = if merge_configured {
+            existing.2 || configured
+        } else {
+            configured
+        };
+    } else {
+        list.push((
+            id.to_string(),
+            if name.is_empty() { id.to_string() } else { name.to_string() },
+            configured,
+        ));
+    }
 }
-```
-
-```mermaid
-flowchart LR
-  UI[Pi Desktop] -->|HTTP + SSE| Sidecar[API Sidecar]
-  Sidecar --> SDK[Pi Coding Agent SDK]
-  UI --> PTY[Local Terminal]
-  UI -->|Lazy Preview| Sandbox[HTML/React Sandbox]
-```
-
-:::artifact{identifier="arch-summary-svg" type="svg" title="Memory Budget Overview"}
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 140">
-  <rect width="360" height="140" rx="12" fill="#18181b"/>
-  <rect x="20" y="24" width="145" height="92" rx="8" fill="#27272a" stroke="#3f3f46"/>
-  <text x="36" y="54" fill="#a1a1aa" font-family="sans-serif" font-size="12">Desktop Client</text>
-  <text x="36" y="88" fill="#4ade80" font-family="monospace" font-size="24" font-weight="bold">&lt; 120 MB</text>
-  <rect x="195" y="24" width="145" height="92" rx="8" fill="#27272a" stroke="#3f3f46"/>
-  <text x="211" y="54" fill="#a1a1aa" font-family="sans-serif" font-size="12">API Sidecar</text>
-  <text x="211" y="88" fill="#60a5fa" font-family="monospace" font-size="24" font-weight="bold">~ 55 MB</text>
-</svg>
-```
-:::
-"##.to_string(),
-            tool_calls: vec![tc_bash],
-            attachments: Vec::new(),
-            is_streaming: false,
-            turn_duration_ms: Some(1_140),
-            token_summary: Some(SharedString::from("1.4k in / 320 out · $0.008")),
-            turn_usage: Some(TurnUsage {
-                input_tokens: 1_400,
-                output_tokens: 320,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                total_tokens: 1_720,
-                cost_usd: 0.008,
-            }),
-            stop_reason: None,
-            error_message: None,
-        },
-        ChatMessage {
-            id: id3,
-            entry_id: Some(SharedString::from("demo-e3")),
-            role: MessageRole::User,
-            model_label: None,
-            timestamp: SharedString::from("10:02"),
-            thinking: SharedString::default(),
-            process_steps: Vec::new(),
-            process_message_count: 1,
-            thinking_ms: None,
-            thinking_expanded: false,
-            content: "Update main.rs and add a default config note.".to_string(),
-            tool_calls: Vec::new(),
-            attachments: Vec::new(),
-            is_streaming: false,
-            turn_duration_ms: None,
-            token_summary: None,
-            turn_usage: None,
-            stop_reason: None,
-            error_message: None,
-        },
-        ChatMessage {
-            id: id4,
-            entry_id: Some(SharedString::from("demo-e4")),
-            role: MessageRole::Assistant,
-            model_label: Some(SharedString::from("Claude Sonnet 4.6")),
-            timestamp: SharedString::from("10:03"),
-            thinking: SharedString::from("Checking src/main.rs and config.toml before applying edits."),
-            process_steps: vec![
-                ProcessStep::Thinking(SharedString::from(
-                    "Checking src/main.rs and config.toml before applying edits.",
-                )),
-                ProcessStep::ToolCall(tc_edit.clone()),
-                ProcessStep::ToolCall(tc_write.clone()),
-            ],
-            process_message_count: 3,
-            thinking_ms: Some(310),
-            thinking_expanded: false,
-            content: "Applied the update to `src/main.rs` and created `config.toml`.".to_string(),
-            tool_calls: vec![tc_edit, tc_write],
-            attachments: Vec::new(),
-            is_streaming: false,
-            turn_duration_ms: Some(890),
-            token_summary: Some(SharedString::from("980 in / 140 out · $0.004")),
-            turn_usage: Some(TurnUsage {
-                input_tokens: 980,
-                output_tokens: 140,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                total_tokens: 1_120,
-                cost_usd: 0.004,
-            }),
-            stop_reason: None,
-            error_message: None,
-        },
-    ]
-}
-
 
 /// Sends a native macOS notification via `UNUserNotificationCenter` when running
 /// inside a `.app` bundle (so macOS displays the app's own `icon.icns` instead of

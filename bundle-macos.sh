@@ -10,7 +10,15 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-echo "[picrust] Building release binary..."
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$SCRIPT_DIR/Cargo.toml" | head -n1)"
+if [[ -z "$VERSION" ]]; then
+  echo "[picrust] Could not read version from Cargo.toml" >&2
+  exit 1
+fi
+ARCH="$(uname -m)"
+ZIP_NAME="PiCrust-macOS-${ARCH}-${VERSION}.zip"
+
+echo "[picrust] Building release binary for $VERSION..."
 (cd "$SCRIPT_DIR" && cargo build --release)
 
 rm -rf "$APP_DIR"
@@ -53,9 +61,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.1</string>
+  <string>@VERSION@</string>
   <key>CFBundleVersion</key>
-  <string>1.0.1</string>
+  <string>@VERSION@</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
@@ -64,9 +72,15 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+sed -i.bak "s/@VERSION@/$VERSION/g" "$CONTENTS_DIR/Info.plist"
+rm -f "$CONTENTS_DIR/Info.plist.bak"
+
 codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 
+rm -f "$SCRIPT_DIR/dist-macos/$ZIP_NAME"
+(cd "$SCRIPT_DIR/dist-macos" && zip -r -y -q "$ZIP_NAME" "PiCrust.app")
+
 echo "[picrust] macOS app bundle ready:"
 du -sh "$APP_DIR"
-ls -lh "$MACOS_DIR/PiCrust"
+ls -lh "$MACOS_DIR/PiCrust" "$SCRIPT_DIR/dist-macos/$ZIP_NAME"

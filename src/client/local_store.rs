@@ -536,6 +536,25 @@ pub fn save_models_config_local(incoming: &Value) -> Result<(), String> {
     write_json_pretty_atomic(&path, &merged)
 }
 
+/// Persists a provider API key in `~/.pi/agent/auth.json` so the native engine
+/// and the sidecar can both use it, even while the sidecar is offline. The
+/// shape matches pi's credential store (`{ "provider": { "type": "api_key",
+/// "key": "..." } }`) and unrelated credentials are preserved.
+pub fn save_api_key_local(provider_id: &str, api_key: &str) -> Result<(), String> {
+    let provider_id = provider_id.trim();
+    let api_key = api_key.trim();
+    if provider_id.is_empty() || api_key.is_empty() {
+        return Err("provider id and API key are required".to_string());
+    }
+    let path = pi_agent_dir().join("auth.json");
+    let mut root = read_json_object_or_empty(&path);
+    root.insert(
+        provider_id.to_string(),
+        json!({ "type": "api_key", "key": api_key }),
+    );
+    write_json_pretty_atomic(&path, &Value::Object(root))
+}
+
 /// Minimal-edit update of `enabledModels` in `~/.pi/agent/settings.json`.
 pub fn update_enabled_models_local(body: &Value) -> Result<Vec<String>, String> {
     let mut updated_list = Vec::new();

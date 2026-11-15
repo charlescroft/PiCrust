@@ -622,6 +622,7 @@ impl Render for ChatPanel {
         let state_snap = self.app_state.read(cx);
         let locale = state_snap.locale;
         let messages_empty = state_snap.messages.is_empty();
+        let has_selected_model = state_snap.selected_model.is_some();
         let right_open = state_snap.right_panel_open;
         let right_w = if right_open {
             state_snap.right_panel_width
@@ -815,20 +816,35 @@ impl Render for ChatPanel {
         };
 
         let body_area = if messages_empty {
-            v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .p_6()
-                .child(
-                    Empty::new().header(
-                        EmptyHeader::new()
-                            .media(EmptyMedia::new().child(Icon::new(IconName::Bot)))
-                            .title(EmptyTitle::new().child(tr(locale, "chat.emptyTitle")))
-                            .description(EmptyDescription::new().child(tr(locale, "chat.emptyDesc"))),
-                    ),
-                )
-                .into_any_element()
+            let app_empty = self.app_state.clone();
+            let mut empty = Empty::new().header(
+                EmptyHeader::new()
+                    .media(EmptyMedia::new().child(Icon::new(IconName::Bot)))
+                    .title(EmptyTitle::new().child(if has_selected_model {
+                        tr(locale, "chat.emptyTitle")
+                    } else {
+                        tr(locale, "chat.noModelTitle")
+                    }))
+                    .description(EmptyDescription::new().child(if has_selected_model {
+                        tr(locale, "chat.emptyDesc")
+                    } else {
+                        tr(locale, "chat.noModelDesc")
+                    })),
+            );
+            if !has_selected_model {
+                empty = empty.child(
+                    Button::new("empty-open-model-settings")
+                        .primary()
+                        .small()
+                        .h(px(30.))
+                        .icon(IconName::Settings)
+                        .label(tr(locale, "chat.configureModel"))
+                        .on_click(move |_, _, cx| {
+                            app_empty.update(cx, |s, cx| s.open_model_settings(cx));
+                        }),
+                );
+            }
+            empty.into_any_element()
         } else {
             let (list_state, scrolled_up) = {
                 let s = self.scroller.read(cx);

@@ -5,7 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPDIR="$SCRIPT_DIR/dist-linux/PiCrust.AppDir"
 OUTDIR="$SCRIPT_DIR/dist-linux"
 
-echo "[picrust] 1. Compiling PiCrust (Release x86_64-unknown-linux-gnu)..."
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$SCRIPT_DIR/Cargo.toml" | head -n1)"
+if [[ -z "$VERSION" ]]; then
+  echo "[picrust] Could not read version from Cargo.toml" >&2
+  exit 1
+fi
+APPIMAGE_NAME="PiCrust-Linux-x86_64-${VERSION}.AppImage"
+
+echo "[picrust] 1. Compiling PiCrust $VERSION (Release x86_64-unknown-linux-gnu)..."
 (cd "$SCRIPT_DIR" && cargo build --release)
 
 echo "[picrust] 2. Preparing AppDir layout..."
@@ -64,5 +71,5 @@ if [ ! -f "$OUTDIR/appimagetool" ]; then
   chmod +x "$OUTDIR/appimagetool"
 fi
 
-ARCH=x86_64 "$OUTDIR/appimagetool" --appimage-extract-and-run "$APPDIR" "$OUTDIR/PiCrust-x86_64.AppImage"
-echo "[picrust] Standalone AppImage ready: $OUTDIR/PiCrust-x86_64.AppImage"
+ARCH=x86_64 "$OUTDIR/appimagetool" --appimage-extract-and-run "$APPDIR" "$OUTDIR/$APPIMAGE_NAME"
+echo "[picrust] Standalone AppImage ready: $OUTDIR/$APPIMAGE_NAME"

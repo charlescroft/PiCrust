@@ -16,7 +16,7 @@ use crate::settings::models_page::models_setting_page;
 use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::group_box::GroupBoxVariant;
-use gpui_kit::component::setting::Settings;
+use gpui_kit::component::setting::{SelectIndex, Settings};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
@@ -151,6 +151,8 @@ pub fn render_settings_overlay(
     let app_footer_save = app_state.clone();
     let app_backdrop_close = app_state.clone();
 
+    let initial_page = app_state.read(cx).settings_initial_page.min(1);
+
     let pages = vec![
         general_setting_page(app_state.clone(), locale, cx),
         models_setting_page(app_state.clone(), locale, cx),
@@ -239,7 +241,15 @@ pub fn render_settings_overlay(
                         .w_full()
                         .overflow_hidden()
                         .child(
-                            Settings::new("picrust-settings")
+                            Settings::new(if initial_page == 1 {
+                                "picrust-settings-models"
+                            } else {
+                                "picrust-settings"
+                            })
+                                .default_selected_index(SelectIndex {
+                                    page_ix: initial_page,
+                                    group_ix: None,
+                                })
                                 .sidebar_width(px(200.))
                                 .sidebar_size_range(px(170.)..px(250.))
                                 .with_group_variant(GroupBoxVariant::Outline)

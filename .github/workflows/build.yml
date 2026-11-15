@@ -28,16 +28,14 @@ jobs:
 
       - name: Build macOS .app Bundle
         run: |
-          chmod +x ./bundle-macos.sh
+          chmod +x ./bundle-macos.sh ./scripts/release-notes.sh
           ./bundle-macos.sh
-          cd dist-macos
-          zip -r -y "PiCrust-macos.zip" "PiCrust.app"
 
       - name: Upload macOS .app Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PiCrust-macos-app
-          path: dist-macos/PiCrust-macos.zip
+          name: PiCrust-macOS
+          path: dist-macos/*.zip
 
   windows:
     name: Build Windows (.exe)
@@ -61,17 +59,13 @@ jobs:
         shell: pwsh
         run: .\bundle-windows.ps1
 
-      - name: Upload Windows Standalone .exe
+      - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PiCrust-windows-exe
-          path: dist-windows/PiCrust.exe
-
-      - name: Upload Windows Bundle ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: PiCrust-windows-zip
-          path: dist-windows/PiCrust-windows-x64.zip
+          name: PiCrust-Windows
+          path: |
+            dist-windows/PiCrust-windows-x64-*.exe
+            dist-windows/PiCrust-windows-x64-*.zip
 
   linux:
     name: Build Linux (.AppImage)
@@ -121,49 +115,68 @@ jobs:
       - name: Upload Linux .AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: PiCrust-linux-appimage
-          path: dist-linux/PiCrust-x86_64.AppImage
+          name: PiCrust-Linux
+          path: dist-linux/*.AppImage
 
   release:
-    name: Create GitHub Release
+    name: Publish GitHub Release
     needs: [macos, windows, linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download macOS Artifact
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Resolve Version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [[ -z "$version" ]]; then
+            echo "Could not read version from Cargo.toml" >&2
+            exit 1
+          fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$tag_version" != "$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download All Platform Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: PiCrust-macos-app
+          pattern: PiCrust-*
           path: release-assets
+          merge-multiple: true
 
-      - name: Download Windows .exe
-        uses: actions/download-artifact@v4
-        with:
-          name: PiCrust-windows-exe
-          path: release-assets
+      - name: Generate SHA256 Checksums
+        shell: bash
+        run: |
+          cd release-assets
+          sha256sum * > "SHA256SUMS-${{ steps.version.outputs.version }}.txt"
+          echo "Release assets:"
+          ls -lh
 
-      - name: Download Windows ZIP
-        uses: actions/download-artifact@v4
-        with:
-          name: PiCrust-windows-zip
-          path: release-assets
+      - name: Generate Complete Release Notes
+        shell: bash
+        env:
+          ASSETS_DIR: release-assets
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x ./scripts/release-notes.sh
+          ./scripts/release-notes.sh "$GITHUB_REF_NAME" release-assets > release-notes.md
+          echo "Release notes length: $(wc -c < release-notes.md) bytes"
 
-      - name: Download Linux .AppImage
-        uses: actions/download-artifact@v4
-        with:
-          name: PiCrust-linux-appimage
-          path: release-assets
-
-      - name: Publish Release with Assets (.app, .exe, .AppImage)
+      - name: Publish Release with Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release-assets/PiCrust-macos.zip
-            release-assets/PiCrust.exe
-            release-assets/PiCrust-windows-x64.zip
-            release-assets/PiCrust-x86_64.AppImage
+          name: PiCrust v${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          generate_release_notes: false
           draft: false
           prerelease: false
-          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-assets/*

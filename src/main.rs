@@ -11,6 +11,7 @@ mod icons;
 mod i18n;
 mod pages;
 mod panels;
+mod provider_catalog;
 mod settings;
 mod themes;
 mod workspace;
@@ -34,6 +35,15 @@ struct PiAssets;
 
 impl AssetSource for PiAssets {
     fn load(&self, path: &str) -> GpuiResult<Option<Cow<'static, [u8]>>> {
+        // Brand mark for the custom title bar. Serving it through the asset
+        // source keeps it available in the portable Windows build, where no
+        // `assets/` directory is shipped next to the executable. SVG lets the
+        // mark follow the active theme's foreground colour.
+        if path == "picrust-mark.svg" {
+            return Ok(Some(Cow::Borrowed(
+                include_bytes!("../assets/picrust-mark.svg").as_slice(),
+            )));
+        }
         if let Ok(Some(bytes)) = ExtraIcons.load(path) {
             return Ok(Some(bytes));
         }
@@ -90,6 +100,8 @@ fn save_window_bounds(bounds: WindowBounds) {
 fn main() {
     application().with_assets(PiAssets).run(|cx| {
         init(cx);
+        #[cfg(target_os = "windows")]
+        cx.set_app_identity("works.earendil.picrust", "PiCrust");
         register_keybindings(cx);
         let prefs = themes::load_appearance_prefs();
         themes::apply_appearance(prefs.dark_mode, &prefs.light_theme, &prefs.dark_theme, cx);

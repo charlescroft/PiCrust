@@ -7,6 +7,9 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 const THEME_FILES: &[&str] = &[
+    // gpui-component's own shadcn neutral pair. These back "Default Light"
+    // (a plain white surface) and "Default Dark" with a complete token set.
+    include_str!("../patches/gpui-component/src/theme/default-theme.json"),
     include_str!("../themes/adventure.json"),
     include_str!("../themes/alduin.json"),
     include_str!("../themes/asciinema.json"),

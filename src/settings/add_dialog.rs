@@ -1,6 +1,7 @@
 use crate::app_state::{AppState, SettingsAddKind};
 use crate::client::types::ConfiguredModelInfo;
 use crate::i18n::{AppLocale, tr};
+use crate::provider_catalog::{self, ProviderCategory};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
@@ -63,6 +64,77 @@ const API_ENDPOINT_OPTIONS: &[ApiEndpointOption] = &[
         label: "Google Generative AI (/v1beta/models/...:generateContent)",
     },
 ];
+
+
+/// One row of the "Add provider" picker. Built from the static catalog plus
+/// any custom provider the sidecar/models.json reports.
+#[derive(Clone)]
+struct PickerRow {
+    id: String,
+    name: String,
+    detail: String,
+    configured: bool,
+    api_key: bool,
+    oauth: bool,
+    category: ProviderCategory,
+    from_catalog: bool,
+}
+
+fn provider_picker_rows(state: &AppState) -> Vec<PickerRow> {
+    let configured = |id: &str| {
+        state
+            .auth_providers
+            .iter()
+            .any(|(pid, _, c)| pid == id && *c)
+            || state
+                .oauth_providers
+                .iter()
+                .any(|(pid, _, c)| pid == id && *c)
+    };
+    let mut rows: Vec<PickerRow> = provider_catalog::all()
+        .iter()
+        .map(|p| PickerRow {
+            id: p.id.to_string(),
+            name: p.name.to_string(),
+            detail: p.base_url.to_string(),
+            configured: configured(p.id),
+            api_key: p.api_key || p.optional_api_key,
+            oauth: p.oauth,
+            category: p.category,
+            from_catalog: true,
+        })
+        .collect();
+
+    let push_extra = |rows: &mut Vec<PickerRow>, id: &str, name: &str, is_oauth: bool| {
+        if provider_catalog::is_builtin(id) {
+            return;
+        }
+        if let Some(existing) = rows.iter_mut().find(|r| r.id == id) {
+            existing.configured = existing.configured || configured(id);
+            existing.oauth = existing.oauth || is_oauth;
+            return;
+        }
+        rows.push(PickerRow {
+            id: id.to_string(),
+            name: if name.is_empty() { id.to_string() } else { name.to_string() },
+            detail: "Custom provider · models.json".to_string(),
+            configured: configured(id),
+            api_key: true,
+            oauth: is_oauth,
+            category: ProviderCategory::Global,
+            from_catalog: false,
+        });
+    };
+    let auth_snapshot = state.auth_providers.clone();
+    for (id, name, _) in &auth_snapshot {
+        push_extra(&mut rows, id, name, false);
+    }
+    let oauth_snapshot = state.oauth_providers.clone();
+    for (id, name, _) in &oauth_snapshot {
+        push_extra(&mut rows, id, name, true);
+    }
+    rows
+}
 
 pub struct SettingsAddDialogView {
     app_state: Entity<AppState>,
@@ -204,7 +276,14 @@ impl SettingsAddDialogView {
             }
             SettingsAddKind::DiscoveredModelsPicker { discovered, .. } => {
                 self.discovered_models = discovered.clone();
-                self.selected_model_ids = discovered.iter().map(|m| m.id.clone()).collect();
+                // Large catalogs (OpenRouter and friends) start unselected so
+                // one click cannot inject hundreds of models into models.json;
+                // the picker still offers "Select all".
+                self.selected_model_ids = if discovered.len() <= 50 {
+                    discovered.iter().map(|m| m.id.clone()).collect()
+                } else {
+                    std::collections::HashSet::new()
+                };
             }
             SettingsAddKind::EditProvider { provider_id } => {
                 let prefill = {
@@ -449,6 +528,8 @@ impl SettingsAddDialogView {
 
         cx.spawn(async move |this, cx| {
             let mut expand_provider_id: Option<String> = None;
+            let mut discover_after_save: Option<String> = None;
+            let mut reload_local_after_save = false;
             let res: anyhow::Result<()> = match kind {
                 SettingsAddKind::AddProviderPicker
                 | SettingsAddKind::AddModelToProvider { .. }
@@ -470,7 +551,7 @@ impl SettingsAddDialogView {
                         let prov_entry = cfg["providers"]
                             .as_object_mut()
                             .unwrap()
-                            .entry(pid)
+                            .entry(pid.clone())
                             .or_insert_with(|| json!({ "models": [] }));
                         prov_entry["baseUrl"] = json!(b);
                         prov_entry["api"] = json!(api_type);
@@ -486,15 +567,79 @@ impl SettingsAddDialogView {
                             if connected {
                                 let _ = client.put_models_config(cfg).await;
                             }
+                            reload_local_after_save = true;
+                            // Download the model list right away. Custom
+                            // providers have no catalog in pi, so without this
+                            // step the user would have to type model ids by
+                            // hand (the old behaviour they reported).
+                            let local_host = b.contains("localhost") || b.contains("127.0.0.1");
+                            if !c.is_empty() || local_host {
+                                discover_after_save = Some(pid.clone());
+                            }
                             Ok(())
                         }
                     }
                 }
                 SettingsAddKind::ProviderApiKey { provider_id, .. } => {
-                    if a.is_empty() {
+                    let optional = crate::provider_catalog::find(&provider_id)
+                        .map(|p| p.optional_api_key)
+                        .unwrap_or(false);
+                    let pi_builtin = crate::provider_catalog::is_pi_builtin(&provider_id);
+                    if a.is_empty() && !optional {
                         Err(anyhow::anyhow!("API key required"))
+                    } else if !pi_builtin || optional {
+                        // Providers that pi does not ship (SiliconFlow, Ark,
+                        // DashScope, Ollama, LM Studio, vLLM, ...) must live in
+                        // models.json so both engines can resolve their base
+                        // URL, protocol, credential, and models. Local servers
+                        // simply omit the key.
+                        let mut cfg = crate::client::local_store::read_models_config_local();
+                        if cfg.get("providers").and_then(Value::as_object).is_none() {
+                            cfg["providers"] = json!({});
+                        }
+                        if let Some(preset) = crate::provider_catalog::find(&provider_id) {
+                            let entry = cfg["providers"]
+                                .as_object_mut()
+                                .unwrap()
+                                .entry(provider_id.clone())
+                                .or_insert_with(|| json!({}));
+                            entry["baseUrl"] = json!(preset.base_url);
+                            entry["api"] = json!(preset.api);
+                            if !a.is_empty() {
+                                entry["apiKey"] = json!(a);
+                            }
+                            if entry.get("models").and_then(Value::as_array).is_none() {
+                                entry["models"] = json!([]);
+                            }
+                        }
+                        match crate::client::local_store::save_models_config_local(&cfg) {
+                            Ok(()) => {
+                                if connected {
+                                    let _ = client.put_models_config(cfg).await;
+                                }
+                                reload_local_after_save = true;
+                                discover_after_save = Some(provider_id.clone());
+                                Ok(())
+                            }
+                            Err(err) => Err(anyhow::anyhow!(err)),
+                        }
                     } else {
-                        client.set_api_key(&provider_id, &a).await.map(|_| ())
+                        // pi already knows this provider; store the credential
+                        // in auth.json. Persist first: the native engine and a
+                        // restarted sidecar both read auth.json, and the desktop
+                        // must keep working when the sidecar is offline.
+                        match crate::client::local_store::save_api_key_local(&provider_id, &a) {
+                            Ok(()) => {
+                                reload_local_after_save = true;
+                                if connected {
+                                    // Best effort: the sidecar picks the key up
+                                    // from auth.json even if this call fails.
+                                    let _ = client.set_api_key(&provider_id, &a).await;
+                                }
+                                Ok(())
+                            }
+                            Err(err) => Err(anyhow::anyhow!(err)),
+                        }
                     }
                 }
                 SettingsAddKind::McpServer => {
@@ -583,9 +728,15 @@ impl SettingsAddDialogView {
                         if let Some(pid) = expand_provider_id.take() {
                             s.expanded_configured_providers.insert(pid);
                         }
+                        if reload_local_after_save {
+                            s.load_local_store_snapshot();
+                        }
                         s.settings_add_kind = None;
                         s.refresh_from_sidecar(cx);
                         s.refresh_settings_data(cx);
+                        if let Some(pid) = discover_after_save.take() {
+                            s.discover_models_for_provider(pid, cx);
+                        }
                     } else {
                         cx.notify();
                     }
@@ -700,14 +851,9 @@ impl SettingsAddDialogView {
             self.last_kind = None;
             return div().into_any_element();
         };
-        let (locale, auth_providers, oauth_providers, sidecar_url) = {
+        let (locale, sidecar_url, sidecar_connected) = {
             let s = self.app_state.read(cx);
-            (
-                s.locale,
-                s.auth_providers.clone(),
-                s.oauth_providers.clone(),
-                s.client.base_url.clone(),
-            )
+            (s.locale, s.client.base_url.clone(), s.sidecar_connected)
         };
         if self.last_locale != locale {
             self.last_locale = locale;
@@ -800,197 +946,238 @@ impl SettingsAddDialogView {
 
         match &kind {
             SettingsAddKind::AddProviderPicker => {
-                let q = self.provider_search_input.read(cx).value().trim().to_lowercase();
+                let q = self
+                    .provider_search_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_lowercase();
                 let show_custom = q.is_empty()
                     || "custom".contains(&q)
                     || "openai".contains(&q)
                     || "anthropic".contains(&q);
-                let avail_oauth: Vec<_> = oauth_providers
+                let rows: Vec<PickerRow> = provider_picker_rows(self.app_state.read(cx))
                     .into_iter()
-                    .filter(|(id, name, logged_in)| {
-                        !*logged_in
-                            && (q.is_empty()
-                                || id.to_lowercase().contains(&q)
-                                || name.to_lowercase().contains(&q))
-                    })
-                    .collect();
-                let avail_apikey: Vec<_> = auth_providers
-                    .into_iter()
-                    .filter(|(id, name, configured)| {
-                        !*configured
-                            && (q.is_empty()
-                                || id.to_lowercase().contains(&q)
-                                || name.to_lowercase().contains(&q))
+                    .filter(|r| {
+                        q.is_empty()
+                            || r.id.to_lowercase().contains(&q)
+                            || r.name.to_lowercase().contains(&q)
+                            || r.detail.to_lowercase().contains(&q)
                     })
                     .collect();
 
                 let mut picker_scroll = v_flex()
                     .id("add-provider-picker-scroll")
-                    .max_h(px(420.))
+                    .max_h(px(460.))
                     .overflow_y_scroll()
-                    .gap_3();
+                    .gap_2();
 
                 if show_custom {
                     let app_custom = self.app_state.clone();
                     picker_scroll = picker_scroll.child(
-                        v_flex()
-                            .gap_1p5()
+                        h_flex()
+                            .id("picker-custom-card")
+                            .w_full()
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().secondary)
+                            .justify_between()
+                            .items_center()
+                            .cursor_pointer()
+                            .hover(|s| s.border_color(cx.theme().primary))
+                            .on_click(move |_, _, cx| {
+                                app_custom.update(cx, |s, cx| {
+                                    s.settings_add_kind = Some(SettingsAddKind::ProviderModel);
+                                    cx.notify();
+                                });
+                            })
                             .child(
-                                div()
-                                    .text_xs()
-                                    .font_semibold()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(tr(locale, "settings.addProviderModel")),
-                            )
-                            .child(
-                                h_flex()
-                                    .id("picker-custom-card")
-                                    .w_full()
-                                    .p_3()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .bg(cx.theme().secondary)
-                                    .justify_between()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.border_color(cx.theme().primary))
-                                    .on_click(move |_, _, cx| {
-                                        app_custom.update(cx, |s, cx| {
-                                            s.settings_add_kind =
-                                                Some(SettingsAddKind::ProviderModel);
-                                            cx.notify();
-                                        });
-                                    })
+                                v_flex()
+                                    .gap_0p5()
                                     .child(
-                                        v_flex()
-                                            .gap_0p5()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_semibold()
-                                                    .child("OpenAI / Anthropic / Google compatible"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(tr(locale, "settings.customEndpoint")),
-                                            ),
+                                        div()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child(tr(locale, "settings.customProviderTitle")),
                                     )
-                                    .child(IconName::Plus),
-                            ),
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(tr(locale, "settings.customEndpoint")),
+                                    ),
+                            )
+                            .child(IconName::Plus),
                     );
                 }
 
-                if !avail_oauth.is_empty() {
-                    let mut oauth_grid = v_flex().gap_1p5().child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(tr(locale, "settings.subscriptions")),
-                    );
-                    for (idx, (pid, pname, _)) in avail_oauth.into_iter().enumerate() {
-                        let login_url = format!(
-                            "{}/api/auth/login/{pid}",
-                            sidecar_url.trim_end_matches('/')
-                        );
-                        oauth_grid = oauth_grid.child(
-                            h_flex()
-                                .id(("picker-oauth", idx))
-                                .w_full()
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().secondary)
-                                .justify_between()
-                                .items_center()
-                                .cursor_pointer()
-                                .hover(|s| s.border_color(cx.theme().primary))
-                                .on_click(move |_, _, _| {
-                                    let _ = open::that(&login_url);
-                                })
-                                .child(
-                                    v_flex()
-                                        .gap_0p5()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_semibold()
-                                                .child(SharedString::from(pname)),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(SharedString::from(format!("OAuth · {pid}"))),
-                                        ),
-                                )
-                                .child(Tag::secondary().small().child("OAuth")),
+                let any_results = show_custom || !rows.is_empty();
+                let mut current_category: Option<ProviderCategory> = None;
+                for (idx, row) in rows.into_iter().enumerate() {
+                    if current_category != Some(row.category) {
+                        current_category = Some(row.category);
+                        picker_scroll = picker_scroll.child(
+                            div()
+                                .pt_1()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(match locale {
+                                    AppLocale::ZhCn => row.category.label_zh(),
+                                    AppLocale::En => row.category.label(),
+                                }),
                         );
                     }
-                    picker_scroll = picker_scroll.child(oauth_grid);
-                }
 
-                if !avail_apikey.is_empty() {
-                    let mut key_grid = v_flex().gap_1p5().child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("API Key"),
+                    let pid = row.id.clone();
+                    let pname = row.name.clone();
+                    let pid_click = pid.clone();
+                    let pname_click = pname.clone();
+                    let app_key = self.app_state.clone();
+                    let app_key_click = self.app_state.clone();
+                    let oauth_url = format!(
+                        "{}/api/auth/login/{}",
+                        sidecar_url.trim_end_matches('/'),
+                        pid
                     );
-                    for (idx, (pid, pname, _)) in avail_apikey.into_iter().enumerate() {
-                        let app_pick = self.app_state.clone();
-                        let p_id = pid.clone();
-                        let p_name = pname.clone();
-                        key_grid = key_grid.child(
-                            h_flex()
-                                .id(("picker-apikey", idx))
-                                .w_full()
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().secondary)
-                                .justify_between()
-                                .items_center()
-                                .cursor_pointer()
-                                .hover(|s| s.border_color(cx.theme().primary))
+                    let can_key = row.api_key;
+                    let can_oauth = row.oauth;
+                    let configured = row.configured;
+                    let from_catalog = row.from_catalog;
+
+                    let display_name = pname.clone();
+                    let display_id = pid.clone();
+                    let key_label = if crate::provider_catalog::find(&pid)
+                        .map(|p| p.optional_api_key)
+                        .unwrap_or(false)
+                    {
+                        tr(locale, "settings.setupProvider")
+                    } else if configured {
+                        tr(locale, "settings.updateProviderKey")
+                    } else {
+                        tr(locale, "settings.addProviderKey")
+                    };
+
+                    let mut actions = h_flex().items_center().gap_1p5().flex_shrink_0();
+                    if configured {
+                        actions = actions
+                            .child(Tag::secondary().small().child(tr(locale, "settings.configuredTag")));
+                    }
+                    if can_oauth {
+                        let oauth_url = oauth_url.clone();
+                        actions = actions.child(
+                            Button::new(("picker-oauth", idx))
+                                .outline()
+                                .xsmall()
+                                .h(px(26.))
+                                .label("OAuth")
+                                .disabled(!sidecar_connected)
+                                .tooltip(if sidecar_connected {
+                                    tr(locale, "settings.oauthLoginHint")
+                                } else {
+                                    tr(locale, "settings.oauthNeedsSidecar")
+                                })
                                 .on_click(move |_, _, cx| {
-                                    app_pick.update(cx, |s, cx| {
-                                        s.settings_add_kind =
-                                            Some(SettingsAddKind::ProviderApiKey {
-                                                provider_id: p_id.clone(),
-                                                provider_name: p_name.clone(),
-                                            });
+                                    cx.stop_propagation();
+                                    let _ = open::that(&oauth_url);
+                                }),
+                        );
+                    }
+                    if can_key {
+                        actions = actions.child(
+                            Button::new(("picker-key", idx))
+                                .primary()
+                                .xsmall()
+                                .h(px(26.))
+                                .label(key_label)
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    app_key.update(cx, |s, cx| {
+                                        s.settings_add_kind = Some(SettingsAddKind::ProviderApiKey {
+                                            provider_id: pid.clone(),
+                                            provider_name: pname.clone(),
+                                        });
                                         cx.notify();
                                     });
-                                })
-                                .child(
-                                    v_flex()
-                                        .gap_0p5()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_semibold()
-                                                .child(SharedString::from(pname)),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(SharedString::from(pid)),
-                                        ),
-                                )
-                                .child(Tag::secondary().small().child("API Key")),
+                                }),
                         );
                     }
-                    picker_scroll = picker_scroll.child(key_grid);
+
+                    let mut card = h_flex()
+                        .id(("picker-provider", idx))
+                        .w_full()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().secondary)
+                        .justify_between()
+                        .items_center()
+                        .gap_3()
+                        .cursor_pointer()
+                        .hover(|s| s.border_color(cx.theme().primary))
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_semibold()
+                                                .child(SharedString::from(display_name.clone())),
+                                        )
+                                        .children((!from_catalog).then(|| {
+                                            Tag::secondary()
+                                                .small()
+                                                .child(tr(locale, "settings.customTag"))
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .truncate()
+                                        .child(SharedString::from(format!("{display_id} · {}", row.detail))),
+                                ),
+                        )
+                        .child(actions);
+
+                    if can_key {
+                        card = card.on_click(move |_, _, cx| {
+                            app_key_click.update(cx, |s, cx| {
+                                s.settings_add_kind = Some(SettingsAddKind::ProviderApiKey {
+                                    provider_id: pid_click.clone(),
+                                    provider_name: pname_click.clone(),
+                                });
+                                cx.notify();
+                            });
+                        });
+                    } else if can_oauth {
+                        let oauth_url = oauth_url.clone();
+                        card = card.on_click(move |_, _, _| {
+                            if sidecar_connected {
+                                let _ = open::that(&oauth_url);
+                            }
+                        });
+                    }
+                    picker_scroll = picker_scroll.child(card);
+                }
+
+                if !any_results {
+                    picker_scroll = picker_scroll.child(
+                        div()
+                            .p_4()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(tr(locale, "settings.noProviderMatches")),
+                    );
                 }
 
                 body = body
@@ -1019,7 +1206,14 @@ impl SettingsAddDialogView {
                         tr(locale, "settings.apiKeyOptional"),
                         Input::new(&self.input_c).small(),
                         cx,
-                    ));
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .line_height(px(18.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(tr(locale, "settings.fetchModelsOnSave")),
+                    );
             }
             SettingsAddKind::AddModelToProvider { .. } => {
                 // Row 1: Model ID + Display Name (paired on one row)
@@ -1226,12 +1420,46 @@ impl SettingsAddDialogView {
                             ),
                     );
             }
-            SettingsAddKind::ProviderApiKey { .. } => {
-                body = body.child(field_box(
-                    tr(locale, "settings.apiKeyOptional"),
-                    Input::new(&self.input_a).small(),
-                    cx,
-                ));
+            SettingsAddKind::ProviderApiKey { provider_id, .. } => {
+                let base_hint = crate::provider_catalog::base_url_for(provider_id)
+                    .map(|url| format!("{provider_id} · {url}"))
+                    .unwrap_or_else(|| provider_id.clone());
+                let optional = crate::provider_catalog::find(provider_id)
+                    .map(|p| p.optional_api_key)
+                    .unwrap_or(false);
+                body = body
+                    .child(field_box(
+                        tr(locale, "settings.apiKeyOptional"),
+                        Input::new(&self.input_a).small(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(optional.then(|| {
+                                div()
+                                    .text_xs()
+                                    .line_height(px(18.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(tr(locale, "settings.localProviderNoKeyHint"))
+                            }))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(base_hint)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .line_height(px(18.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(tr(locale, "settings.apiKeyStoredHint")),
+                            ),
+                    );
             }
             SettingsAddKind::McpServer => {
                 body = body

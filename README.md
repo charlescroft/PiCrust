@@ -48,6 +48,11 @@ It delivers **fluid GPU-accelerated rendering**, hardware-accelerated typography
 
 ## Features
 
+### Providers & Model Setup
+- **30+ built-in providers**: OpenAI, Anthropic, Google Gemini, xAI (Grok), DeepSeek, Mistral, Groq, Together, Fireworks, Cerebras, NVIDIA NIM, Hugging Face, Baseten, OpenRouter, Vercel AI Gateway, SiliconFlow, Volcengine Ark, Moonshot/Kimi, MiniMax, Z.AI/GLM, Qwen, Xiaomi MiMo, GitHub Copilot, Ollama, LM Studio, vLLM, and more.
+- **Automatic model discovery**: saving a provider downloads its `GET /models` list and lets you select models instead of typing ids; works even when the sidecar is offline.
+- **One-key setup**: paste an API key and the desktop writes `~/.pi/agent/auth.json`, resolves the endpoint, and shows the provider's models immediately.
+
 ### Agentic Conversation & Composer
 - **High-Performance Message Scroller**: Bounded virtualized list with `ConversationScrollerState` supporting hundreds of turns without frame drops.
 - **Rich Content Rendering**: Hardware-accelerated typography, LaTeX math formulas via KaTeX, Mermaid diagrams (Flowcharts, Sequence, Class, State, Gantt), syntax-highlighted code blocks with copy actions, and unified/split diff cards.
@@ -110,10 +115,10 @@ PiCrust is designed as the native desktop frontend and execution workbench for t
 ```bash
 # Clone the repository
 git clone https://github.com/charlescroft/picrust.git
-cd picrust/pi-gpui
+cd picrust
 
-# Run test suite (38 unit & integration tests)
-cargo test --offline
+# Run test suite
+cargo test
 
 # Build and run optimized release binary
 cargo run --release
@@ -124,19 +129,19 @@ cargo run --release
 #### macOS (PiCrust.app)
 ```bash
 ./bundle-macos.sh
-# Output: dist-macos/PiCrust.app (~26 MB)
+# Output: dist-macos/PiCrust.app and dist-macos/PiCrust-macOS-<arch>-<version>.zip
 ```
 
-#### Windows (PiCrust.exe)
+#### Windows (PiCrust-windows-x64-<version>.exe)
 ```powershell
 .\bundle-windows.ps1
-# Output: dist-windows/PiCrust.exe & dist-windows/PiCrust-windows-x64.zip
+# Output: dist-windows/PiCrust-windows-x64-<version>.exe & .zip
 ```
 
-#### Linux (PiCrust-x86_64.AppImage)
+#### Linux (PiCrust-Linux-x86_64-<version>.AppImage)
 ```bash
 ./bundle-linux.sh
-# Output: dist-linux/PiCrust-x86_64.AppImage
+# Output: dist-linux/PiCrust-Linux-x86_64-<version>.AppImage
 ```
 
 ---
@@ -163,7 +168,7 @@ PiCrust stores all client preferences in a single local JSON file:
 - **Windows**: `%USERPROFILE%\.pi\agent\picrust-settings.json`
 
 Key configuration options include:
-- **Theme & Appearance**: Dark/Light/System theme mode, official GPUI kit color schemes (Twilight, Solarized, Gruvbox, etc.), chat font size, UI font size.
+- **Theme & Appearance**: New installs start on the white **Default Light** theme; Dark/Light/System modes and the official GPUI kit color schemes (Twilight, Solarized, Gruvbox, etc.) remain available, plus chat/UI font sizes.
 - **Composer Shortcuts**: `enter`, `cmd-enter`, or `ctrl-enter` for prompt submission.
 - **Core Connection**: `auto` (automatic sidecar discovery) or `manual` (custom remote core endpoint).
 - **Thinking Defaults**: Configurable default expansion state and model-linked reasoning levels.
@@ -212,10 +217,10 @@ Key configuration options include:
 ## Contributing
 
 We welcome contributions! Please follow these guidelines:
-1. Ensure all code remains isolated inside `pi-gpui/`.
+1. Ensure all code remains isolated inside the repository root.
 2. Verify all tests pass before submitting a PR:
    ```bash
-   cargo test --offline
+   cargo test
    ```
 3. Maintain compliance with `docs/ui-design-system.md` (mutual-exclusion controls, bounded virtualization, unified icons).
 

@@ -125,6 +125,7 @@ pub fn resolve_provider_endpoint_and_key(
     provider_id: &str,
 ) -> Result<(NativeLlmApiKind, String, String)> {
     let models_cfg = crate::client::local_store::read_models_config_local();
+    let preset = crate::provider_catalog::find(provider_id);
     let mut base_url = String::new();
     let mut api_str = String::new();
     let mut raw_key = String::new();
@@ -154,17 +155,26 @@ pub fn resolve_provider_endpoint_and_key(
             .to_string();
     }
 
+    // Built-in providers are not required to have a models.json entry: fall
+    // back to the desktop catalog's wire protocol and endpoint.
+    if api_str.is_empty()
+        && let Some(p) = preset
+    {
+        api_str = p.api.to_string();
+    }
     let api_kind = NativeLlmApiKind::from_api_str(&api_str, provider_id);
     if base_url.is_empty() {
-        base_url = match api_kind {
-            NativeLlmApiKind::AnthropicMessages => "https://api.anthropic.com/v1".to_string(),
-            NativeLlmApiKind::GoogleGenerativeAi => {
-                "https://generativelanguage.googleapis.com/v1beta".to_string()
-            }
-            NativeLlmApiKind::OpenAiCompletions | NativeLlmApiKind::OpenAiResponses => {
-                "https://api.openai.com/v1".to_string()
-            }
-        };
+        base_url = preset
+            .map(|p| p.base_url.to_string())
+            .unwrap_or_else(|| match api_kind {
+                NativeLlmApiKind::AnthropicMessages => "https://api.anthropic.com/v1".to_string(),
+                NativeLlmApiKind::GoogleGenerativeAi => {
+                    "https://generativelanguage.googleapis.com/v1beta".to_string()
+                }
+                NativeLlmApiKind::OpenAiCompletions | NativeLlmApiKind::OpenAiResponses => {
+                    "https://api.openai.com/v1".to_string()
+                }
+            });
     }
 
     let mut resolved_key = models_cfg
@@ -180,7 +190,11 @@ pub fn resolve_provider_endpoint_and_key(
             && let Ok(val) = serde_json::from_str::<Value>(&raw)
             && let Some(entry) = val.get(provider_id)
         {
-            if let Some(k) = entry.get("key").or_else(|| entry.get("access")).and_then(Value::as_str)
+            if let Some(k) = entry
+                .get("key")
+                .or_else(|| entry.get("access"))
+                .or_else(|| entry.get("accessToken"))
+                .and_then(Value::as_str)
             {
                 resolved_key = k.trim().to_string();
             } else if let Some(k) = entry.as_str() {
@@ -189,21 +203,34 @@ pub fn resolve_provider_endpoint_and_key(
         }
     }
 
-    // Standard environment variable fallback
+    // Provider-specific environment variables first (OPENROUTER_API_KEY,
+    // DEEPSEEK_API_KEY, ...), then the protocol's generic fallback.
     if resolved_key.is_empty() {
-        let env_candidates: &[&str] = match api_kind {
-            NativeLlmApiKind::AnthropicMessages => &["ANTHROPIC_API_KEY"],
-            NativeLlmApiKind::GoogleGenerativeAi => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-            NativeLlmApiKind::OpenAiCompletions | NativeLlmApiKind::OpenAiResponses => {
-                &["OPENAI_API_KEY"]
+        if let Some(p) = preset {
+            for var in p.env_vars {
+                if let Ok(v) = std::env::var(var)
+                    && !v.trim().is_empty()
+                {
+                    resolved_key = v.trim().to_string();
+                    break;
+                }
             }
-        };
-        for var in env_candidates {
-            if let Ok(v) = std::env::var(var)
-                && !v.trim().is_empty()
-            {
-                resolved_key = v.trim().to_string();
-                break;
+        }
+        if resolved_key.is_empty() {
+            let env_candidates: &[&str] = match api_kind {
+                NativeLlmApiKind::AnthropicMessages => &["ANTHROPIC_API_KEY"],
+                NativeLlmApiKind::GoogleGenerativeAi => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+                NativeLlmApiKind::OpenAiCompletions | NativeLlmApiKind::OpenAiResponses => {
+                    &["OPENAI_API_KEY"]
+                }
+            };
+            for var in env_candidates {
+                if let Ok(v) = std::env::var(var)
+                    && !v.trim().is_empty()
+                {
+                    resolved_key = v.trim().to_string();
+                    break;
+                }
             }
         }
     }

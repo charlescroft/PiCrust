@@ -48,7 +48,9 @@ fn default_locale() -> String {
     "en".to_string()
 }
 fn default_light_theme() -> String {
-    "Ayu Light".to_string()
+    // A clean white surface is the first-run default. Users who prefer a
+    // themed light palette can still pick any bundled light theme.
+    "Default Light".to_string()
 }
 fn default_dark_theme() -> String {
     "Catppuccin Mocha".to_string()
@@ -59,13 +61,17 @@ fn default_probe_interval() -> u64 {
 
 /// Theme and typography block.
 fn default_theme_mode() -> String {
-    "dark".to_string()
+    "light".to_string()
+}
+
+fn default_false() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppearanceSettings {
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub dark_mode: bool,
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
@@ -86,7 +92,7 @@ pub struct AppearanceSettings {
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
-            dark_mode: true,
+            dark_mode: false,
             theme_mode: default_theme_mode(),
             light_theme: default_light_theme(),
             dark_theme: default_dark_theme(),

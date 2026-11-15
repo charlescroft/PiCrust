@@ -878,6 +878,19 @@ mod discovery_tests {
     }
 
     #[test]
+    fn every_catalog_provider_builds_a_models_url() {
+        for preset in crate::provider_catalog::all() {
+            let url = build_models_url(preset.base_url, preset.api)
+                .unwrap_or_else(|e| panic!("{}: {e}", preset.id));
+            assert!(
+                url.ends_with("/models"),
+                "{} produced unexpected model URL {url}",
+                preset.id
+            );
+        }
+    }
+
+    #[test]
     fn resolves_env_and_literal_keys_for_probing() {
         // SAFETY: single-threaded test setup, no other thread reads the environment.
         unsafe { std::env::set_var("PI_GPUI_TEST_KEY", "sk-test-123") };
