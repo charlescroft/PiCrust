@@ -555,6 +555,23 @@ pub fn save_api_key_local(provider_id: &str, api_key: &str) -> Result<(), String
     write_json_pretty_atomic(&path, &Value::Object(root))
 }
 
+/// Removes a provider's credential entry from `~/.pi/agent/auth.json`.
+pub fn delete_provider_auth_local(provider_id: &str) -> Result<(), String> {
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return Ok(());
+    }
+    let path = pi_agent_dir().join("auth.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut root = read_json_object_or_empty(&path);
+    if root.remove(provider_id).is_some() {
+        write_json_pretty_atomic(&path, &Value::Object(root))?;
+    }
+    Ok(())
+}
+
 /// Minimal-edit update of `enabledModels` in `~/.pi/agent/settings.json`.
 pub fn update_enabled_models_local(body: &Value) -> Result<Vec<String>, String> {
     let mut updated_list = Vec::new();

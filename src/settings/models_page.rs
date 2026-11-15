@@ -133,6 +133,7 @@ fn merged_providers(state: &AppState) -> Vec<MergedProvider> {
         }
     }
 
+    out.retain(|p| p.has_config || p.enabled_count > 0 || p.models.iter().any(|m| m.enabled));
     out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
     out
 }

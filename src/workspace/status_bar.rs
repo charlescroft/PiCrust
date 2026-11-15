@@ -3,11 +3,13 @@ use crate::client::types::WorkspaceKind;
 use crate::i18n::tr;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
@@ -56,18 +58,14 @@ pub fn render_status_bar(
     let app_for_term = app_state.clone();
     let app_for_settings = app_state.clone();
     let app_for_agy = app_state.clone();
-    let agy_badge_label = state.agy_link_status_text.clone().or_else(|| {
-        state.agy_link_state.as_ref().map(|agy| {
-            if let Some(active) = agy.accounts.iter().find(|a| a.active).or_else(|| agy.accounts.first()) {
-                let name = active.email.as_deref().unwrap_or(&active.alias);
-                match active.five_hour_pct {
-                    Some(pct) => format!("AGY: {name} ({pct}%)"),
-                    None => format!("AGY: {name}"),
-                }
-            } else {
-                "AGY".to_string()
-            }
-        })
+    let agy_quota_badge: Option<(Option<i32>, String)> = state.agy_link_state.as_ref().map(|agy| {
+        if let Some(active) = agy.accounts.iter().find(|a| a.active).or_else(|| agy.accounts.first()) {
+            let name = active.email.as_deref().unwrap_or(&active.alias).to_string();
+            let pct = active.five_hour_pct.or(active.weekly_pct);
+            (pct, name)
+        } else {
+            (None, "AGY".to_string())
+        }
     });
 
     let mut bar = StatusBar::new()
@@ -311,18 +309,58 @@ pub fn render_status_bar(
             .gap_2()
             .child({
                 let app_agy = app_for_agy.clone();
-                if let Some(label) = agy_badge_label {
-                    Button::new("sb-agy-link")
-                        .ghost()
-                        .small()
+                if let Some((pct_opt, account_name)) = agy_quota_badge {
+                    let tip = match pct_opt {
+                        Some(p) => format!("Antigravity: {account_name} ({p}%) — Click to manage"),
+                        None => format!("Antigravity: {account_name} — Click to manage"),
+                    };
+                    h_flex()
+                        .id("sb-agy-link")
                         .h(px(26.))
-                        .icon(IconName::Bot)
-                        .label(SharedString::from(label))
-                        .tooltip("Open Antigravity (agy-link) Pool & Quotas")
+                        .px_2()
+                        .gap_1p5()
+                        .items_center()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(cx.theme().secondary))
+                        .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
                         .on_click(move |_, _, cx| {
                             app_agy.update(cx, |s, cx| {
                                 s.open_agy_link_modal(cx);
                             });
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_medium()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("AGY"),
+                        )
+                        .when_some(pct_opt, |el, pct| {
+                            let pct_clamped = pct.clamp(0, 100);
+                            let ring_color = if pct_clamped >= 66 {
+                                cx.theme().success
+                            } else if pct_clamped >= 33 {
+                                cx.theme().warning
+                            } else {
+                                cx.theme().danger
+                            };
+                            el.child(
+                                ProgressCircle::new("sb-agy-circle")
+                                    .value((pct_clamped as f32).max(4.0))
+                                    .size(px(14.))
+                                    .color(ring_color),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(cx.theme().foreground)
+                                    .child(format!("{pct_clamped}%")),
+                            )
+                        })
+                        .when(pct_opt.is_none(), |el| {
+                            el.child(Icon::new(IconName::Bot).xsmall())
                         })
                         .into_any_element()
                 } else {

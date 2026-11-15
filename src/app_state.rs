@@ -2712,6 +2712,7 @@ impl AppState {
         cx.spawn(async move |_, cx| {
             smol::Timer::after(std::time::Duration::from_millis(250)).await;
             let _ = crate::client::local_store::save_models_config_local(&config);
+            let _ = crate::client::local_store::delete_provider_auth_local(&provider_id);
             if !disable_refs.is_empty() {
                 let _ = crate::client::local_store::update_enabled_models_local(&json!({
                     "op": "provider",
