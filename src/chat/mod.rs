@@ -939,10 +939,19 @@ impl Render for ChatPanel {
                 .into_any_element()
         };
 
-        let q_overlay = self
-            .questionnaire
-            .as_ref()
-            .map(|view| div().px_4().pb_2().child(view.clone()));
+        let q_overlay = self.questionnaire.as_ref().map(|view| {
+            div()
+                .w_full()
+                .px_4()
+                .pb_2()
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(chat_width))
+                        .mx_auto()
+                        .child(view.clone()),
+                )
+        });
 
         let session_title = {
             let state = self.app_state.read(cx);

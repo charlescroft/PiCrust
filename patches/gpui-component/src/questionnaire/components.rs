@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     Role, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, svg,
+    prelude::FluentBuilder as _, px, svg,
 };
 use gpui_base::RadioGroup;
 use rust_i18n::t;
@@ -491,7 +491,15 @@ macro_rules! questionnaire_item_part {
                 // have filled, so answers never crowd the question.
                 let closes_item_gap = $closes_item_gap && item_description(definition).is_none();
                 let size = resolve_size(self.size, &self.state, cx);
-                $style(div().w_full().text_color(colors.$color), size, cx)
+                $style(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .text_color(colors.$color),
+                    size,
+                    cx,
+                )
                     .when(closes_item_gap, |this| {
                         this.mb(QuestionnaireMetrics::new(size, cx).item_gap)
                     })
@@ -791,6 +799,7 @@ where
         .items_start()
         .gap(metrics.choice_gap)
         .w_full()
+        .min_w_0()
         .min_h(metrics.choice_min_height)
         .px(metrics.choice_padding_x)
         .py(metrics.choice_padding_y)
@@ -922,18 +931,29 @@ impl RenderOnce for QuestionnaireChoice {
         let content = div()
             .flex()
             .flex_1()
+            .min_w_0()
             .flex_col()
             .gap(metrics.content_gap)
             .refine_style(&self.content_style)
             .when(!has_children, |this| {
                 this.child(text_style(
-                    div().text_color(colors.foreground).child(label.clone()),
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .text_color(colors.foreground)
+                        .child(label.clone()),
                     size,
                     cx,
                 ))
                 .when_some(description.clone(), |this, description| {
                     this.child(secondary_text_style(
-                        div().text_color(colors.muted_foreground).child(description),
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_color(colors.muted_foreground)
+                            .child(description),
                         size,
                         cx,
                     ))
@@ -1136,6 +1156,8 @@ impl RenderOnce for QuestionnaireInput {
             .aria_label(input_definition.accessibility_label().clone())
             .disabled(item_state.is_disabled() || input_definition.is_disabled())
             .with_size(size)
+            .w_full()
+            .max_w(px(560.))
             // The freeform answer is one of the answers, so its text starts on
             // the same edge a choice's indicator does — the card padding.
             .pl(metrics.choice_padding_x)

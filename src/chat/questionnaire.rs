@@ -325,11 +325,14 @@ impl QuestionnaireView {
                 .child(QuestionnaireSubmit::new(&self.state)),
         );
 
+        let chat_width = self.app_state.read(cx).chat_content_width;
         let app_cancel = self.app_state.clone();
         let req_id = self.request.request_id.clone();
 
         v_flex()
             .w_full()
+            .max_w(px(chat_width))
+            .mx_auto()
             .p_3()
             .gap_2()
             .rounded_lg()
