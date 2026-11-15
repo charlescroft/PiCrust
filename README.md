@@ -12,9 +12,9 @@
 [![GPUI](https://img.shields.io/badge/GUI-GPUI%200.9.1-blue.svg?style=flat-square)](https://github.com/zed-industries/zed)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%2F%20Intel)-black.svg?style=flat-square&logo=apple)](https://apple.com)
 [![Bundle Size](https://img.shields.io/badge/Bundle%20Size-~26%20MB-brightgreen.svg?style=flat-square)](#benchmark--performance)
-[![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20MIT-blue.svg?style=flat-square)](#license)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](#license)
 
-[English](README.md) | [Chinese](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 </div>
 
@@ -117,25 +117,24 @@ You can drag `PiCrust.app` into `/Applications` and launch it directly.
 
 ## ⌨️ Global Keyboard Shortcuts
 
-| Shortcut | Action |
-| :--- | :--- |
-| `Cmd + N` | Start a new session / chat |
-| `Cmd + F` | Open in-conversation search & command palette |
-| `Cmd + B` | Toggle left sidebar |
-| `Cmd + J` | Toggle right workbench panel |
-| `Cmd + Shift + T` | Open native PTY terminal |
-| `Cmd + ,` | Open Settings modal |
-| `Esc` | Stop running agent / close active modal dialog |
-| `Enter` / `Cmd + Enter` | Submit prompt (configurable in Settings › General) |
+| macOS Shortcut | Windows / Linux Shortcut | Action |
+| :--- | :--- | :--- |
+| `Cmd + N` | `Ctrl + N` | Start a new session / chat |
+| `Cmd + F` | `Ctrl + F` | Open in-conversation search & command palette |
+| `Cmd + B` | `Ctrl + B` | Toggle left sidebar |
+| `Cmd + J` | `Ctrl + J` | Toggle right workbench panel |
+| `Cmd + Shift + T` | `Ctrl + Shift + T` | Open native PTY terminal |
+| `Cmd + ,` | `Ctrl + ,` | Open Settings modal |
+| `Esc` | `Esc` | Stop running agent / close active modal dialog |
+| `Enter` / `Cmd + Enter` | `Enter` / `Ctrl + Enter` | Submit prompt (configurable in Settings › General) |
 
 ---
 
 ## ⚙️ Configuration & Customization
 
 PiCrust stores all client preferences in a single local JSON file:
-```text
-~/.pi/agent/gpui-settings.json
-```
+- **macOS / Linux**: `~/.pi/agent/picrust-settings.json`
+- **Windows**: `%USERPROFILE%\.pi\agent\picrust-settings.json`
 
 Key configuration options include:
 - **Theme & Appearance**: Dark/Light/System theme mode, official GPUI kit color schemes (Twilight, Solarized, Gruvbox, etc.), chat font size, UI font size.
@@ -198,4 +197,4 @@ We welcome contributions! Please follow these guidelines:
 
 ## 📄 License
 
-PiCrust is open-sourced under the [Apache License 2.0](LICENSE-APACHE) / [MIT License](LICENSE-MIT).
+PiCrust is open-sourced under the [Apache License 2.0](LICENSE-APACHE).

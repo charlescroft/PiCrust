@@ -3,17 +3,18 @@
 //! Every client-side preference lives in one file so it can be inspected,
 //! versioned, or copied between machines:
 //!
-//! `~/.pi/agent/gpui-settings.json`
+//! `~/.pi/agent/picrust-settings.json` (macOS/Linux) or `%USERPROFILE%\.pi\agent\picrust-settings.json` (Windows)
 //!
 //! The file is the single source of truth: `load_app_settings()` reads it at
-//! startup, every setter writes it back, and the earlier
-//! `gpui-appearance.json` is imported once when the new file does not exist yet.
+//! startup, every setter writes it back, and earlier legacy settings files are
+//! migrated seamlessly when the new file does not exist yet.
 
 use crate::client::native_index::user_home;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const SETTINGS_FILE_NAME: &str = "gpui-settings.json";
+pub const SETTINGS_FILE_NAME: &str = "picrust-settings.json";
+const LEGACY_GPUI_FILE_NAME: &str = "gpui-settings.json";
 const LEGACY_FILE_NAME: &str = "gpui-appearance.json";
 
 fn default_send_shortcut() -> String {
@@ -311,22 +312,31 @@ fn import_legacy(path: &Path) -> AppSettings {
 /// of truth from then on.
 pub fn load_app_settings() -> AppSettings {
     let path = settings_path();
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => match serde_json::from_str::<AppSettings>(&raw) {
-            Ok(mut parsed) => {
-                if parsed.version == 0 {
-                    parsed.version = current_version();
-                }
-                parsed
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+        if let Ok(mut parsed) = serde_json::from_str::<AppSettings>(&raw) {
+            if parsed.version == 0 {
+                parsed.version = current_version();
             }
-            Err(_) => AppSettings::default(),
-        },
-        Err(_) => {
-            let imported = import_legacy(&legacy_path());
-            save_app_settings(&imported);
-            imported
+            return parsed;
         }
     }
+
+    // Seamlessly import from previous gpui-settings.json if present
+    let gpui_legacy = settings_dir().join(LEGACY_GPUI_FILE_NAME);
+    if let Ok(raw) = std::fs::read_to_string(&gpui_legacy) {
+        if let Ok(mut parsed) = serde_json::from_str::<AppSettings>(&raw) {
+            if parsed.version == 0 {
+                parsed.version = current_version();
+            }
+            save_app_settings(&parsed);
+            return parsed;
+        }
+    }
+
+    // Fall back to pre-JSON appearance file
+    let imported = import_legacy(&legacy_path());
+    save_app_settings(&imported);
+    imported
 }
 
 pub fn save_app_settings(settings: &AppSettings) {

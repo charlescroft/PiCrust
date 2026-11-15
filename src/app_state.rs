@@ -5097,12 +5097,7 @@ impl AppState {
                         .or(req.message.as_deref())
                         .unwrap_or("");
                     self.trigger_desktop_notification(n_title, n_body);
-                    if req.method == "ask_user_question" {
-                        self.questionnaire_request_id = Some(req.request_id.clone());
-                        self.pending_ui_request = Some(req);
-                    } else {
-                        self.push_extension_dialog(req);
-                    }
+                    self.push_extension_dialog(req);
                 }
             }
             AgentSseEvent::CompactionStart => {
@@ -5274,18 +5269,44 @@ impl AppState {
     /// Route an `extension_ui_request` into app state. Extension dialogs are queued so
     /// the questionnaire renders one at a time, and an `ask_user_question` dialog is
     /// matched to its tool call so it submits the canonical answer envelope.
+    ///
+    /// Identical repeated questions or retried requests are automatically deduplicated.
     fn push_extension_dialog(&mut self, req: ExtensionUiRequest) {
-        if !self
+        if req.method == "ask_user_question" {
+            self.questionnaire_request_id = Some(req.request_id.clone());
+        }
+
+        let is_duplicate_id = self
             .pending_ui_request
             .as_ref()
             .map(|p| p.request_id == req.request_id)
             .unwrap_or(false)
-            && !self.dialog_queue.iter().any(|r| r.request_id == req.request_id)
-        {
-            self.dialog_queue.push(req);
-        }
-        if self.pending_ui_request.is_none() && !self.dialog_queue.is_empty() {
-            self.pending_ui_request = Some(self.dialog_queue.remove(0));
+            || self.dialog_queue.iter().any(|r| r.request_id == req.request_id);
+
+        let is_duplicate_content = self.pending_ui_request.as_ref().is_some_and(|p| {
+            p.method == req.method
+                && p.message == req.message
+                && p.questions.len() == req.questions.len()
+                && p.questions
+                    .iter()
+                    .zip(req.questions.iter())
+                    .all(|(a, b)| a.question.trim().eq_ignore_ascii_case(b.question.trim()))
+        }) || self.dialog_queue.iter().any(|p| {
+            p.method == req.method
+                && p.message == req.message
+                && p.questions.len() == req.questions.len()
+                && p.questions
+                    .iter()
+                    .zip(req.questions.iter())
+                    .all(|(a, b)| a.question.trim().eq_ignore_ascii_case(b.question.trim()))
+        });
+
+        if !is_duplicate_id && !is_duplicate_content {
+            if self.pending_ui_request.is_none() {
+                self.pending_ui_request = Some(req);
+            } else {
+                self.dialog_queue.push(req);
+            }
         }
     }
 

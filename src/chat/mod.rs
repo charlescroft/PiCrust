@@ -612,7 +612,9 @@ impl Render for ChatPanel {
         // Sync pending ExtensionUiRequest -> QuestionnaireView
         let pending_req = self.app_state.read(cx).pending_ui_request.clone();
         match (pending_req, &self.questionnaire) {
-            (Some(req), Some(existing)) if existing.read(cx).request_id() == req.request_id => {}
+            (Some(req), Some(existing))
+                if existing.read(cx).request_id() == req.request_id
+                    || existing.read(cx).has_same_content(&req) => {}
             (Some(req), _) => {
                 let app = self.app_state.clone();
                 self.questionnaire =

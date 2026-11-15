@@ -14,7 +14,7 @@
 [![GPUI](https://img.shields.io/badge/GUI-GPUI%200.9.1-blue.svg?style=flat-square)](https://github.com/zed-industries/zed)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%2F%20Intel)-black.svg?style=flat-square&logo=apple)](https://apple.com)
 [![Bundle Size](https://img.shields.io/badge/包体大小-~26%20MB-brightgreen.svg?style=flat-square)](#性能对比基准)
-[![License](https://img.shields.io/badge/开源协议-Apache%202.0%20%2F%20MIT-blue.svg?style=flat-square)](#开源协议)
+[![License](https://img.shields.io/badge/开源协议-Apache%202.0-blue.svg?style=flat-square)](#开源协议)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -119,25 +119,24 @@ pi-gpui/dist-macos/PiCrust.app  (约 26 MB)
 
 ## ⌨️ 常用全局快捷键
 
-| 快捷键 | 功能操作 |
-| :--- | :--- |
-| `Cmd + N` | 新建对话 / 会话 |
-| `Cmd + F` | 唤起会话内搜索与全局命令面板 |
-| `Cmd + B` | 展开 / 折叠左侧边栏 |
-| `Cmd + J` | 展开 / 折叠右侧工作台面板 |
-| `Cmd + Shift + T` | 打开原生虚拟终端 |
-| `Cmd + ,` | 呼出全局设置面板 |
-| `Esc` | 中断当前 Agent 执行 / 关闭当前活动弹窗 |
-| `Enter` / `Cmd + Enter` | 发送提示词（可在 设置 › 通用 中切换） |
+| macOS 快捷键 | Windows / Linux 快捷键 | 功能操作 |
+| :--- | :--- | :--- |
+| `Cmd + N` | `Ctrl + N` | 新建对话 / 会话 |
+| `Cmd + F` | `Ctrl + F` | 唤起会话内搜索与全局命令面板 |
+| `Cmd + B` | `Ctrl + B` | 展开 / 折叠左侧边栏 |
+| `Cmd + J` | `Ctrl + J` | 展开 / 折叠右侧工作台面板 |
+| `Cmd + Shift + T` | `Ctrl + Shift + T` | 打开原生虚拟终端 |
+| `Cmd + ,` | `Ctrl + ,` | 呼出全局设置面板 |
+| `Esc` | `Esc` | 中断当前 Agent 执行 / 关闭当前活动弹窗 |
+| `Enter` / `Cmd + Enter` | `Enter` / `Ctrl + Enter` | 发送提示词（可在 设置 › 通用 中切换） |
 
 ---
 
 ## ⚙️ 配置文件与持久化存储
 
 所有客户端配置均持久化在单一标准的本地 JSON 文件中：
-```text
-~/.pi/agent/gpui-settings.json
-```
+- **macOS / Linux**：`~/.pi/agent/picrust-settings.json`
+- **Windows**：`%USERPROFILE%\.pi\agent\picrust-settings.json`
 
 核心配置项包括：
 - **外观与主题**：深色 / 浅色 / 跟随系统主题，内置官方配色方案（Twilight、Solarized、Gruvbox 等），独立调节对话字号与 UI 字号。
@@ -200,4 +199,4 @@ pi-gpui/dist-macos/PiCrust.app  (约 26 MB)
 
 ## 📄 开源协议
 
-本项目采用 [Apache License 2.0](LICENSE-APACHE) / [MIT License](LICENSE-MIT) 双重开源许可。
+本项目采用 [Apache License 2.0](LICENSE-APACHE) 开源许可。

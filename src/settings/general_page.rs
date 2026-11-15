@@ -472,7 +472,7 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                     let p = crate::app_settings::settings_path();
                     let disp = p.to_string_lossy().into_owned();
                     config_path_field(
-                        "cfg-gpui-settings",
+                        "cfg-picrust-settings",
                         p,
                         disp,
                         false,

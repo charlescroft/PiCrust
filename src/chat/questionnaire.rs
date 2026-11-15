@@ -40,7 +40,18 @@ impl QuestionnaireView {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut item_defs = Vec::new();
-        let mut questions: Vec<QuestionDefinition> = request.questions.clone();
+        // Deduplicate identical questions within the request to prevent duplicate items
+        let mut questions: Vec<QuestionDefinition> = Vec::new();
+        for q in &request.questions {
+            let q_trimmed = q.question.trim();
+            let h_trimmed = q.header.trim();
+            if !questions.iter().any(|existing| {
+                existing.question.trim().eq_ignore_ascii_case(q_trimmed)
+                    && existing.header.trim().eq_ignore_ascii_case(h_trimmed)
+            }) {
+                questions.push(q.clone());
+            }
+        }
         // Extension dialog primitives (`ui.select` / `ui.input` / `ui.confirm`) arrive as
         // one request each; present them in the same questionnaire surface.
         if questions.is_empty() {
@@ -237,6 +248,23 @@ impl QuestionnaireView {
 
     pub fn request_id(&self) -> &str {
         &self.request.request_id
+    }
+
+    pub fn has_same_content(&self, req: &ExtensionUiRequest) -> bool {
+        if self.request.method != req.method {
+            return false;
+        }
+        if self.request.message != req.message {
+            return false;
+        }
+        if self.request.questions.len() != req.questions.len() {
+            return false;
+        }
+        self.request
+            .questions
+            .iter()
+            .zip(req.questions.iter())
+            .all(|(a, b)| a.question.trim().eq_ignore_ascii_case(b.question.trim()))
     }
 
     pub fn render_overlay(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
