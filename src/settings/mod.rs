@@ -242,10 +242,10 @@ pub fn render_settings_overlay(
                         .w_full()
                         .overflow_hidden()
                         .child(
-                            Settings::new(if initial_page == 1 {
-                                "picrust-settings-models"
-                            } else {
-                                "picrust-settings"
+                            Settings::new(match initial_page {
+                                1 => "picrust-settings-models",
+                                6 => "picrust-settings-antigravity",
+                                _ => "picrust-settings",
                             })
                                 .default_selected_index(SelectIndex {
                                     page_ix: initial_page,

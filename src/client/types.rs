@@ -930,6 +930,24 @@ pub struct AgyLinkSettings {
     pub dispatch_retries: u32,
     #[serde(default)]
     pub suppress_agy_auto_update: bool,
+    #[serde(default)]
+    pub pool_wide_catalog: bool,
+    #[serde(default)]
+    pub auto_fallback_model: bool,
+    #[serde(default)]
+    pub hidden_models: Vec<String>,
+    #[serde(default)]
+    pub auto_warmup: bool,
+    #[serde(default)]
+    pub image_model: String,
+    #[serde(default = "default_agy_image_effort")]
+    pub image_effort: String,
+    #[serde(default = "default_agy_image_timeout_ms")]
+    pub image_timeout_ms: u64,
+    #[serde(default = "default_agy_image_retries")]
+    pub image_retries: u32,
+    #[serde(default)]
+    pub image_output_dir: String,
 }
 
 fn default_agy_mode() -> String {
@@ -938,6 +956,18 @@ fn default_agy_mode() -> String {
 
 fn default_agy_permission() -> String {
     "skip".to_string()
+}
+
+fn default_agy_image_effort() -> String {
+    "low".to_string()
+}
+
+fn default_agy_image_timeout_ms() -> u64 {
+    240_000
+}
+
+fn default_agy_image_retries() -> u32 {
+    1
 }
 
 impl Default for AgyLinkSettings {
@@ -952,6 +982,15 @@ impl Default for AgyLinkSettings {
             dispatch_timeout_minutes: 0,
             dispatch_retries: 0,
             suppress_agy_auto_update: false,
+            pool_wide_catalog: false,
+            auto_fallback_model: false,
+            hidden_models: Vec::new(),
+            auto_warmup: false,
+            image_model: String::new(),
+            image_effort: default_agy_image_effort(),
+            image_timeout_ms: default_agy_image_timeout_ms(),
+            image_retries: default_agy_image_retries(),
+            image_output_dir: String::new(),
         }
     }
 }
@@ -967,6 +1006,8 @@ pub struct AgyLinkState {
     pub active_account_id: Option<String>,
     #[serde(default)]
     pub accounts: Vec<AgyLinkAccount>,
+    #[serde(default)]
+    pub available_models: Vec<String>,
     #[serde(default)]
     pub settings: AgyLinkSettings,
     #[serde(default)]

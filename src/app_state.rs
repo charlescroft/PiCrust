@@ -5530,7 +5530,9 @@ impl AppState {
     }
 
     pub fn open_agy_link_modal(&mut self, cx: &mut Context<Self>) {
-        self.agy_link_modal_open = true;
+        self.agy_link_modal_open = false;
+        self.settings_initial_page = 6;
+        self.settings_open = true;
         cx.notify();
     }
 
