@@ -1176,6 +1176,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
             let models = visibility_models.clone();
             let hidden = hidden_models_snapshot.clone();
             let app_hm_w = app_hm_w.clone();
+            let has_many_models = models.len() > 5;
 
             v_flex()
                 .w_full()
@@ -1199,11 +1200,13 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                         .child(div().w(px(64.)).text_right().child("Visible")),
                 )
                 .child(
-                    div()
+                    v_flex()
                         .id("agy-model-visibility-table")
                         .w_full()
-                        .max_h(px(240.))
+                        .when(has_many_models, |el| el.h(px(240.)))
+                        .when(!has_many_models, |el| el.max_h(px(240.)))
                         .overflow_y_scroll()
+                        .on_scroll(|_, _, cx| cx.stop_propagation())
                         .when(models.is_empty(), |el| {
                             el.child(
                                 div()
@@ -1234,7 +1237,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                         .child(model_id),
                                 )
                                 .child(
-                                    div().w(px(84.)).child(if is_hidden {
+                                    h_flex().w(px(84.)).items_center().child(if is_hidden {
                                         Tag::secondary().small().child("Hidden").into_any_element()
                                     } else {
                                         Tag::primary().small().child("Shown").into_any_element()

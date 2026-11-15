@@ -4379,10 +4379,15 @@ impl AppState {
                 }
             }
             AgentSseEvent::AgentStart | AgentSseEvent::TurnStart => {
-                self.is_agent_running = true;
+                if !self.suppress_next_prompt_reload {
+                    self.is_agent_running = true;
+                }
             }
             AgentSseEvent::AgentEnd { duration_ms }
             | AgentSseEvent::TurnEnd { duration_ms, .. } => {
+                if self.suppress_next_prompt_reload {
+                    return;
+                }
                 if let Some(last) = self.messages.last_mut() {
                     if last.role == MessageRole::Assistant {
                         last.is_streaming = false;
@@ -5369,7 +5374,11 @@ impl AppState {
                 } else if method == "notify" {
                     if let Some(msg) = payload.get("message").and_then(Value::as_str) {
                         let notify_type = payload.get("notifyType").and_then(Value::as_str).unwrap_or("info");
-                        if notify_type == "error" || notify_type == "warning" || notify_type == "info" {
+                        let suppress_info_banner =
+                            notify_type == "info" && (self.suppress_next_prompt_reload || self.agy_link_loading);
+                        if !suppress_info_banner
+                            && (notify_type == "error" || notify_type == "warning" || notify_type == "info")
+                        {
                             let summary = msg.lines().take(3).collect::<Vec<_>>().join(" | ");
                             self.status_banner = Some(SharedString::from(summary));
                         }
@@ -5647,7 +5656,6 @@ impl AppState {
         let client = self.client.clone();
         self.agy_link_loading = true;
         self.suppress_next_prompt_reload = true;
-        self.status_banner = Some(SharedString::from(format!("Running {cmd}…")));
         cx.notify();
         let app_weak = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
