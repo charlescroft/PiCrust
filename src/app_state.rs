@@ -233,7 +233,6 @@ pub struct AppState {
     pub settings_deleting_keys: std::collections::HashSet<String>,
     pub suppress_next_prompt_reload: bool,
     pub settings_open_nonce: u64,
-    pub agy_visibility_scroll: gpui_kit::ScrollHandle,
 }
 
 impl AppState {
@@ -534,7 +533,6 @@ impl AppState {
             settings_deleting_keys: std::collections::HashSet::new(),
             suppress_next_prompt_reload: false,
             settings_open_nonce: 0,
-            agy_visibility_scroll: gpui_kit::ScrollHandle::new(),
         };
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
@@ -887,7 +885,12 @@ impl AppState {
         cx.notify();
     }
 
-    fn apply_running_ids(&mut self, next_running: HashSet<String>) {
+    fn apply_running_ids(&mut self, mut next_running: HashSet<String>) {
+        if self.suppress_next_prompt_reload {
+            if let Some(ref sid) = self.active_session_id {
+                next_running.remove(sid);
+            }
+        }
         // Any session that just transitioned from running -> idle while not selected becomes unread
         let active_id = self.active_session_id.as_deref();
         for prev_id in &self.running_session_ids {

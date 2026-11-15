@@ -989,10 +989,18 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                                                 .child(pct_text),
                                                         ),
                                                 )
-                                                .child(
+                                                .child({
+                                                    let bar_color = if pct >= 66 {
+                                                        cx.theme().success
+                                                    } else if pct >= 33 {
+                                                        cx.theme().warning
+                                                    } else {
+                                                        cx.theme().danger
+                                                    };
                                                     Progress::new(("agy-quota-bar", idx * 10 + qidx))
-                                                        .value(pct as f32),
-                                                )
+                                                        .value(pct as f32)
+                                                        .color(bar_color)
+                                                })
                                         },
                                     )),
                             )
@@ -1169,7 +1177,6 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
         .map(|s| s.settings.hidden_models.clone())
         .unwrap_or_default();
     let app_hm_w = app_state.clone();
-    let vis_scroll = app_state.read(cx).agy_visibility_scroll.clone();
 
     let visibility_group = SettingGroup::new()
         .title("Model Visibility")
@@ -1177,8 +1184,6 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
             let models = visibility_models.clone();
             let hidden = hidden_models_snapshot.clone();
             let app_hm_w = app_hm_w.clone();
-            let vis_scroll = vis_scroll.clone();
-            let has_many_models = models.len() > 5;
 
             v_flex()
                 .w_full()
@@ -1204,11 +1209,7 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                 .child(
                     v_flex()
                         .id("agy-model-visibility-table")
-                        .track_scroll(&vis_scroll)
                         .w_full()
-                        .when(has_many_models, |el| el.h(px(240.)))
-                        .when(!has_many_models, |el| el.max_h(px(240.)))
-                        .overflow_y_scroll()
                         .when(models.is_empty(), |el| {
                             el.child(
                                 div()
