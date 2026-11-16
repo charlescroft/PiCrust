@@ -135,12 +135,21 @@ pub fn render_status_bar(
                 .items_center()
                 .gap_1p5()
                 .max_w(px(360.))
-                .child(if state.active_is_temp_chat {
-                    Icon::new(crate::icons::ClockIcon).xsmall().into_any_element()
-                } else if state.active_workspace_kind == WorkspaceKind::Chat {
-                    Icon::new(IconName::Bot).xsmall().into_any_element()
-                } else {
-                    Icon::new(IconName::Folder).xsmall().into_any_element()
+                .child({
+                    let is_temp = state.active_is_temp_chat
+                        || state
+                            .active_session_id
+                            .as_ref()
+                            .is_some_and(|sid| state.temp_chat_ids.contains(sid));
+                    let is_chat = state.active_workspace_kind == WorkspaceKind::Chat
+                        || crate::client::local_store::is_chat_workspace_cwd(&state.active_cwd);
+                    if is_temp {
+                        Icon::new(crate::icons::ClockIcon).xsmall().into_any_element()
+                    } else if is_chat {
+                        Icon::new(IconName::Bot).xsmall().into_any_element()
+                    } else {
+                        Icon::new(IconName::Folder).xsmall().into_any_element()
+                    }
                 })
                 .child(
                     div()

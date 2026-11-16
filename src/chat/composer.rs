@@ -899,7 +899,8 @@ impl ComposerView {
                 .active_session_id
                 .as_ref()
                 .is_some_and(|sid| state.temp_chat_ids.contains(sid))
-            && state.active_workspace_kind != WorkspaceKind::Chat;
+            && state.active_workspace_kind != WorkspaceKind::Chat
+            && !crate::client::local_store::is_chat_workspace_cwd(&state.active_cwd);
         let project_label = SharedString::from(
             state
                 .active_cwd
