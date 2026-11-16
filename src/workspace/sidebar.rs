@@ -2,7 +2,7 @@ use crate::app_state::{AppState, RightPanelTab, WorkspacePage};
 use crate::client::session_controller::format_compact_relative_time;
 use crate::client::types::WorkspaceKind;
 use crate::i18n::{AppLocale, format_commas, tr};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariants as _, DropdownButton};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
@@ -749,16 +749,26 @@ pub fn render_sidebar(
         .border_color(cx.theme().sidebar_border)
         .child(
             div().px_3().pt_3().pb_2().child({
+                let app_main = app_new_proj.clone();
                 let app_chat = app_new_proj.clone();
                 let app_subproj = app_new_proj.clone();
                 let app_temp = app_new_proj.clone();
-                Button::new("new-session-btn")
+                DropdownButton::new("dropdown")
                     .primary()
                     .small()
-                    .h(px(30.))
                     .w_full()
-                    .icon(IconName::Plus)
-                    .label(format!("{}  ▾", tr(locale, "sidebar.newSession")))
+                    .button(
+                        Button::new("new-session-main")
+                            .flex_1()
+                            .icon(IconName::Plus)
+                            .label(tr(locale, "sidebar.newSession"))
+                            .on_click(move |_, _, cx| {
+                                app_main.update(cx, |s, cx| {
+                                    s.chats_section_collapsed = false;
+                                    s.start_new_composer(WorkspaceKind::Chat, cx);
+                                });
+                            }),
+                    )
                     .dropdown_menu(move |menu, _, _| {
                         let app_c = app_chat.clone();
                         let app_p = app_subproj.clone();
