@@ -6,6 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::base::motion::{Presence, Transition};
@@ -16,11 +17,68 @@ use gpui_kit::component::{
     StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
+    Anchor, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, px,
 };
 use serde_json::{Value, json};
+
+const CONTEXT_WINDOW_PRESETS: &[(&str, &str)] = &[
+    ("64K", "65536"),
+    ("128K", "131072"),
+    ("256K", "262144"),
+    ("512K", "524288"),
+    ("1M", "1048576"),
+];
+
+const MAX_OUTPUT_PRESETS: &[(&str, &str)] = &[
+    ("4K", "4096"),
+    ("16K", "16384"),
+    ("32K", "32768"),
+    ("64K", "65536"),
+    ("128K", "131072"),
+    ("256K", "262144"),
+    ("512K", "524288"),
+];
+
+fn render_token_preset_field<T: 'static>(
+    btn_id: &'static str,
+    label: &'static str,
+    input: &Entity<InputState>,
+    presets: &'static [(&'static str, &'static str)],
+    cx: &Context<T>,
+) -> impl IntoElement {
+    let input_for_menu = input.clone();
+    field_box(
+        label,
+        h_flex()
+            .w_full()
+            .gap_1p5()
+            .items_center()
+            .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+            .child(
+                Button::new(btn_id)
+                    .outline()
+                    .small()
+                    .icon(IconName::ChevronDown)
+                    .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, _, _| {
+                        for &(preset_label, preset_value) in presets {
+                            let target_input = input_for_menu.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(format!("{preset_label} ({preset_value})"))
+                                    .on_click(move |_, window, cx| {
+                                        target_input.update(cx, |s, cx| {
+                                            s.set_value(preset_value, window, cx);
+                                        });
+                                    }),
+                            );
+                        }
+                        menu
+                    }),
+            ),
+        cx,
+    )
+}
 
 #[derive(Clone, Debug)]
 struct ApiEndpointOption {
@@ -1251,14 +1309,18 @@ impl SettingsAddDialogView {
                         h_flex()
                             .w_full()
                             .gap_2p5()
-                            .child(div().flex_1().min_w_0().child(field_box(
+                            .child(div().flex_1().min_w_0().child(render_token_preset_field(
+                                "add-model-cw-preset",
                                 tr(locale, "settings.contextWindow"),
-                                Input::new(&self.input_c).small(),
+                                &self.input_c,
+                                CONTEXT_WINDOW_PRESETS,
                                 cx,
                             )))
-                            .child(div().flex_1().min_w_0().child(field_box(
+                            .child(div().flex_1().min_w_0().child(render_token_preset_field(
+                                "add-model-mt-preset",
                                 tr(locale, "settings.maxOutputTokens"),
-                                Input::new(&self.input_d).small(),
+                                &self.input_d,
+                                MAX_OUTPUT_PRESETS,
                                 cx,
                             ))),
                     )
@@ -1363,14 +1425,18 @@ impl SettingsAddDialogView {
                         h_flex()
                             .w_full()
                             .gap_2p5()
-                            .child(div().flex_1().min_w_0().child(field_box(
+                            .child(div().flex_1().min_w_0().child(render_token_preset_field(
+                                "add-model-cw-preset",
                                 tr(locale, "settings.contextWindow"),
-                                Input::new(&self.input_c).small(),
+                                &self.input_c,
+                                CONTEXT_WINDOW_PRESETS,
                                 cx,
                             )))
-                            .child(div().flex_1().min_w_0().child(field_box(
+                            .child(div().flex_1().min_w_0().child(render_token_preset_field(
+                                "add-model-mt-preset",
                                 tr(locale, "settings.maxOutputTokens"),
-                                Input::new(&self.input_d).small(),
+                                &self.input_d,
+                                MAX_OUTPUT_PRESETS,
                                 cx,
                             ))),
                     )
