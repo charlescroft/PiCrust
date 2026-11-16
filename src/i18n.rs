@@ -99,9 +99,9 @@ fn en_text(key: &'static str) -> &'static str {
     match key {
         // Sidebar & Navigation
         "sidebar.newSession" => "New Session",
-        "sidebar.newStandaloneChat" => "Chat",
+        "sidebar.newStandaloneChat" => "New Chat",
         "sidebar.newSubproject" => "New Subproject",
-        "sidebar.newTempChat" => "Temporary Chat",
+        "sidebar.newTempChat" => "New Temporary Chat",
         "sidebar.tempBadge" => "Temp",
         "sidebar.keepTempChat" => "Keep as Chat",
         "sidebar.releaseTempChat" => "Release Now",
@@ -690,9 +690,9 @@ fn zh_text(key: &'static str) -> &'static str {
     match key {
         // Sidebar & Navigation
         "sidebar.newSession" => "新建对话",
-        "sidebar.newStandaloneChat" => "对话",
-        "sidebar.newSubproject" => "新子项目",
-        "sidebar.newTempChat" => "临时对话",
+        "sidebar.newStandaloneChat" => "新建对话",
+        "sidebar.newSubproject" => "新建子项目",
+        "sidebar.newTempChat" => "新建临时对话",
         "sidebar.tempBadge" => "临时",
         "sidebar.keepTempChat" => "保留为普通对话",
         "sidebar.releaseTempChat" => "立即释放",

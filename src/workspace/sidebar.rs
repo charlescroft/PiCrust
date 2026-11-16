@@ -765,7 +765,6 @@ pub fn render_sidebar(
                         let app_t = app_temp.clone();
                         menu.item(
                             PopupMenuItem::new(tr(locale, "sidebar.newStandaloneChat"))
-                                .icon(IconName::Plus)
                                 .on_click(move |_, _, cx| {
                                     app_c.update(cx, |s, cx| {
                                         s.chats_section_collapsed = false;
@@ -775,7 +774,6 @@ pub fn render_sidebar(
                         )
                         .item(
                             PopupMenuItem::new(tr(locale, "sidebar.newSubproject"))
-                                .icon(IconName::FolderOpen)
                                 .on_click(move |_, _, cx| {
                                     let prompt_text =
                                         tr(locale, "sidebar.selectProjectFolder").to_string();
@@ -800,7 +798,6 @@ pub fn render_sidebar(
                         )
                         .item(
                             PopupMenuItem::new(tr(locale, "sidebar.newTempChat"))
-                                .icon(Icon::new(crate::icons::ClockIcon))
                                 .on_click(move |_, _, cx| {
                                     app_t.update(cx, |s, cx| {
                                         s.chats_section_collapsed = false;
