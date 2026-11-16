@@ -952,7 +952,7 @@ fn build_session_row(
 ) -> AnyElement {
     let is_active = active_sid == Some(sid.as_str()) && on_chat_page;
     let is_renaming = rename_state.is_some_and(|r| r.session_id == sid);
-    let is_temp = app_state.read(cx).temp_chat_ids.contains(&sid);
+    let is_temp = app_state.read(cx).is_session_temp_chat(&sid);
 
     if is_renaming {
         let input_entity = rename_state.unwrap().input.clone();
@@ -1041,9 +1041,11 @@ fn build_session_row(
         })
         .when_session_status_badge(running, unread, cx)
         .children(is_temp.then(|| {
-            div()
+            h_flex()
                 .id(("sess-temp-clock", id_prefix.1))
                 .flex_shrink_0()
+                .items_center()
+                .justify_center()
                 .tooltip(move |w, cx| {
                     Tooltip::new(tr(locale, "status.tempChatWorkspace")).build(w, cx)
                 })

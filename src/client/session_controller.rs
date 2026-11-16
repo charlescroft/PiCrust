@@ -805,6 +805,8 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
         .or_else(|| payload.get("context").and_then(|c| c.get("entryIds")))
         .and_then(Value::as_array);
 
+    let mut prev_was_implicit_continue = false;
+
     for (idx, msg) in items.iter().enumerate() {
         let role_str = msg.get("role").and_then(Value::as_str).unwrap_or("assistant");
         if role_str == "system" {
@@ -941,8 +943,10 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
             let is_hidden_continue = msg.get("hidden").and_then(Value::as_bool) == Some(true)
                 || flatten_content_text(msg.get("content")).trim() == IMPLICIT_CONTINUE_PROMPT;
             if is_hidden_continue {
+                prev_was_implicit_continue = true;
                 continue;
             }
+            prev_was_implicit_continue = false;
         }
 
         let entry_id = entry_ids
@@ -987,9 +991,11 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
                 if prev.role == MessageRole::Assistant && same_model {
                     let prev_had_error = prev.error_message.is_some()
                         || prev.stop_reason.as_deref() == Some("error");
-                    // If previous assistant step had intermediate text before tool calls (and wasn't interrupted by an error),
-                    // move it to thinking/process; if continuing after an error, keep it as the answer prefix.
-                    if !prev_had_error
+                    let keep_prev_prefix = prev_had_error || prev_was_implicit_continue;
+                    prev_was_implicit_continue = false;
+                    // If previous assistant step had intermediate text before tool calls (and wasn't continued/interrupted),
+                    // move it to thinking/process; if continuing a turn, keep it as the answer prefix.
+                    if !keep_prev_prefix
                         && !prev.content.trim().is_empty()
                         && (!text.trim().is_empty() || !tool_calls.is_empty())
                     {

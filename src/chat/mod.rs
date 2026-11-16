@@ -962,14 +962,7 @@ impl Render for ChatPanel {
                 )
         });
 
-        let is_temp_chat = {
-            let state = self.app_state.read(cx);
-            state.active_is_temp_chat
-                || state
-                    .active_session_id
-                    .as_ref()
-                    .is_some_and(|sid| state.temp_chat_ids.contains(sid))
-        };
+        let is_temp_chat = self.app_state.read(cx).is_active_temp_chat();
 
         let session_title = {
             let state = self.app_state.read(cx);

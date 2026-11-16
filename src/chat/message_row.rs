@@ -1672,7 +1672,6 @@ fn render_assistant_row(
     let is_agent_running_footer = app_state.read(cx).is_agent_running;
     let can_continue_interrupted = !is_turn_live
         && !is_agent_running_footer
-        && (msg.error_message.is_some() || msg.stop_reason.as_deref() == Some("error"))
         && has_partial_output
         && is_last_turn;
 

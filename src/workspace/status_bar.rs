@@ -136,11 +136,7 @@ pub fn render_status_bar(
                 .gap_1p5()
                 .max_w(px(360.))
                 .child({
-                    let is_temp = state.active_is_temp_chat
-                        || state
-                            .active_session_id
-                            .as_ref()
-                            .is_some_and(|sid| state.temp_chat_ids.contains(sid));
+                    let is_temp = state.is_active_temp_chat();
                     let is_chat = state.active_workspace_kind == WorkspaceKind::Chat
                         || crate::client::local_store::is_chat_workspace_cwd(&state.active_cwd);
                     if is_temp {

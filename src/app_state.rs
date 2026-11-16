@@ -4290,6 +4290,25 @@ impl AppState {
         self.delete_session_by_id(session_id, cx);
     }
 
+    pub fn is_session_temp_chat(&self, sid: &str) -> bool {
+        self.temp_chat_ids.contains(sid)
+            || self.sessions.iter().any(|s| {
+                s.id == sid
+                    && s.cwd.as_deref().is_some_and(|c| {
+                        crate::client::local_store::is_temp_chat_folder(Path::new(c))
+                    })
+            })
+    }
+
+    pub fn is_active_temp_chat(&self) -> bool {
+        self.active_is_temp_chat
+            || crate::client::local_store::is_temp_chat_folder(&self.active_cwd)
+            || self
+                .active_session_id
+                .as_deref()
+                .is_some_and(|sid| self.is_session_temp_chat(sid))
+    }
+
     pub fn cleanup_expired_temp_chats(&mut self, cx: &mut Context<Self>) {
         let now_ms = crate::client::local_store::now_unix_ms();
         let expired = crate::client::local_store::collect_expired_temp_chat_ids(now_ms);
