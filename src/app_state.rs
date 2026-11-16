@@ -6373,9 +6373,17 @@ impl AppState {
     pub fn trigger_compact(&mut self, cx: &mut Context<Self>) {
         if let Some(sid) = self.active_session_id.clone() {
             if self.sidecar_connected {
+                self.is_compacting = true;
                 let client = self.client.clone();
-                cx.spawn(async move |_, _| {
-                    let _ = client.send_agent_command(&sid, json!({ "type": "compact" })).await;
+                let entity = cx.entity().clone();
+                cx.spawn(async move |_, cx| {
+                    let res = client.send_agent_command(&sid, json!({ "type": "compact" })).await;
+                    if res.is_err() {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.is_compacting = false;
+                            cx.notify();
+                        });
+                    }
                 })
                 .detach();
             }

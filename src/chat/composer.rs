@@ -2040,42 +2040,74 @@ impl ComposerView {
                             })
                             .into_any_element()
                     })())
-                    .child(
-                        h_flex()
-                            .id("composer-ctx-usage")
+                    .child({
+                        let can_compact = state.active_session_id.is_some()
+                            && state.sidecar_connected
+                            && !state.is_compacting
+                            && !state.is_agent_running;
+                        let is_compacting = state.is_compacting;
+                        let app_compact = app_ctx.clone();
+                        let app_details = app_ctx.clone();
+                        Button::new("composer-ctx-usage")
+                            .ghost()
+                            .small()
                             .h(px(32.))
                             .px_2p5()
-                            .gap_1p5()
-                            .items_center()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(cx.theme().secondary))
-                            .tooltip(move |w, cx| {
-                                Tooltip::new(ctx_tooltip.clone()).build(w, cx)
-                            })
-                            .on_click(move |_, _, cx| {
-                                app_ctx.update(cx, |s, cx| {
-                                    s.open_right_tab(RightPanelTab::Inspector, cx);
-                                });
-                            })
+                            .tooltip(ctx_tooltip.clone())
                             .child(
-                                ProgressCircle::new("composer-ctx-circle")
-                                    .value(if has_ctx && ctx_tokens.is_some() {
-                                        ctx_pct.max(4.0)
-                                    } else {
-                                        0.0
-                                    })
-                                    .size(px(15.))
-                                    .color(ctx_ring_color),
+                                h_flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .child(
+                                        ProgressCircle::new("composer-ctx-circle")
+                                            .value(if has_ctx && ctx_tokens.is_some() {
+                                                ctx_pct.max(4.0)
+                                            } else {
+                                                0.0
+                                            })
+                                            .size(px(15.))
+                                            .color(ctx_ring_color),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(ctx_label),
+                                    ),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(ctx_label),
-                            ),
-                    ),
+                            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, _| {
+                                let app_c = app_compact.clone();
+                                let app_d = app_details.clone();
+                                menu.item(
+                                    PopupMenuItem::new(if is_compacting {
+                                        tr(locale, "chat.compacting")
+                                    } else {
+                                        tr(locale, "chat.compactContext")
+                                    })
+                                    .icon(if is_compacting {
+                                        IconName::LoaderCircle
+                                    } else {
+                                        IconName::Minimize
+                                    })
+                                    .disabled(!can_compact)
+                                    .on_click(move |_, _, cx| {
+                                        app_c.update(cx, |s, cx| {
+                                            s.trigger_compact(cx);
+                                        });
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::new(tr(locale, "chat.viewSessionDetails"))
+                                        .icon(IconName::Inspector)
+                                        .on_click(move |_, _, cx| {
+                                            app_d.update(cx, |s, cx| {
+                                                s.open_right_tab(RightPanelTab::Inspector, cx);
+                                            });
+                                        }),
+                                )
+                            })
+                    }),
             )
             .child(
                 h_flex()

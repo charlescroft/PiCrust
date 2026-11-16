@@ -108,6 +108,132 @@ pub fn render_inspector_panel(
         session_card = session_card.child(row);
     }
 
+    let window_tokens = stats
+        .context_window
+        .or_else(|| state.selected_model.as_ref().and_then(|m| m.context_window))
+        .unwrap_or(200_000)
+        .max(1);
+
+    let est_messages_tokens: u64 = state
+        .messages
+        .iter()
+        .map(|m| {
+            let mut chars = m.content.len() + m.thinking.len();
+            for tc in &m.tool_calls {
+                chars += tc.name.len() + tc.output.len();
+                for (k, v) in &tc.arguments {
+                    chars += k.len() + v.len();
+                }
+            }
+            ((chars as f64) / 3.5).ceil() as u64
+        })
+        .sum();
+    let est_tools_tokens: u64 = (state.tool_preset.tool_names().len() as u64) * 350;
+
+    let (sys_tokens, tool_tokens, msg_tokens, total_ctx_tokens) = match stats.context_tokens {
+        Some(reported) if reported > 0 => {
+            let t_tok = est_tools_tokens.min(reported);
+            let m_tok = est_messages_tokens.min(reported.saturating_sub(t_tok));
+            let s_tok = reported.saturating_sub(t_tok + m_tok);
+            (s_tok, t_tok, m_tok, reported)
+        }
+        _ => {
+            let s_tok = if state.selected_model.is_some() { 2_000 } else { 0 };
+            let total = s_tok + est_tools_tokens + est_messages_tokens;
+            (s_tok, est_tools_tokens, est_messages_tokens, total)
+        }
+    };
+    let free_tokens = window_tokens.saturating_sub(total_ctx_tokens);
+    let pct_of_win = |v: u64| -> f32 { ((v as f64 / window_tokens as f64) * 100.0).clamp(0.0, 100.0) as f32 };
+    let sys_pct = pct_of_win(sys_tokens);
+    let tool_pct = pct_of_win(tool_tokens);
+    let msg_pct = pct_of_win(msg_tokens);
+    let total_pct = pct_of_win(total_ctx_tokens);
+    let free_pct = (100.0 - (sys_pct + tool_pct + msg_pct)).max(0.0);
+
+    let context_card = v_flex()
+        .p_3()
+        .gap_2()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().secondary)
+        .child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .child(div().text_xs().font_semibold().child(tr(locale, "panel.contextBreakdown")))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "{} / {} ({:.1}%)",
+                            format_tokens_km(total_ctx_tokens),
+                            format_tokens_km(window_tokens),
+                            total_pct
+                        )),
+                ),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .h(gpui_kit::px(8.))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(cx.theme().background)
+                .children((sys_pct > 0.0).then(|| {
+                    div()
+                        .h_full()
+                        .w(gpui_kit::relative((sys_pct / 100.0).clamp(0.01, 1.0)))
+                        .bg(cx.theme().info)
+                }))
+                .children((tool_pct > 0.0).then(|| {
+                    div()
+                        .h_full()
+                        .w(gpui_kit::relative((tool_pct / 100.0).clamp(0.01, 1.0)))
+                        .bg(cx.theme().warning)
+                }))
+                .children((msg_pct > 0.0).then(|| {
+                    div()
+                        .h_full()
+                        .w(gpui_kit::relative((msg_pct / 100.0).clamp(0.01, 1.0)))
+                        .bg(cx.theme().primary)
+                })),
+        )
+        .child(
+            v_flex()
+                .gap_1()
+                .child(context_legend_row(
+                    cx.theme().info,
+                    tr(locale, "panel.ctxSystemPrompt"),
+                    sys_tokens,
+                    sys_pct,
+                    cx,
+                ))
+                .child(context_legend_row(
+                    cx.theme().warning,
+                    tr(locale, "panel.ctxTools"),
+                    tool_tokens,
+                    tool_pct,
+                    cx,
+                ))
+                .child(context_legend_row(
+                    cx.theme().primary,
+                    tr(locale, "panel.ctxMessages"),
+                    msg_tokens,
+                    msg_pct,
+                    cx,
+                ))
+                .child(context_legend_row(
+                    cx.theme().muted_foreground.opacity(0.35),
+                    tr(locale, "panel.ctxFree"),
+                    free_tokens,
+                    free_pct,
+                    cx,
+                )),
+        );
+
     v_flex()
         .size_full()
         .p_3()
@@ -120,6 +246,7 @@ pub fn render_inspector_panel(
                 .child(tr(locale, "panel.session")),
         )
         .child(session_card)
+        .child(context_card)
         .child(inspector_card(
             tr(locale, "panel.tokensCost"),
             vec![
@@ -154,6 +281,34 @@ pub fn render_inspector_panel(
             ],
             cx,
         ))
+}
+
+fn context_legend_row(
+    dot_color: gpui_kit::Hsla,
+    label: &'static str,
+    tokens: u64,
+    pct: f32,
+    cx: &gpui_kit::App,
+) -> impl IntoElement {
+    h_flex()
+        .justify_between()
+        .items_center()
+        .text_xs()
+        .child(
+            h_flex()
+                .items_center()
+                .gap_1p5()
+                .child(
+                    div()
+                        .size(gpui_kit::px(8.))
+                        .rounded_full()
+                        .bg(dot_color),
+                )
+                .child(div().text_color(cx.theme().muted_foreground).child(label)),
+        )
+        .child(
+            div().child(format!("{} ({:.1}%)", format_tokens_km(tokens), pct)),
+        )
 }
 
 fn inspector_card(
