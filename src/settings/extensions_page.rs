@@ -7,7 +7,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, ColorName, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{App, Entity, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px};
 use gpui_kit::prelude::FluentBuilder as _;
 use serde_json::json;
@@ -660,7 +660,8 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
         .group(group)
 }
 
-pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale, cx: &App) -> SettingPage {
+pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &App) -> SettingPage {
+    let is_zh = locale == AppLocale::ZhCn;
     let (agy_state, agy_loading, agy_copy_pending, agy_auth_copied, details_id) = {
         let s = app_state.read(cx);
         (
@@ -762,8 +763,8 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
         if let Some(ref reason) = st.dormant_reason {
             pool_group = pool_group.item(
                 SettingItem::new(
-                    "Extension Dormant",
-                    SettingField::render(move |_, _, _| Tag::danger().small().child("Dormant")),
+                    if is_zh { "扩展已休眠" } else { "Extension Dormant" },
+                    SettingField::render(move |_, _, _| Tag::color(ColorName::Red).small().child(if is_zh { "被封禁/休眠" } else { "Dormant" })),
                 )
                 .description(reason.clone()),
             );
@@ -772,10 +773,10 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
         if st.accounts.is_empty() {
             pool_group = pool_group.item(
                 SettingItem::new(
-                    "No Accounts",
-                    SettingField::render(|_, _, _| Tag::secondary().small().child("Empty")),
+                    if is_zh { "暂无账号" } else { "No Accounts" },
+                    SettingField::render(move |_, _, _| Tag::color(ColorName::Gray).small().child(if is_zh { "空" } else { "Empty" })),
                 )
-                .description("Click 'Add Account' above to sign in with a Google account."),
+                .description(if is_zh { "点击上方「添加账号」通过 Google 账号登录。" } else { "Click 'Add Account' above to sign in with a Google account." }),
             );
         } else {
             for (idx, acc) in st.accounts.iter().enumerate() {
@@ -884,23 +885,40 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, _locale: AppLocale,
                                                     .text_color(cx.theme().foreground)
                                                     .child(email),
                                             )
-                                            .when(!tier_label.is_empty(), |el| {
-                                                el.child(Tag::secondary().small().child(tier_label))
+                                            .child({
+                                                let is_pro = {
+                                                    let lower = tier_label.to_lowercase();
+                                                    lower.contains("pro") || lower.contains("ultra")
+                                                };
+                                                if is_pro {
+                                                    let label = if tier_label.is_empty() { "Pro" } else { tier_label.as_str() };
+                                                    Tag::color(ColorName::Purple).small().child(SharedString::from(label.to_string()))
+                                                } else {
+                                                    let label = if tier_label.is_empty()
+                                                        || tier_label.eq_ignore_ascii_case("free")
+                                                        || tier_label.eq_ignore_ascii_case("standard")
+                                                    {
+                                                        if is_zh { "免费" } else { "Free" }
+                                                    } else {
+                                                        tier_label.as_str()
+                                                    };
+                                                    Tag::color(ColorName::Gray).small().child(SharedString::from(label.to_string()))
+                                                }
                                             })
                                             .when(is_active, |el| {
-                                                el.child(Tag::primary().small().child("Active"))
+                                                el.child(Tag::color(ColorName::Green).small().child(if is_zh { "激活" } else { "Active" }))
                                             })
                                             .when(is_disabled, |el| {
-                                                el.child(Tag::secondary().small().child("Disabled"))
+                                                el.child(Tag::color(ColorName::Orange).small().child(if is_zh { "停用" } else { "Disabled" }))
                                             })
                                             .when(!is_disabled && is_cooldown, |el| {
-                                                el.child(Tag::warning().small().child("Cooldown"))
+                                                el.child(Tag::color(ColorName::Amber).small().child(if is_zh { "冷却中" } else { "Cooldown" }))
                                             })
                                             .when(is_reauth, |el| {
-                                                el.child(Tag::danger().small().child("Reauth"))
+                                                el.child(Tag::color(ColorName::Red).small().child(if is_zh { "被封禁" } else { "Banned" }))
                                             })
                                             .when(is_duplicate_email, |el| {
-                                                el.child(Tag::warning().small().child("Duplicate Login"))
+                                                el.child(Tag::color(ColorName::Yellow).small().child(if is_zh { "重复登录" } else { "Duplicate Login" }))
                                             }),
                                     )
                                     .when(is_acc_deleting, |el| {

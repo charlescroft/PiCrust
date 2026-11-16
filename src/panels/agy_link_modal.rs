@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, ColorName, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px, rgba,
@@ -13,10 +14,15 @@ pub fn render_agy_link_overlay(
     _window: &mut Window,
     cx: &mut Context<crate::workspace::WorkspaceView>,
 ) -> impl IntoElement {
-    let (details_id, agy_state_opt) = {
+    let (details_id, agy_state_opt, locale) = {
         let s = app_state.read(cx);
-        (s.agy_link_details_account_id.clone(), s.agy_link_state.clone())
+        (
+            s.agy_link_details_account_id.clone(),
+            s.agy_link_state.clone(),
+            s.locale,
+        )
     };
+    let is_zh = locale == crate::i18n::AppLocale::ZhCn;
     let Some(target_id) = details_id else {
         return div().into_any_element();
     };
@@ -87,7 +93,43 @@ pub fn render_agy_link_overlay(
                                         .text_color(cx.theme().foreground)
                                         .child(SharedString::from(email)),
                                 )
-                                .child(Tag::secondary().small().child(SharedString::from(acc.tier.clone()))),
+                                .child({
+                                    let is_pro = {
+                                        let lower = acc.tier.to_lowercase();
+                                        lower.contains("pro") || lower.contains("ultra")
+                                    };
+                                    let tier_color = if is_pro {
+                                        ColorName::Purple
+                                    } else {
+                                        ColorName::Gray
+                                    };
+                                    let tier_text = if is_pro {
+                                        if acc.tier.trim().is_empty() {
+                                            SharedString::from("Pro")
+                                        } else {
+                                            SharedString::from(acc.tier.clone())
+                                        }
+                                    } else {
+                                        if acc.tier.trim().is_empty()
+                                            || acc.tier.eq_ignore_ascii_case("free")
+                                            || acc.tier.eq_ignore_ascii_case("standard")
+                                        {
+                                            SharedString::from(if is_zh { "免费" } else { "Free" })
+                                        } else {
+                                            SharedString::from(acc.tier.clone())
+                                        }
+                                    };
+                                    Tag::color(tier_color).small().child(tier_text)
+                                })
+                                .when(acc.active, |el| {
+                                    el.child(Tag::color(ColorName::Green).small().child(if is_zh { "激活" } else { "Active" }))
+                                })
+                                .when(acc.disabled, |el| {
+                                    el.child(Tag::color(ColorName::Orange).small().child(if is_zh { "停用" } else { "Disabled" }))
+                                })
+                                .when(acc.auth_required, |el| {
+                                    el.child(Tag::color(ColorName::Red).small().child(if is_zh { "被封禁" } else { "Banned" }))
+                                }),
                         )
                         .child(
                             Button::new("agy-models-modal-close")
