@@ -29,7 +29,9 @@ pub fn render_status_bar(
     } else {
         state.active_branch.clone()
     };
-    let cwd_display = if state.active_workspace_kind == WorkspaceKind::Chat {
+    let cwd_display = if state.active_is_temp_chat {
+        SharedString::from(tr(locale, "status.tempChatWorkspace"))
+    } else if state.active_workspace_kind == WorkspaceKind::Chat {
         SharedString::from(tr(locale, "status.chatWorkspace"))
     } else {
         SharedString::from(state.active_cwd.to_string_lossy().into_owned())

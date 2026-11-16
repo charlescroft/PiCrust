@@ -99,6 +99,13 @@ fn en_text(key: &'static str) -> &'static str {
     match key {
         // Sidebar & Navigation
         "sidebar.newSession" => "New Session",
+        "sidebar.newStandaloneChat" => "Chat",
+        "sidebar.newSubproject" => "New Subproject",
+        "sidebar.newTempChat" => "Temporary Chat",
+        "sidebar.tempBadge" => "Temp",
+        "sidebar.keepTempChat" => "Keep as Chat",
+        "sidebar.releaseTempChat" => "Release Now",
+        "status.tempChatWorkspace" => "Temporary Chat",
         "sidebar.tasks" => "Tasks",
         "sidebar.scheduled" => "Scheduled",
         "sidebar.artifacts" => "Artifacts",
@@ -683,6 +690,13 @@ fn zh_text(key: &'static str) -> &'static str {
     match key {
         // Sidebar & Navigation
         "sidebar.newSession" => "新建对话",
+        "sidebar.newStandaloneChat" => "对话",
+        "sidebar.newSubproject" => "新子项目",
+        "sidebar.newTempChat" => "临时对话",
+        "sidebar.tempBadge" => "临时",
+        "sidebar.keepTempChat" => "保留为普通对话",
+        "sidebar.releaseTempChat" => "立即释放",
+        "status.tempChatWorkspace" => "临时对话",
         "sidebar.tasks" => "任务",
         "sidebar.scheduled" => "定时任务",
         "sidebar.artifacts" => "产物",

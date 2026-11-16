@@ -894,7 +894,9 @@ impl ComposerView {
         let ctx_window = state.stats.context_window;
         let ctx_pct = state.stats.context_used_pct;
         let total_cost = state.stats.cost_usd;
-        let project_label = if state.active_workspace_kind == WorkspaceKind::Chat {
+        let project_label = if state.active_is_temp_chat {
+            SharedString::from(tr(locale, "sidebar.newTempChat"))
+        } else if state.active_workspace_kind == WorkspaceKind::Chat {
             SharedString::from(tr(locale, "sidebar.chats"))
         } else {
             SharedString::from(

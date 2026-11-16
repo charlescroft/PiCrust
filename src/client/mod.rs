@@ -215,6 +215,16 @@ impl PiDaemonClient {
         self.post_json(&format!("/api/sessions/{id}/fork"), &json!({ "entryId": entry_id })).await
     }
 
+    pub async fn get_chat_workspace(&self) -> Result<std::path::PathBuf> {
+        let val: Value = self.get_json("/api/chat-workspace").await?;
+        let cwd = val
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Missing cwd in /api/chat-workspace response"))?;
+        Ok(std::path::PathBuf::from(cwd))
+    }
+
     // --- Agent commands ---
     pub async fn start_new_session(
         &self,

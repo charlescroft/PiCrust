@@ -122,6 +122,8 @@ pub struct AppState {
     pub auto_title_enabled: bool,
     pub active_cwd: PathBuf,
     pub active_workspace_kind: WorkspaceKind,
+    pub active_is_temp_chat: bool,
+    pub temp_chat_ids: HashSet<String>,
     pub worktrees: Vec<WorktreeInfo>,
     pub active_branch: Option<SharedString>,
 
@@ -284,6 +286,12 @@ impl AppState {
         // fabricate a demo project/session. The chat panel renders its empty
         // state and the model picker stays empty until the user configures a
         // provider.
+        let now_ms = crate::client::local_store::now_unix_ms();
+        for expired_id in crate::client::local_store::collect_expired_temp_chat_ids(now_ms) {
+            let _ = crate::client::local_store::delete_session_local(&expired_id);
+        }
+        let temp_chat_ids = crate::client::local_store::load_active_temp_chat_ids(now_ms);
+
         let mut cwd = user_home();
         let sessions = scan_local_sessions(&pi_sessions_root());
         let mut ctrl = SessionController::default();
@@ -297,6 +305,9 @@ impl AppState {
         let models: Vec<ModelInfo> = Vec::new();
 
         let active_session_id = sessions.first().map(|s| s.id.clone());
+        let active_is_temp_chat = active_session_id
+            .as_ref()
+            .is_some_and(|id| temp_chat_ids.contains(id));
         if let Some(first) = sessions.first() {
             if let Some(ref first_cwd) = first.cwd {
                 cwd = PathBuf::from(first_cwd);
@@ -446,6 +457,8 @@ impl AppState {
             auto_title_enabled: true,
             active_cwd: cwd,
             active_workspace_kind,
+            active_is_temp_chat,
+            temp_chat_ids,
             worktrees: Vec::new(),
             active_branch: initial_branch,
             sessions,
@@ -1757,6 +1770,7 @@ impl AppState {
                         // empty one: otherwise deleted sessions (and the old
                         // demo workspace) survived in the sidebar forever.
                         this.sessions = parsed;
+                        this.cleanup_expired_temp_chats(cx);
                     }
                     if let Some(ids) = val.get("runningSessionIds").and_then(Value::as_array) {
                         let running_set: HashSet<String> = ids
@@ -4054,6 +4068,19 @@ impl AppState {
         self.controller.stop_sse();
         self.active_session_id = None;
         self.active_workspace_kind = workspace_kind;
+        self.active_is_temp_chat = false;
+        if workspace_kind == WorkspaceKind::Chat {
+            self.active_cwd = crate::client::local_store::standalone_chat_workspace_dir();
+        } else if crate::client::local_store::is_chat_workspace_cwd(&self.active_cwd) {
+            self.active_cwd = self
+                .sessions
+                .iter()
+                .find(|s| s.workspace_kind != Some(WorkspaceKind::Chat))
+                .and_then(|s| s.cwd.as_deref())
+                .map(PathBuf::from)
+                .or_else(|| self.extra_projects.first().cloned())
+                .unwrap_or_else(user_home);
+        }
         self.active_branch = if workspace_kind == WorkspaceKind::Chat {
             None
         } else {
@@ -4086,6 +4113,58 @@ impl AppState {
         self.tool_subagent_runs.clear();
         self.subagent_status_text = None;
         cx.notify();
+    }
+
+    /// Starts an ephemeral temporary chat backed by the sidecar's `/api/chat-workspace`
+    /// (`~/.pi/agent/chats/<stamp>-<hex>/`), which is automatically released on expiration
+    /// or explicit deletion.
+    pub fn start_new_temp_chat(&mut self, cx: &mut Context<Self>) {
+        self.start_new_composer(WorkspaceKind::Chat, cx);
+        self.active_is_temp_chat = true;
+        self.active_cwd = crate::client::local_store::temp_chat_root_dir();
+        if self.sidecar_connected {
+            let client = self.client.clone();
+            let entity = cx.entity().clone();
+            cx.spawn(async move |_, cx| {
+                if let Ok(cwd) = client.get_chat_workspace().await {
+                    let _ = entity.update(cx, |this, cx| {
+                        if this.active_session_id.is_none() && this.active_is_temp_chat {
+                            this.active_cwd = cwd;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    pub fn promote_temp_chat(&mut self, session_id: String, cx: &mut Context<Self>) {
+        self.temp_chat_ids.remove(&session_id);
+        crate::client::local_store::unregister_temp_chat(&session_id);
+        if self.active_session_id.as_deref() == Some(session_id.as_str()) {
+            self.active_is_temp_chat = false;
+        }
+        cx.notify();
+    }
+
+    pub fn release_temp_chat(&mut self, session_id: String, cx: &mut Context<Self>) {
+        self.delete_session_by_id(session_id, cx);
+    }
+
+    pub fn cleanup_expired_temp_chats(&mut self, cx: &mut Context<Self>) {
+        let now_ms = crate::client::local_store::now_unix_ms();
+        let expired = crate::client::local_store::collect_expired_temp_chat_ids(now_ms);
+        if expired.is_empty() {
+            return;
+        }
+        for id in expired {
+            if self.running_session_ids.contains(&id) {
+                continue;
+            }
+            self.delete_session_by_id(id, cx);
+        }
     }
 
     /// Monotonic request_id guarded session selection (per AGENTS.md hard rule).
@@ -4193,6 +4272,7 @@ impl AppState {
             }
             self.active_workspace_kind = summary.workspace_kind.unwrap_or(WorkspaceKind::Project);
         }
+        self.active_is_temp_chat = self.temp_chat_ids.contains(&session_id);
         self.active_branch = if self.active_workspace_kind == WorkspaceKind::Chat {
             None
         } else {
@@ -5930,6 +6010,8 @@ impl AppState {
 
     pub fn delete_session_by_id(&mut self, id: String, cx: &mut Context<Self>) {
         self.sessions.retain(|s| s.id != id);
+        self.temp_chat_ids.remove(&id);
+        crate::client::local_store::unregister_temp_chat(&id);
         if self.active_session_id.as_deref() == Some(id.as_str()) {
             self.start_new_composer(self.active_workspace_kind, cx);
         }
@@ -6574,6 +6656,15 @@ impl AppState {
                 self.connect_session_sse(sid.clone(), cx);
             }
         }
+        let is_temp_chat = self.active_is_temp_chat;
+        let is_chat_workspace = self.active_workspace_kind == WorkspaceKind::Chat;
+        if active_session.is_none() && is_chat_workspace {
+            if is_temp_chat {
+                let _ = std::fs::create_dir_all(crate::client::local_store::temp_chat_root_dir());
+            } else {
+                let _ = std::fs::create_dir_all(crate::client::local_store::standalone_chat_workspace_dir());
+            }
+        }
         let cwd = self.active_cwd.to_string_lossy().into_owned();
         let tool_names = self.tool_preset.tool_names();
         let provider = self.selected_model.as_ref().map(|m| m.provider.clone());
@@ -6589,9 +6680,18 @@ impl AppState {
                         .await
                 }
                 None => {
+                    let effective_cwd = if is_temp_chat {
+                        client
+                            .get_chat_workspace()
+                            .await
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|_| cwd.clone())
+                    } else {
+                        cwd.clone()
+                    };
                     client
                         .start_new_session(
-                            &cwd,
+                            &effective_cwd,
                             &text,
                             &tool_names,
                             provider.as_deref(),
@@ -6613,6 +6713,14 @@ impl AppState {
                                 .and_then(Value::as_str)
                             {
                                 this.active_session_id = Some(new_id.to_string());
+                                if is_temp_chat {
+                                    this.temp_chat_ids.insert(new_id.to_string());
+                                    crate::client::local_store::register_temp_chat(
+                                        new_id,
+                                        None,
+                                        crate::client::local_store::TEMP_CHAT_TTL_MS,
+                                    );
+                                }
                                 this.connect_session_sse(new_id.to_string(), cx);
                                 this.refresh_from_sidecar(cx);
                             }

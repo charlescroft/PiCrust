@@ -748,20 +748,68 @@ pub fn render_sidebar(
         .border_r_1()
         .border_color(cx.theme().sidebar_border)
         .child(
-            div().px_3().pt_3().pb_2().child(
+            div().px_3().pt_3().pb_2().child({
+                let app_chat = app_new_proj.clone();
+                let app_subproj = app_new_proj.clone();
+                let app_temp = app_new_proj.clone();
                 Button::new("new-session-btn")
                     .primary()
                     .small()
                     .h(px(30.))
                     .w_full()
                     .icon(IconName::Plus)
-                    .label(tr(locale, "sidebar.newSession"))
-                    .on_click(move |_, _, cx| {
-                        app_new_proj.update(cx, |s, cx| {
-                            s.start_new_composer(WorkspaceKind::Project, cx);
-                        });
-                    }),
-            ),
+                    .label(format!("{}  ▾", tr(locale, "sidebar.newSession")))
+                    .dropdown_menu(move |menu, _, _| {
+                        let app_c = app_chat.clone();
+                        let app_p = app_subproj.clone();
+                        let app_t = app_temp.clone();
+                        menu.item(
+                            PopupMenuItem::new(tr(locale, "sidebar.newStandaloneChat"))
+                                .icon(IconName::Plus)
+                                .on_click(move |_, _, cx| {
+                                    app_c.update(cx, |s, cx| {
+                                        s.chats_section_collapsed = false;
+                                        s.start_new_composer(WorkspaceKind::Chat, cx);
+                                    });
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(tr(locale, "sidebar.newSubproject"))
+                                .icon(IconName::FolderOpen)
+                                .on_click(move |_, _, cx| {
+                                    let prompt_text =
+                                        tr(locale, "sidebar.selectProjectFolder").to_string();
+                                    let rx = cx.prompt_for_paths(PathPromptOptions {
+                                        files: false,
+                                        directories: true,
+                                        multiple: false,
+                                        prompt: Some(prompt_text.into()),
+                                    });
+                                    let app_p2 = app_p.clone();
+                                    cx.spawn(async move |cx| {
+                                        if let Ok(Ok(Some(paths))) = rx.await {
+                                            if let Some(dir) = paths.into_iter().next() {
+                                                let _ = app_p2.update(cx, |s, cx| {
+                                                    s.add_project_path(dir, cx);
+                                                });
+                                            }
+                                        }
+                                    })
+                                    .detach();
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(tr(locale, "sidebar.newTempChat"))
+                                .icon(Icon::new(crate::icons::ClockIcon))
+                                .on_click(move |_, _, cx| {
+                                    app_t.update(cx, |s, cx| {
+                                        s.chats_section_collapsed = false;
+                                        s.start_new_temp_chat(cx);
+                                    });
+                                }),
+                        )
+                    })
+            }),
         )
         .child(scroll_body)
 }
@@ -897,6 +945,7 @@ fn build_session_row(
 ) -> AnyElement {
     let is_active = active_sid == Some(sid.as_str()) && on_chat_page;
     let is_renaming = rename_state.is_some_and(|r| r.session_id == sid);
+    let is_temp = app_state.read(cx).temp_chat_ids.contains(&sid);
 
     if is_renaming {
         let input_entity = rename_state.unwrap().input.clone();
@@ -981,9 +1030,14 @@ fn build_session_row(
             });
         })
         .context_menu(move |menu, _, _| {
-            populate_session_popup_menu(menu, &app_ctx, &sid_ctx, is_pinned, is_archived, locale)
+            populate_session_popup_menu(menu, &app_ctx, &sid_ctx, is_pinned, is_archived, is_temp, locale)
         })
         .when_session_status_badge(running, unread, cx)
+        .children(is_temp.then(|| {
+            Icon::new(crate::icons::ClockIcon)
+                .xsmall()
+                .text_color(cx.theme().muted_foreground)
+        }))
         .child(
             div()
                 .id(("sess-title", id_prefix.1))
@@ -1037,6 +1091,7 @@ fn build_session_row(
                                         &sid_m,
                                         is_pinned,
                                         is_archived,
+                                        is_temp,
                                         locale,
                                     )
                                 }),
@@ -1165,6 +1220,7 @@ fn populate_session_popup_menu(
     sid: &str,
     is_pinned: bool,
     is_archived: bool,
+    is_temp: bool,
     locale: AppLocale,
 ) -> PopupMenu {
     let app_ren = app_state.clone();
@@ -1172,13 +1228,17 @@ fn populate_session_popup_menu(
     let app_pin = app_state.clone();
     let app_del = app_state.clone();
     let app_arch = app_state.clone();
+    let app_keep = app_state.clone();
+    let app_rel = app_state.clone();
     let sid_r = sid.to_string();
     let sid_f = sid.to_string();
     let sid_p = sid.to_string();
     let sid_d = sid.to_string();
     let sid_a = sid.to_string();
+    let sid_k = sid.to_string();
+    let sid_rel = sid.to_string();
 
-    menu.item(
+    let mut menu = menu.item(
         PopupMenuItem::new(tr(locale, "sidebar.rename"))
             .icon(IconName::Settings2)
             .on_click(move |_, _, cx| {
@@ -1236,5 +1296,28 @@ fn populate_session_popup_menu(
                     s.delete_session_by_id(sid_d.clone(), cx);
                 });
             }),
-    )
+    );
+    if is_temp {
+        menu = menu
+            .separator()
+            .item(
+                PopupMenuItem::new(tr(locale, "sidebar.keepTempChat"))
+                    .icon(IconName::Check)
+                    .on_click(move |_, _, cx| {
+                        app_keep.update(cx, |s, cx| {
+                            s.promote_temp_chat(sid_k.clone(), cx);
+                        });
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(tr(locale, "sidebar.releaseTempChat"))
+                    .icon(Icon::new(crate::icons::TrashIcon))
+                    .on_click(move |_, _, cx| {
+                        app_rel.update(cx, |s, cx| {
+                            s.release_temp_chat(sid_rel.clone(), cx);
+                        });
+                    }),
+            );
+    }
+    menu
 }

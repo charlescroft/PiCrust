@@ -30,6 +30,126 @@ pub fn pi_agent_dir() -> PathBuf {
     user_home().join(".pi").join("agent")
 }
 
+/// Aggregated workspace directory for persistent standalone chats (`~/.pi/agent/chat-workspace`).
+/// Sidecar treats this as `isChatWorkspacePath` (`workspaceKind = "chat"`) while aggregating
+/// all standalone chat transcripts into a single `sessions/` directory instead of one directory per chat.
+pub fn standalone_chat_workspace_dir() -> PathBuf {
+    pi_agent_dir().join("chat-workspace")
+}
+
+/// Root directory for sidecar-managed per-session temporary chats (`~/.pi/agent/chats`).
+/// Passing this root to `/api/agent/new` triggers sidecar `createChatFolder()` to allocate
+/// an isolated `~/.pi/agent/chats/<stamp>-<hex>/` sandbox for each temporary chat.
+pub fn temp_chat_root_dir() -> PathBuf {
+    pi_agent_dir().join("chats")
+}
+
+fn normalized_path_str(p: &Path) -> String {
+    let raw = p.to_string_lossy().replace('\\', "/");
+    let trimmed = raw.trim_end_matches('/');
+    #[cfg(windows)]
+    {
+        trimmed.to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        trimmed.to_string()
+    }
+}
+
+/// Returns `true` when `cwd` is an isolated per-chat folder directly inside `~/.pi/agent/chats/`.
+pub fn is_temp_chat_folder(cwd: &Path) -> bool {
+    let root = normalized_path_str(&temp_chat_root_dir());
+    let cand = normalized_path_str(cwd);
+    if cand == root || !cand.starts_with(&format!("{root}/")) {
+        return false;
+    }
+    let rel = &cand[root.len() + 1..];
+    !rel.is_empty() && !rel.contains('/')
+}
+
+/// Cross-platform check for whether `cwd` belongs to any chat workspace (`chats` or `chat-workspace`).
+pub fn is_chat_workspace_cwd(cwd: &Path) -> bool {
+    let cand = normalized_path_str(cwd);
+    let root = normalized_path_str(&temp_chat_root_dir());
+    let standalone = normalized_path_str(&standalone_chat_workspace_dir());
+    cand == root || cand == standalone || cand.starts_with(&format!("{root}/"))
+}
+
+pub const TEMP_CHAT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TempChatRecord {
+    pub session_id: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+fn temp_chats_registry_path() -> PathBuf {
+    pi_agent_dir().join("picrust-temp-chats.json")
+}
+
+pub fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+pub fn load_temp_chat_records() -> Vec<TempChatRecord> {
+    let Ok(raw) = fs::read_to_string(temp_chats_registry_path()) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<TempChatRecord>>(&raw).unwrap_or_default()
+}
+
+fn save_temp_chat_records(records: &[TempChatRecord]) {
+    if let Ok(val) = serde_json::to_value(records) {
+        let _ = write_json_pretty_atomic(&temp_chats_registry_path(), &val);
+    }
+}
+
+pub fn load_active_temp_chat_ids(now_ms: i64) -> HashSet<String> {
+    load_temp_chat_records()
+        .into_iter()
+        .filter(|r| r.expires_at_ms > now_ms)
+        .map(|r| r.session_id)
+        .collect()
+}
+
+pub fn register_temp_chat(session_id: &str, cwd: Option<&str>, ttl_ms: i64) {
+    let now = now_unix_ms();
+    let mut records = load_temp_chat_records();
+    records.retain(|r| r.session_id != session_id);
+    records.push(TempChatRecord {
+        session_id: session_id.to_string(),
+        created_at_ms: now,
+        expires_at_ms: now + ttl_ms.max(60_000),
+        cwd: cwd.map(String::from),
+    });
+    save_temp_chat_records(&records);
+}
+
+pub fn unregister_temp_chat(session_id: &str) {
+    let mut records = load_temp_chat_records();
+    let before = records.len();
+    records.retain(|r| r.session_id != session_id);
+    if records.len() != before {
+        save_temp_chat_records(&records);
+    }
+}
+
+pub fn collect_expired_temp_chat_ids(now_ms: i64) -> Vec<String> {
+    load_temp_chat_records()
+        .into_iter()
+        .filter(|r| r.expires_at_ms <= now_ms)
+        .map(|r| r.session_id)
+        .collect()
+}
+
 /// Atomic file replacement: writes `bytes` to a sibling temp file and renames over `path`.
 pub fn write_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -237,11 +357,32 @@ pub fn delete_session_local(session_id: &str) -> Result<(), String> {
             if let Some(ref p) = s.path {
                 let _ = fs::remove_file(p);
             }
+            if let Some(ref cwd) = s.cwd {
+                let cwd_path = Path::new(cwd);
+                if is_temp_chat_folder(cwd_path) && cwd_path.exists() {
+                    let _ = fs::remove_dir_all(cwd_path);
+                }
+            }
+            unregister_temp_chat(&s.id);
         }
     }
     if target_path.exists() {
         let _ = fs::remove_file(&target_path);
     }
+    if let Some(parent_dir) = target_path.parent() {
+        if target
+            .cwd
+            .as_deref()
+            .is_some_and(|c| is_temp_chat_folder(Path::new(c)))
+        {
+            if let Ok(mut entries) = fs::read_dir(parent_dir) {
+                if entries.next().is_none() {
+                    let _ = fs::remove_dir(parent_dir);
+                }
+            }
+        }
+    }
+    unregister_temp_chat(session_id);
     Ok(())
 }
 
@@ -1491,5 +1632,23 @@ mod tests {
         assert_eq!(read_back.get("ok").and_then(Value::as_bool), Some(true));
 
         let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn chat_workspace_path_detection_handles_standalone_and_temp_folders() {
+        let standalone = standalone_chat_workspace_dir();
+        let temp_root = temp_chat_root_dir();
+        let temp_child = temp_root.join("20261116-133500-a1b2c3d4");
+        let nested_sub = temp_child.join("nested");
+        let unrelated_project = pi_agent_dir().join("projects").join("chats").join("repo");
+
+        assert!(is_chat_workspace_cwd(&standalone));
+        assert!(is_chat_workspace_cwd(&temp_root));
+        assert!(is_chat_workspace_cwd(&temp_child));
+        assert!(!is_temp_chat_folder(&standalone));
+        assert!(!is_temp_chat_folder(&temp_root));
+        assert!(is_temp_chat_folder(&temp_child));
+        assert!(!is_temp_chat_folder(&nested_sub));
+        assert!(!is_chat_workspace_cwd(&unrelated_project));
     }
 }

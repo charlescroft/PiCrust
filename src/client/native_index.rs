@@ -223,7 +223,7 @@ pub fn parse_session_jsonl_summary(path: &Path) -> Option<SessionSummary> {
     });
 
     let workspace_kind = cwd.as_deref().map(|c| {
-        if c.contains("chat-workspace") || c.contains("chats/") {
+        if crate::client::local_store::is_chat_workspace_cwd(Path::new(c)) {
             WorkspaceKind::Chat
         } else {
             WorkspaceKind::Project
