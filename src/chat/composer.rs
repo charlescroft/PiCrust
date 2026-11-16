@@ -894,20 +894,20 @@ impl ComposerView {
         let ctx_window = state.stats.context_window;
         let ctx_pct = state.stats.context_used_pct;
         let total_cost = state.stats.cost_usd;
-        let project_label = if state.active_is_temp_chat {
-            SharedString::from(tr(locale, "sidebar.newTempChat"))
-        } else if state.active_workspace_kind == WorkspaceKind::Chat {
-            SharedString::from(tr(locale, "sidebar.chats"))
-        } else {
-            SharedString::from(
-                state
-                    .active_cwd
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Workspace")
-                    .to_string(),
-            )
-        };
+        let is_workspace_project = !state.active_is_temp_chat
+            && !state
+                .active_session_id
+                .as_ref()
+                .is_some_and(|sid| state.temp_chat_ids.contains(sid))
+            && state.active_workspace_kind != WorkspaceKind::Chat;
+        let project_label = SharedString::from(
+            state
+                .active_cwd
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Workspace")
+                .to_string(),
+        );
 
         let app_think = self.app_state.clone();
         let app_preset = self.app_state.clone();
@@ -1918,7 +1918,7 @@ impl ComposerView {
                 h_flex()
                     .items_center()
                     .gap_2p5()
-                    .child(
+                    .children(is_workspace_project.then(|| {
                         Button::new("composer-project-chip")
                             .ghost()
                             .small()
@@ -1930,8 +1930,8 @@ impl ComposerView {
                                 app_proj.update(cx, |s, cx| {
                                     s.open_right_tab(RightPanelTab::Files, cx);
                                 });
-                            }),
-                    )
+                            })
+                    }))
                     .child(
                         div().w(px(210.)).child(
                             Select::new(&self.model_select)

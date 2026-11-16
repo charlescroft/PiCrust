@@ -1041,9 +1041,17 @@ fn build_session_row(
         })
         .when_session_status_badge(running, unread, cx)
         .children(is_temp.then(|| {
-            Icon::new(crate::icons::ClockIcon)
-                .xsmall()
-                .text_color(cx.theme().muted_foreground)
+            div()
+                .id(("sess-temp-clock", id_prefix.1))
+                .flex_shrink_0()
+                .tooltip(move |w, cx| {
+                    Tooltip::new(tr(locale, "status.tempChatWorkspace")).build(w, cx)
+                })
+                .child(
+                    Icon::new(crate::icons::ClockIcon)
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                )
         }))
         .child(
             div()

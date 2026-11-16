@@ -135,7 +135,13 @@ pub fn render_status_bar(
                 .items_center()
                 .gap_1p5()
                 .max_w(px(360.))
-                .child(Icon::new(IconName::Folder).xsmall())
+                .child(if state.active_is_temp_chat {
+                    Icon::new(crate::icons::ClockIcon).xsmall().into_any_element()
+                } else if state.active_workspace_kind == WorkspaceKind::Chat {
+                    Icon::new(IconName::Bot).xsmall().into_any_element()
+                } else {
+                    Icon::new(IconName::Folder).xsmall().into_any_element()
+                })
                 .child(
                     div()
                         .text_xs()

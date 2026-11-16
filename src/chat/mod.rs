@@ -11,7 +11,7 @@ use crate::chat::composer::ComposerView;
 use crate::chat::find_bar::ConversationCommandPalette;
 use crate::chat::message_row::{CachedRowEntities, render_message_row};
 use crate::chat::questionnaire::QuestionnaireView;
-use crate::client::types::{ChatMessage, MessageRole};
+use crate::client::types::{ChatMessage, MessageRole, WorkspaceKind};
 use crate::i18n::{format_commas, tr};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::Disableable as _;
@@ -962,6 +962,15 @@ impl Render for ChatPanel {
                 )
         });
 
+        let is_temp_chat = {
+            let state = self.app_state.read(cx);
+            state.active_is_temp_chat
+                || state
+                    .active_session_id
+                    .as_ref()
+                    .is_some_and(|sid| state.temp_chat_ids.contains(sid))
+        };
+
         let session_title = {
             let state = self.app_state.read(cx);
             state
@@ -969,7 +978,15 @@ impl Render for ChatPanel {
                 .as_ref()
                 .and_then(|sid| state.sessions.iter().find(|s| &s.id == sid))
                 .map(|s| s.display_title())
-                .unwrap_or_else(|| SharedString::from(tr(locale, "chat.newSession")))
+                .unwrap_or_else(|| {
+                    if is_temp_chat {
+                        SharedString::from(tr(locale, "status.tempChatWorkspace"))
+                    } else if state.active_workspace_kind == WorkspaceKind::Chat {
+                        SharedString::from(tr(locale, "sidebar.newStandaloneChat"))
+                    } else {
+                        SharedString::from(tr(locale, "chat.newSession"))
+                    }
+                })
         };
 
         let full_session_title = session_title.clone();
@@ -1196,19 +1213,39 @@ impl Render for ChatPanel {
                     .items_center()
                     .justify_center()
                     .child(
-                        div()
-                            .id("conv-header-title")
-                            .max_w(px(580.))
-                            .truncate()
-                            .text_xs()
-                            .font_medium()
-                            .text_color(cx.theme().muted_foreground)
-                            .tooltip(move |w, cx| {
-                                Tooltip::new(full_session_title.clone())
-                                    .max_w(px(480.))
-                                    .build(w, cx)
-                            })
-                            .child(session_title),
+                        h_flex()
+                            .items_center()
+                            .gap_1p5()
+                            .children(is_temp_chat.then(|| {
+                                div()
+                                    .id("conv-header-temp-clock")
+                                    .flex_shrink_0()
+                                    .cursor_default()
+                                    .tooltip(move |w, cx| {
+                                        Tooltip::new(tr(locale, "status.tempChatWorkspace"))
+                                            .build(w, cx)
+                                    })
+                                    .child(
+                                        Icon::new(crate::icons::ClockIcon)
+                                            .xsmall()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                            }))
+                            .child(
+                                div()
+                                    .id("conv-header-title")
+                                    .max_w(px(580.))
+                                    .truncate()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .tooltip(move |w, cx| {
+                                        Tooltip::new(full_session_title.clone())
+                                            .max_w(px(480.))
+                                            .build(w, cx)
+                                    })
+                                    .child(session_title),
+                            ),
                     ),
             )
             .child(div().w(px(90.)).flex_shrink_0());
