@@ -237,6 +237,8 @@ pub struct AppState {
     pub settings_deleting_keys: std::collections::HashSet<String>,
     pub suppress_next_prompt_reload: bool,
     pub settings_open_nonce: u64,
+    pub continuing_msg_id: Option<u64>,
+    pub continuing_prefix_text: String,
 }
 
 impl AppState {
@@ -550,6 +552,8 @@ impl AppState {
             settings_deleting_keys: std::collections::HashSet::new(),
             suppress_next_prompt_reload: false,
             settings_open_nonce: 0,
+            continuing_msg_id: None,
+            continuing_prefix_text: String::new(),
         };
 
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
@@ -1448,6 +1452,137 @@ impl AppState {
         } else {
             cx.notify();
         }
+    }
+
+    /// Retries a failed turn that produced no actual assistant output:
+    /// prunes the invalid user + failed assistant error entries from the session JSONL,
+    /// rolls back the sidecar session tree to the parent entry, and re-dispatches the prompt.
+    pub fn retry_failed_turn(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        if self.is_agent_running || self.controller.send_in_flight {
+            return;
+        }
+        let Some(assistant_idx) = self.messages.iter().position(|m| m.id == msg_id) else {
+            return;
+        };
+        if self.messages[assistant_idx].role != MessageRole::Assistant {
+            return;
+        }
+        let Some(user_idx) = (0..assistant_idx)
+            .rev()
+            .find(|&i| self.messages[i].role == MessageRole::User)
+        else {
+            return;
+        };
+
+        let user_text = self.messages[user_idx].content.clone();
+        let user_entry_id = self.messages[user_idx]
+            .entry_id
+            .as_deref()
+            .map(str::to_string);
+        let assistant_entry_id = self.messages[assistant_idx]
+            .entry_id
+            .as_deref()
+            .map(str::to_string);
+
+        self.messages.remove(assistant_idx);
+        self.messages.remove(user_idx);
+
+        let rollback_parent_id = self
+            .active_session_id
+            .as_deref()
+            .and_then(|sid| {
+                self.sessions
+                    .iter()
+                    .find(|s| s.id == sid)
+                    .and_then(|s| s.path.as_deref())
+            })
+            .and_then(|path_str| {
+                crate::client::session_controller::prune_failed_turn_from_jsonl(
+                    std::path::Path::new(path_str),
+                    user_entry_id.as_deref(),
+                    assistant_entry_id.as_deref(),
+                )
+            });
+
+        if self.sidecar_connected {
+            if let (Some(sid), Some(pid)) = (self.active_session_id.clone(), rollback_parent_id) {
+                let client = self.client.clone();
+                let entity = cx.entity().clone();
+                cx.spawn(async move |_, cx| {
+                    let _ = client.navigate_tree(&sid, &pid).await;
+                    let _ = entity.update(cx, |this, cx| {
+                        this.dispatch_single_prompt(user_text, cx);
+                    });
+                })
+                .detach();
+                cx.notify();
+                return;
+            }
+        }
+
+        self.dispatch_single_prompt(user_text, cx);
+    }
+
+    /// Sends an implicit continuation prompt for an assistant turn that was interrupted
+    /// mid-response by an error, appending the subsequent output onto the same turn.
+    pub fn continue_interrupted_turn(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        if self.is_agent_running || self.controller.send_in_flight {
+            return;
+        }
+        let Some(sid) = self.active_session_id.clone() else {
+            return;
+        };
+        if !self.sidecar_connected {
+            return;
+        }
+        let Some(idx) = self.messages.iter().position(|m| m.id == msg_id) else {
+            return;
+        };
+        if self.messages[idx].role != MessageRole::Assistant {
+            return;
+        }
+
+        self.continuing_msg_id = Some(msg_id);
+        self.continuing_prefix_text = self.messages[idx].content.clone();
+        self.messages[idx].error_message = None;
+        self.messages[idx].stop_reason = None;
+        self.messages[idx].is_streaming = true;
+        self.is_agent_running = true;
+        self.controller.send_in_flight = true;
+
+        if self.controller.sse_task.is_none() {
+            self.connect_session_sse(sid.clone(), cx);
+        }
+
+        let client = self.client.clone();
+        let entity = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            let res = client
+                .send_agent_command(
+                    &sid,
+                    serde_json::json!({
+                        "type": "prompt",
+                        "message": crate::client::session_controller::IMPLICIT_CONTINUE_PROMPT,
+                    }),
+                )
+                .await;
+            let _ = entity.update(cx, |this, cx| {
+                this.controller.send_in_flight = false;
+                if let Err(err) = res {
+                    this.is_agent_running = false;
+                    this.continuing_msg_id = None;
+                    this.continuing_prefix_text.clear();
+                    if let Some(m) = this.messages.iter_mut().find(|m| m.id == msg_id) {
+                        m.is_streaming = false;
+                        m.stop_reason = Some(SharedString::from("error"));
+                        m.error_message = Some(SharedString::from(format!("{err:#}")));
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub fn fork_session_from_entry(
@@ -4095,6 +4230,8 @@ impl AppState {
         self.is_agent_running = false;
         self.is_compacting = false;
         self.retry_status = None;
+        self.continuing_msg_id = None;
+        self.continuing_prefix_text.clear();
         self.pending_ui_request = None;
         self.dialog_queue.clear();
         self.questionnaire_request_id = None;
@@ -4247,6 +4384,8 @@ impl AppState {
         }
         self.is_compacting = false;
         self.retry_status = None;
+        self.continuing_msg_id = None;
+        self.continuing_prefix_text.clear();
         self.subagent_runs.clear();
         self.tool_subagent_runs.clear();
         self.subagent_status_text = None;
@@ -4589,6 +4728,8 @@ impl AppState {
                     self.is_agent_running = false;
                     self.is_compacting = false;
                     self.retry_status = None;
+        self.continuing_msg_id = None;
+        self.continuing_prefix_text.clear();
                     cx.notify();
                     return;
                 }
@@ -4596,6 +4737,10 @@ impl AppState {
                 self.is_agent_running = false;
                 self.is_compacting = false;
                 self.retry_status = None;
+                self.continuing_msg_id = None;
+                self.continuing_prefix_text.clear();
+        self.continuing_msg_id = None;
+        self.continuing_prefix_text.clear();
                 if let Some(last) = self.messages.last_mut() {
                     if last.role == MessageRole::Assistant {
                         last.is_streaming = false;
@@ -4695,6 +4840,12 @@ impl AppState {
                 if role == "user" {
                     if let Some(msg_val) = message.as_ref() {
                         let user_text = flatten_content_text(msg_val.get("content"));
+                        if self.continuing_msg_id.is_some()
+                            || user_text.trim()
+                                == crate::client::session_controller::IMPLICIT_CONTINUE_PROMPT
+                        {
+                            return;
+                        }
                         if !user_text.trim().is_empty()
                             && !user_text.trim_start().starts_with("/agy ")
                             && user_text.trim() != "/agy"
@@ -4759,13 +4910,17 @@ impl AppState {
                         _ => true,
                     };
                     if last.role == MessageRole::Assistant && same_model {
+                        let is_continuing = self.continuing_msg_id == Some(last.id);
                         let was_streaming = last.is_streaming;
-                        if !last.content.trim().is_empty() && !was_streaming {
+                        if is_continuing {
+                            last.error_message = None;
+                            last.stop_reason = None;
+                        } else if !last.content.trim().is_empty() && !was_streaming {
                             let intermediate = std::mem::take(&mut last.content);
                             last.process_steps
                                 .push(ProcessStep::Thinking(SharedString::from(intermediate)));
                         }
-                        if !snap_text.is_empty() {
+                        if !snap_text.is_empty() && !is_continuing {
                             last.content = snap_text;
                         }
                         if !snap_thinking.is_empty() {
@@ -4901,7 +5056,11 @@ impl AppState {
                             }
                         }
                         "text_start" => {
-                            last.content.clear();
+                            if self.continuing_msg_id == Some(last.id) {
+                                last.content = self.continuing_prefix_text.clone();
+                            } else {
+                                last.content.clear();
+                            }
                         }
                         "text_delta" => {
                             if let Some(d) = assistant_message_event
@@ -4918,7 +5077,11 @@ impl AppState {
                                 .and_then(|ev| ev.get("content"))
                                 .and_then(Value::as_str)
                             {
-                                last.content = full.to_string();
+                                if self.continuing_msg_id == Some(last.id) {
+                                    last.content = format!("{}{}", self.continuing_prefix_text, full);
+                                } else {
+                                    last.content = full.to_string();
+                                }
                             }
                         }
                         // Strictly keep toolcall_start / toolcall_delta / toolcall_end OUT of last.content!
@@ -5095,6 +5258,12 @@ impl AppState {
                 if role == "user" {
                     if let Some(msg_val) = message.as_ref() {
                         let user_text = flatten_content_text(msg_val.get("content"));
+                        if self.continuing_msg_id.is_some()
+                            || user_text.trim()
+                                == crate::client::session_controller::IMPLICIT_CONTINUE_PROMPT
+                        {
+                            return;
+                        }
                         if !user_text.trim().is_empty()
                             && !user_text.trim_start().starts_with("/agy ")
                             && user_text.trim() != "/agy"
@@ -5191,7 +5360,12 @@ impl AppState {
                             );
                             if let Some(completed) = parsed.into_iter().next() {
                                 if !completed.content.is_empty() {
-                                    last.content = completed.content;
+                                    if self.continuing_msg_id == Some(last.id) {
+                                        last.content = format!("{}{}", self.continuing_prefix_text, completed.content);
+                                        self.continuing_prefix_text = last.content.clone();
+                                    } else {
+                                        last.content = completed.content;
+                                    }
                                 }
                             }
                         }
@@ -5705,6 +5879,8 @@ impl AppState {
                 error_message,
             } => {
                 self.retry_status = None;
+        self.continuing_msg_id = None;
+        self.continuing_prefix_text.clear();
                 if success == Some(false) {
                     if let Some(err) = final_error.or(error_message).filter(|s| !s.trim().is_empty()) {
                         self.record_assistant_error(err);
@@ -5726,6 +5902,8 @@ impl AppState {
             | AgentSseEvent::StartupError { error_message } => {
                 self.is_agent_running = false;
                 self.retry_status = None;
+        self.continuing_msg_id = None;
+        self.continuing_prefix_text.clear();
                 let err = error_message.unwrap_or_else(|| "Request failed".to_string());
                 self.record_assistant_error(err);
             }

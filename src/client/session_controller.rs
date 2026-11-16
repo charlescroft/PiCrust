@@ -648,6 +648,144 @@ pub fn parse_compaction_summary(summary: &str) -> (String, Vec<String>, Vec<Stri
     (body.trim().to_string(), read_files, modified_files)
 }
 
+pub const IMPLICIT_CONTINUE_PROMPT: &str =
+    "Continue directly from where your previous response was interrupted. Do not repeat anything you already output.";
+
+/// Removes an invalid failed turn (the failed assistant error entry, its
+/// immediately preceding user entry, and any orphan descendants) from a session
+/// `.jsonl` file, returning the `parentId` to roll back to in the session tree.
+pub fn prune_failed_turn_from_jsonl(
+    path: &Path,
+    user_entry_id: Option<&str>,
+    failed_assistant_entry_id: Option<&str>,
+) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let mut parsed_lines: Vec<(String, Option<Value>)> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let val = serde_json::from_str::<Value>(trimmed).ok();
+        parsed_lines.push((trimmed.to_string(), val));
+    }
+    if parsed_lines.is_empty() {
+        return None;
+    }
+
+    let mut target_user_id = user_entry_id.map(str::to_string);
+    let mut target_assistant_id = failed_assistant_entry_id.map(str::to_string);
+
+    // Fallback: if caller didn't have entry IDs, locate the trailing error assistant
+    // entry and its parent user entry directly from the JSONL tail.
+    if target_assistant_id.is_none() {
+        if let Some(last_err) = parsed_lines.iter().rev().find_map(|(_, val)| {
+            let v = val.as_ref()?;
+            let msg = v.get("message")?;
+            if v.get("type").and_then(Value::as_str) == Some("message")
+                && msg.get("role").and_then(Value::as_str) == Some("assistant")
+                && msg.get("stopReason").and_then(Value::as_str) == Some("error")
+            {
+                v.get("id").and_then(Value::as_str).map(str::to_string)
+            } else {
+                None
+            }
+        }) {
+            target_assistant_id = Some(last_err);
+        }
+    }
+
+    if target_user_id.is_none() {
+        if let Some(ref aid) = target_assistant_id {
+            if let Some(parent_id) = parsed_lines.iter().find_map(|(_, val)| {
+                let v = val.as_ref()?;
+                if v.get("id").and_then(Value::as_str) == Some(aid.as_str()) {
+                    v.get("parentId").and_then(Value::as_str).map(str::to_string)
+                } else {
+                    None
+                }
+            }) {
+                // Only treat parent as the failed user message if its role is "user".
+                let parent_is_user = parsed_lines.iter().any(|(_, val)| {
+                    val.as_ref().is_some_and(|v| {
+                        v.get("id").and_then(Value::as_str) == Some(parent_id.as_str())
+                            && v.get("message")
+                                .and_then(|m| m.get("role"))
+                                .and_then(Value::as_str)
+                                == Some("user")
+                    })
+                });
+                if parent_is_user {
+                    target_user_id = Some(parent_id);
+                }
+            }
+        }
+    }
+
+    let anchor_id = target_user_id.as_deref().or(target_assistant_id.as_deref());
+    let rollback_parent_id = anchor_id.and_then(|aid| {
+        parsed_lines.iter().find_map(|(_, val)| {
+            let v = val.as_ref()?;
+            if v.get("id").and_then(Value::as_str) == Some(aid) {
+                v.get("parentId").and_then(Value::as_str).map(str::to_string)
+            } else {
+                None
+            }
+        })
+    });
+
+    let mut remove_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(uid) = target_user_id {
+        remove_ids.insert(uid);
+    }
+    if let Some(aid) = target_assistant_id {
+        remove_ids.insert(aid);
+    }
+    if remove_ids.is_empty() {
+        return rollback_parent_id;
+    }
+
+    // Transitively collect any child entries (e.g. context_edit) hanging off removed nodes.
+    loop {
+        let mut added = false;
+        for (_, val) in &parsed_lines {
+            let Some(v) = val.as_ref() else { continue };
+            let Some(id) = v.get("id").and_then(Value::as_str) else { continue };
+            if remove_ids.contains(id) {
+                continue;
+            }
+            if let Some(pid) = v.get("parentId").and_then(Value::as_str) {
+                if remove_ids.contains(pid) {
+                    remove_ids.insert(id.to_string());
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+
+    let kept: Vec<&str> = parsed_lines
+        .iter()
+        .filter_map(|(line, val)| {
+            if let Some(id) = val.as_ref().and_then(|v| v.get("id")).and_then(Value::as_str) {
+                if remove_ids.contains(id) {
+                    return None;
+                }
+            }
+            Some(line.as_str())
+        })
+        .collect();
+
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    let _ = crate::client::local_store::write_file_atomic(path, out.as_bytes());
+    rollback_parent_id
+}
+
 /// Converts a `/api/sessions/[id]` JSON payload into UI-ready `ChatMessage` rows,
 /// merging consecutive assistant steps of the same turn into a single turn with
 /// `process_steps` (matching `ChatWindow.tsx`'s `ProcessDetailsGroup` + `getFinalSplit`).
@@ -799,6 +937,14 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
             _ => MessageRole::Assistant,
         };
 
+        if role == MessageRole::User {
+            let is_hidden_continue = msg.get("hidden").and_then(Value::as_bool) == Some(true)
+                || flatten_content_text(msg.get("content")).trim() == IMPLICIT_CONTINUE_PROMPT;
+            if is_hidden_continue {
+                continue;
+            }
+        }
+
         let entry_id = entry_ids
             .and_then(|arr| arr.get(idx))
             .and_then(Value::as_str)
@@ -839,8 +985,14 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
                     _ => true,
                 };
                 if prev.role == MessageRole::Assistant && same_model {
-                    // If previous assistant step had intermediate text before tool calls, move it to thinking/process
-                    if !prev.content.trim().is_empty() && (!text.trim().is_empty() || !tool_calls.is_empty()) {
+                    let prev_had_error = prev.error_message.is_some()
+                        || prev.stop_reason.as_deref() == Some("error");
+                    // If previous assistant step had intermediate text before tool calls (and wasn't interrupted by an error),
+                    // move it to thinking/process; if continuing after an error, keep it as the answer prefix.
+                    if !prev_had_error
+                        && !prev.content.trim().is_empty()
+                        && (!text.trim().is_empty() || !tool_calls.is_empty())
+                    {
                         let intermediate = std::mem::take(&mut prev.content);
                         prev.process_steps
                             .push(ProcessStep::Thinking(SharedString::from(intermediate)));
@@ -2166,6 +2318,70 @@ mod tests {
         assert_eq!(siblings_a.len(), 2);
         assert!(siblings_a[0].active);
         assert!(!siblings_a[1].active);
+    }
+
+    #[test]
+    fn prunes_failed_turn_and_returns_rollback_parent() {
+        let dir = std::env::temp_dir().join(format!("picrust-prune-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("session.jsonl");
+        let lines = [
+            serde_json::json!({ "type": "session", "id": "s1" }),
+            serde_json::json!({ "type": "message", "id": "u1", "parentId": "s1", "message": { "role": "user", "content": "hi" } }),
+            serde_json::json!({ "type": "message", "id": "a1", "parentId": "u1", "message": { "role": "assistant", "content": "hello" } }),
+            serde_json::json!({ "type": "message", "id": "u2", "parentId": "a1", "message": { "role": "user", "content": "broken" } }),
+            serde_json::json!({ "type": "message", "id": "a2", "parentId": "u2", "message": { "role": "assistant", "content": [], "stopReason": "error" } }),
+            serde_json::json!({ "type": "context_edit", "id": "ce1", "parentId": "a2" }),
+        ];
+        let body = lines
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, body).unwrap();
+
+        let rollback = prune_failed_turn_from_jsonl(&path, Some("u2"), Some("a2"));
+        assert_eq!(rollback.as_deref(), Some("a1"));
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        let kept_ids: Vec<String> = after
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v.get("id").and_then(Value::as_str).map(String::from))
+            .collect();
+        assert_eq!(kept_ids, vec!["s1", "u1", "a1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn implicit_continue_merges_into_interrupted_assistant_turn() {
+        let payload = serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "Explain Rust lifetimes" },
+                {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "Part 1: Lifetimes ensure" }],
+                    "stopReason": "error",
+                    "errorMessage": "network reset"
+                },
+                { "role": "user", "content": IMPLICIT_CONTINUE_PROMPT },
+                {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "Part 2: references stay valid." }],
+                    "stopReason": "stop"
+                }
+            ]
+        });
+        let mut next_id = 1;
+        let parsed = parse_session_messages(&payload, &mut next_id);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].role, MessageRole::User);
+        assert_eq!(parsed[1].role, MessageRole::Assistant);
+        assert!(parsed[1].content.contains("Part 1: Lifetimes ensure"));
+        assert!(parsed[1].content.contains("Part 2: references stay valid."));
+        assert_eq!(parsed[1].stop_reason.as_deref(), Some("stop"));
+        assert!(parsed[1].error_message.is_none());
     }
 }
 

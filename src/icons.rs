@@ -90,3 +90,12 @@ impl IconNamed for ClockIcon {
         gpui_kit::assets::IconName::Clock.path()
     }
 }
+
+#[derive(Clone, Copy)]
+pub struct PlayIcon;
+
+impl IconNamed for PlayIcon {
+    fn path(self) -> SharedString {
+        gpui_kit::assets::IconName::Play.path()
+    }
+}

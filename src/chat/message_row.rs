@@ -2,7 +2,7 @@ use crate::app_state::{AppState, RightPanelTab};
 use crate::client::session_controller::extract_artifacts_from_markdown;
 use crate::client::types::{ChatMessage, CompactionStep, MessageRole, ProcessStep, ToolCallItem};
 use crate::i18n::{AppLocale, format_commas, format_tokens_km, tr};
-use crate::icons::DatabaseIcon;
+use crate::icons::{DatabaseIcon, PlayIcon};
 use std::time::Duration;
 use gpui_kit::component::attachment::{Attachment, AttachmentContent, AttachmentTitle};
 use gpui_kit::component::bubble::{Bubble, BubbleVariant};
@@ -1135,7 +1135,13 @@ fn render_assistant_row(
         let default_err_open = is_ctx_limit && is_last_turn;
         let is_err_open = row_cache.error_expanded.unwrap_or(default_err_open);
         let is_compacting = app_state.read(cx).is_compacting;
+        let is_agent_running_now = app_state.read(cx).is_agent_running;
+        let has_partial_output =
+            has_answer_text || !msg.tool_calls.is_empty() || !msg.process_steps.is_empty();
+        let can_retry_empty_error =
+            !is_turn_live && !is_agent_running_now && !is_ctx_limit && !has_partial_output && is_last_turn;
         let app_cmp = app_state.clone();
+        let app_retry = app_state.clone();
 
         let header_title = if is_ctx_limit {
             tr(locale, "chat.contextLimitTitle").to_string()
@@ -1204,6 +1210,20 @@ fn render_assistant_row(
                             .flex_shrink_0()
                             .items_center()
                             .gap_1p5()
+                            .children(can_retry_empty_error.then(|| {
+                                Button::new(("err-retry-btn", msg_id))
+                                    .outline()
+                                    .xsmall()
+                                    .h(px(24.))
+                                    .icon(Icon::new(PlayIcon))
+                                    .label(tr(locale, "chat.retryFailedTurn"))
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        app_retry.update(cx, |s, cx| {
+                                            s.retry_failed_turn(msg_id, cx);
+                                        });
+                                    })
+                            }))
                             .children(is_ctx_limit.then(|| {
                                 Button::new(("err-compact-btn", msg_id))
                                     .outline()
@@ -1645,23 +1665,34 @@ fn render_assistant_row(
     }
 
     // 6. Full-width Separator + Footer:
-    //    - Shown ONLY when the entire turn has settled (!is_turn_live) AND has answer text
+    //    - Shown when the entire turn has settled (!is_turn_live) AND (has answer text OR was interrupted mid-turn)
     //    - Timestamp shows the real parsed/recorded time without hardcoded "Just now"
-    if !is_turn_live && has_answer_text {
+    let has_partial_output =
+        has_answer_text || !msg.tool_calls.is_empty() || !msg.process_steps.is_empty();
+    let is_agent_running_footer = app_state.read(cx).is_agent_running;
+    let can_continue_interrupted = !is_turn_live
+        && !is_agent_running_footer
+        && (msg.error_message.is_some() || msg.stop_reason.as_deref() == Some("error"))
+        && has_partial_output
+        && is_last_turn;
+
+    if !is_turn_live && (has_answer_text || can_continue_interrupted) {
         let mut left_actions = h_flex().items_center().gap_2p5();
-        let copy_md = msg.content.clone();
-        left_actions = left_actions.child(
-            Button::new(("copy-assistant", msg.id))
-                .ghost()
-                .small()
-                .h(px(28.))
-                .icon(IconName::Copy)
-                .label(tr(locale, "chat.copy"))
-                .on_click(move |_, window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copy_md.clone()));
-                    window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
-                }),
-        );
+        if has_answer_text {
+            let copy_md = msg.content.clone();
+            left_actions = left_actions.child(
+                Button::new(("copy-assistant", msg.id))
+                    .ghost()
+                    .small()
+                    .h(px(28.))
+                    .icon(IconName::Copy)
+                    .label(tr(locale, "chat.copy"))
+                    .on_click(move |_, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_md.clone()));
+                        window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
+                    }),
+            );
+        }
         if let Some(ref u) = msg.turn_usage {
             let u_clone = u.clone();
             let tok_str = format_tokens_km(u.total_tokens);
@@ -1744,6 +1775,23 @@ fn render_assistant_row(
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(tok.clone()),
+            );
+        }
+        if can_continue_interrupted {
+            let app_cont = app_state.clone();
+            let cont_id = msg.id;
+            left_actions = left_actions.child(
+                Button::new(("continue-interrupted-btn", msg.id))
+                    .ghost()
+                    .small()
+                    .h(px(28.))
+                    .icon(Icon::new(PlayIcon))
+                    .tooltip(tr(locale, "chat.continueFromError"))
+                    .on_click(move |_, _, cx| {
+                        app_cont.update(cx, |s, cx| {
+                            s.continue_interrupted_turn(cont_id, cx);
+                        });
+                    }),
             );
         }
 
