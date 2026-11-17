@@ -99,9 +99,14 @@ fn en_text(key: &'static str) -> &'static str {
     match key {
         // Sidebar & Navigation
         "sidebar.newSession" => "New Session",
+        "sidebar.newSessionPromptTitle" => "Choose Conversation Mode",
+        "sidebar.newSessionPromptQuestion" => "What kind of conversation would you like to start?",
         "sidebar.newStandaloneChat" => "New Chat",
+        "sidebar.newStandaloneChatDesc" => "Persistent standalone chat without a project folder",
         "sidebar.newSubproject" => "New Subproject",
+        "sidebar.newSubprojectDesc" => "Choose a local folder as a project workspace",
         "sidebar.newTempChat" => "New Temporary Chat",
+        "sidebar.newTempChatDesc" => "Ephemeral 24h isolated sandbox conversation",
         "sidebar.tempBadge" => "Temp",
         "sidebar.keepTempChat" => "Keep as Chat",
         "sidebar.releaseTempChat" => "Release Now",
@@ -698,9 +703,14 @@ fn zh_text(key: &'static str) -> &'static str {
     match key {
         // Sidebar & Navigation
         "sidebar.newSession" => "新建对话",
+        "sidebar.newSessionPromptTitle" => "选择对话形式",
+        "sidebar.newSessionPromptQuestion" => "请选择要创建的新对话类型：",
         "sidebar.newStandaloneChat" => "新建对话",
+        "sidebar.newStandaloneChatDesc" => "不绑定项目目录的持久化独立对话",
         "sidebar.newSubproject" => "新建子项目",
+        "sidebar.newSubprojectDesc" => "选择本地文件夹作为项目工作区",
         "sidebar.newTempChat" => "新建临时对话",
+        "sidebar.newTempChatDesc" => "24 小时后自动清理的隔离临时对话",
         "sidebar.tempBadge" => "临时",
         "sidebar.keepTempChat" => "保留为普通对话",
         "sidebar.releaseTempChat" => "立即释放",

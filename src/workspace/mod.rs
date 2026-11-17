@@ -33,6 +33,7 @@ pub struct WorkspaceView {
     scheduled_page: Entity<ScheduledPageView>,
     settings_add_dialog: Entity<SettingsAddDialogView>,
     artifacts_search_input: Entity<gpui_kit::component::input::InputState>,
+    new_session_questionnaire: Option<Entity<crate::chat::questionnaire::NewSessionQuestionnaireView>>,
     rename_state: Option<InlineRenameState>,
     resizing_right: bool,
 }
@@ -78,6 +79,7 @@ impl WorkspaceView {
             scheduled_page,
             settings_add_dialog,
             artifacts_search_input,
+            new_session_questionnaire: None,
             rename_state: None,
             resizing_right: false,
         }
@@ -91,6 +93,24 @@ impl Render for WorkspaceView {
         let sidebar_collapsed = state.sidebar_collapsed;
         let right_open = state.right_panel_open;
         let right_target_w = f32::from(state.right_panel_width);
+        let show_new_sess_q = state.show_new_session_questionnaire;
+        let locale = state.locale;
+
+        if show_new_sess_q {
+            let needs_create = self
+                .new_session_questionnaire
+                .as_ref()
+                .map(|q| q.read(cx).locale() != locale)
+                .unwrap_or(true);
+            if needs_create {
+                let app = self.app_state.clone();
+                self.new_session_questionnaire = Some(cx.new(|cx| {
+                    crate::chat::questionnaire::NewSessionQuestionnaireView::new(app, locale, cx)
+                }));
+            }
+        } else {
+            self.new_session_questionnaire = None;
+        }
 
         // Smooth animated widths without remounting center content (prevents any flash)
         let easing = cx.theme().motion_tokens().easing_move.clone();
@@ -320,6 +340,7 @@ impl Render for WorkspaceView {
                 window,
                 cx,
             ))
+            .children(self.new_session_questionnaire.clone())
     }
 }
 

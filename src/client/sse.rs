@@ -184,7 +184,7 @@ where
         };
 
         let mut stream = resp.bytes_stream().eventsource();
-        while let Some(item) = stream.next().await {
+        while let Ok(Some(item)) = tokio::time::timeout(Duration::from_secs(90), stream.next()).await {
             match item {
                 Ok(ev) => {
                     if ev.data.trim().is_empty() || ev.data == "[DONE]" {
@@ -245,7 +245,7 @@ where
         };
 
         let mut stream = resp.bytes_stream().eventsource();
-        while let Some(item) = stream.next().await {
+        while let Ok(Some(item)) = tokio::time::timeout(Duration::from_secs(90), stream.next()).await {
             if let Ok(ev) = item {
                 if ev.data.trim().is_empty() {
                     continue;

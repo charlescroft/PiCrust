@@ -102,7 +102,12 @@ pub fn render_sidebar(
     let pinned: Vec<_> = state
         .sessions
         .iter()
-        .filter(|s| s.pinned && !s.archived && !s.is_subagent())
+        .filter(|s| {
+            s.pinned
+                && !s.archived
+                && !state.archived_session_ids.contains(&s.id)
+                && !s.is_subagent()
+        })
         .map(|s| {
             let is_run = s.is_running || running_ids.contains(&s.id);
             let is_unr = unread_ids.contains(&s.id);
@@ -118,6 +123,7 @@ pub fn render_sidebar(
             s.workspace_kind == Some(WorkspaceKind::Chat)
                 && !s.pinned
                 && !s.archived
+                && !state.archived_session_ids.contains(&s.id)
                 && !s.is_subagent()
         })
         .map(|s| {
@@ -750,71 +756,17 @@ pub fn render_sidebar(
         .child(
             div().px_3().pt_3().pb_2().child({
                 let app_main = app_new_proj.clone();
-                let app_chat = app_new_proj.clone();
-                let app_subproj = app_new_proj.clone();
-                let app_temp = app_new_proj.clone();
-                DropdownButton::new("dropdown")
+                Button::new("new-session-main")
                     .primary()
                     .small()
                     .w_full()
-                    .button(
-                        Button::new("new-session-main")
-                            .flex_1()
-                            .icon(IconName::Plus)
-                            .label(tr(locale, "sidebar.newSession"))
-                            .on_click(move |_, _, cx| {
-                                app_main.update(cx, |s, cx| {
-                                    s.chats_section_collapsed = false;
-                                    s.start_new_composer(WorkspaceKind::Chat, cx);
-                                });
-                            }),
-                    )
-                    .dropdown_menu(move |menu, _, _| {
-                        let app_c = app_chat.clone();
-                        let app_p = app_subproj.clone();
-                        let app_t = app_temp.clone();
-                        menu.item(
-                            PopupMenuItem::new(tr(locale, "sidebar.newStandaloneChat"))
-                                .on_click(move |_, _, cx| {
-                                    app_c.update(cx, |s, cx| {
-                                        s.chats_section_collapsed = false;
-                                        s.start_new_composer(WorkspaceKind::Chat, cx);
-                                    });
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new(tr(locale, "sidebar.newSubproject"))
-                                .on_click(move |_, _, cx| {
-                                    let prompt_text =
-                                        tr(locale, "sidebar.selectProjectFolder").to_string();
-                                    let rx = cx.prompt_for_paths(PathPromptOptions {
-                                        files: false,
-                                        directories: true,
-                                        multiple: false,
-                                        prompt: Some(prompt_text.into()),
-                                    });
-                                    let app_p2 = app_p.clone();
-                                    cx.spawn(async move |cx| {
-                                        if let Ok(Ok(Some(paths))) = rx.await {
-                                            if let Some(dir) = paths.into_iter().next() {
-                                                let _ = app_p2.update(cx, |s, cx| {
-                                                    s.add_project_path(dir, cx);
-                                                });
-                                            }
-                                        }
-                                    })
-                                    .detach();
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new(tr(locale, "sidebar.newTempChat"))
-                                .on_click(move |_, _, cx| {
-                                    app_t.update(cx, |s, cx| {
-                                        s.chats_section_collapsed = false;
-                                        s.start_new_temp_chat(cx);
-                                    });
-                                }),
-                        )
+                    .icon(IconName::Plus)
+                    .label(tr(locale, "sidebar.newSession"))
+                    .on_click(move |_, _, cx| {
+                        app_main.update(cx, |s, cx| {
+                            s.show_new_session_questionnaire = true;
+                            cx.notify();
+                        });
                     })
             }),
         )
@@ -925,8 +877,7 @@ fn populate_project_popup_menu(
             .icon(IconName::FolderClosed)
             .on_click(move |_, _, cx| {
                 app_arch.update(cx, |s, cx| {
-                    s.archived_projects.insert(p_arch.clone());
-                    cx.notify();
+                    s.archive_project(p_arch.clone(), cx);
                 });
             }),
     )
@@ -1042,7 +993,9 @@ fn build_session_row(
         .when_session_status_badge(running, unread, cx)
         .children(is_temp.then(|| {
             h_flex()
-                .id(("sess-temp-clock", id_prefix.1))
+                .id((id_prefix.0, id_prefix.1 * 100 + 8))
+                .w(px(14.))
+                .h(px(14.))
                 .flex_shrink_0()
                 .items_center()
                 .justify_center()
@@ -1052,7 +1005,7 @@ fn build_session_row(
                 .child(
                     Icon::new(crate::icons::ClockIcon)
                         .xsmall()
-                        .text_color(cx.theme().muted_foreground),
+                        .text_color(cx.theme().primary.opacity(0.85)),
                 )
         }))
         .child(

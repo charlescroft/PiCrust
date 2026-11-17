@@ -676,12 +676,52 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                             );
 
                             if let Some(err) = discovery_error {
+                                let app_dismiss_err = app_cards.clone();
                                 body = body.child(
-                                    div()
+                                    h_flex()
                                         .w_full()
-                                        .text_xs()
-                                        .text_color(cx.theme().danger)
-                                        .child(SharedString::from(err)),
+                                        .p_2p5()
+                                        .gap_2()
+                                        .items_start()
+                                        .justify_between()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().danger.opacity(0.35))
+                                        .bg(cx.theme().danger.opacity(0.08))
+                                        .child(
+                                            h_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .gap_2()
+                                                .items_start()
+                                                .child(
+                                                    Icon::new(IconName::TriangleAlert)
+                                                        .xsmall()
+                                                        .text_color(cx.theme().danger)
+                                                        .mt(px(2.)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .whitespace_normal()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().danger)
+                                                        .child(SharedString::from(err)),
+                                                ),
+                                        )
+                                        .child(
+                                            Button::new(("dismiss-discover-err", pidx))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Close)
+                                                .on_click(move |_, _, cx| {
+                                                    app_dismiss_err.update(cx, |s, cx| {
+                                                        s.discover_error = None;
+                                                        cx.notify();
+                                                    });
+                                                }),
+                                        ),
                                 );
                             }
 

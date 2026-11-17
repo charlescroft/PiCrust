@@ -1670,10 +1670,17 @@ fn render_assistant_row(
     let has_partial_output =
         has_answer_text || !msg.tool_calls.is_empty() || !msg.process_steps.is_empty();
     let is_agent_running_footer = app_state.read(cx).is_agent_running;
+    let has_incomplete_tool = msg.tool_calls.iter().any(|tc| tc.is_running);
+    let stop_reason_str = msg.stop_reason.as_deref().unwrap_or("");
+    let ended_abnormally = msg.error_message.is_some()
+        || matches!(stop_reason_str, "error" | "aborted" | "length" | "toolUse")
+        || has_incomplete_tool
+        || !has_answer_text;
     let can_continue_interrupted = !is_turn_live
         && !is_agent_running_footer
         && has_partial_output
-        && is_last_turn;
+        && is_last_turn
+        && ended_abnormally;
 
     if !is_turn_live && (has_answer_text || can_continue_interrupted) {
         let mut left_actions = h_flex().items_center().gap_2p5();

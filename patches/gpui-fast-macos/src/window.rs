@@ -466,6 +466,10 @@ unsafe fn build_window_class(name: &CStr, superclass: &AnyClass) -> *const AnyCl
             window_did_change_key_status as extern "C" fn(_, Sel, *mut AnyObject),
         );
         decl.add_method(
+            sel!(windowDidDeminiaturize:),
+            window_did_deminiaturize as extern "C" fn(_, Sel, *mut AnyObject),
+        );
+        decl.add_method(
             sel!(windowShouldClose:),
             window_should_close as extern "C" fn(_, Sel, *mut AnyObject) -> Bool,
         );
@@ -1830,6 +1834,9 @@ impl PlatformWindow for MacWindow {
             .spawn(async move {
                 if !closed.load(Ordering::Acquire) {
                     let window = unsafe { &*window.cast::<NSWindow>() };
+                    if window.isMiniaturized() {
+                        window.deminiaturize(None);
+                    }
                     if !window.isVisible() {
                         let view = unsafe { &*view.cast::<NSView>() };
                         view.setNeedsDisplay(true);
@@ -3086,12 +3093,42 @@ extern "C" fn window_did_change_occlusion_state(this: &AnyObject, _: Sel, _: *mu
     {
         lock.move_traffic_light();
         lock.start_display_link(&window_state);
+        let view = unsafe { &*lock.native_view.as_ptr().cast::<NSView>() };
+        view.setNeedsDisplay(true);
     } else {
         lock.stop_display_link();
     }
     drop(lock);
     // The only visibility source: AppKit posts this for covering, minimizing,
     // hiding, Space switches, and display sleep alike.
+    report_visibility(&window_state);
+}
+
+extern "C" fn window_did_deminiaturize(this: &AnyObject, _: Sel, _: *mut AnyObject) {
+    let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
+    let window_state = unsafe { get_window_state(this) };
+    let mut lock = window_state.lock();
+    lock.move_traffic_light();
+    let view = unsafe { &*lock.native_view.as_ptr().cast::<NSView>() };
+    view.setNeedsDisplay(true);
+    if let Some(mut callback) = lock.request_frame_callback.take() {
+        crate::fast::composition::set_presents_with_transaction(&mut lock, true);
+        lock.stop_display_link();
+        drop(lock);
+        callback(RequestFrameOptions {
+            signal_at,
+            signal_source: FrameRequestSource::NativeCallback,
+            ..Default::default()
+        });
+
+        let mut lock = window_state.lock();
+        lock.request_frame_callback = Some(callback);
+        crate::fast::composition::set_presents_with_transaction(&mut lock, false);
+        lock.start_display_link(&window_state);
+    } else {
+        lock.start_display_link(&window_state);
+        drop(lock);
+    }
     report_visibility(&window_state);
 }
 

@@ -11,7 +11,10 @@ use gpui_kit::component::questionnaire::{
 };
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
-use gpui_kit::{AppContext as _, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, px};
+use gpui_kit::{
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
+};
 use serde_json::{Map, Value, json};
 
 pub struct QuestionnaireView {
@@ -446,6 +449,239 @@ fn dialog_question_from_request(request: &ExtensionUiRequest) -> QuestionDefinit
         question: title,
         multi_select: false,
         options,
+    }
+}
+
+pub struct NewSessionQuestionnaireView {
+    app_state: Entity<AppState>,
+    locale: crate::i18n::AppLocale,
+}
+
+impl gpui_kit::Render for NewSessionQuestionnaireView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::client::types::WorkspaceKind;
+        use crate::i18n::tr;
+        use gpui_kit::component::Icon;
+
+        let app_close = self.app_state.clone();
+        let app_backdrop = self.app_state.clone();
+        let app_opt_chat = self.app_state.clone();
+        let app_opt_proj = self.app_state.clone();
+        let app_opt_temp = self.app_state.clone();
+        let locale = self.locale;
+
+        let option_card = |id: &'static str,
+                           icon: Icon,
+                           title: String,
+                           desc: String,
+                           cx: &gpui_kit::App| {
+            h_flex()
+                .id(id)
+                .w_full()
+                .px_3()
+                .py_2p5()
+                .gap_3()
+                .items_center()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .hover(|s| {
+                    s.bg(cx.theme().accent)
+                        .border_color(cx.theme().primary.opacity(0.6))
+                })
+                .cursor_pointer()
+                .child(
+                    h_flex()
+                        .w(px(30.))
+                        .h(px(30.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .bg(cx.theme().secondary)
+                        .child(icon),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_medium()
+                                .text_color(cx.theme().foreground)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .whitespace_normal()
+                                .child(desc),
+                        ),
+                )
+                .child(
+                    Icon::new(IconName::ChevronRight)
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                )
+        };
+
+        div()
+            .id("new-session-questionnaire-backdrop")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(cx.theme().background.opacity(0.65))
+            .on_scroll(|_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                app_backdrop.update(cx, |s, cx| {
+                    s.show_new_session_questionnaire = false;
+                    cx.notify();
+                });
+            })
+            .child(
+                v_flex()
+                    .id("new-session-questionnaire-card")
+                    .occlude()
+                    .w(px(460.))
+                    .max_w_full()
+                    .p_4()
+                    .gap_3()
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .shadow_lg()
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_scroll(|_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .child(tr(locale, "sidebar.newSessionPromptTitle")),
+                            )
+                            .child(
+                                Button::new("close-new-session-questionnaire")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .on_click(move |_, _, cx| {
+                                        app_close.update(cx, |s, cx| {
+                                            s.show_new_session_questionnaire = false;
+                                            cx.notify();
+                                        });
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(tr(locale, "sidebar.newSessionPromptQuestion")),
+                    )
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(
+                                option_card(
+                                    "new-sess-opt-standalone",
+                                    Icon::new(IconName::Plus).small().text_color(cx.theme().primary),
+                                    tr(locale, "sidebar.newStandaloneChat").to_string(),
+                                    tr(locale, "sidebar.newStandaloneChatDesc").to_string(),
+                                    cx,
+                                )
+                                .on_click(move |_, _, cx| {
+                                    app_opt_chat.update(cx, |s, cx| {
+                                        s.show_new_session_questionnaire = false;
+                                        s.chats_section_collapsed = false;
+                                        s.start_new_composer(WorkspaceKind::Chat, cx);
+                                    });
+                                }),
+                            )
+                            .child(
+                                option_card(
+                                    "new-sess-opt-project",
+                                    Icon::new(IconName::FolderOpen).small().text_color(cx.theme().primary),
+                                    tr(locale, "sidebar.newSubproject").to_string(),
+                                    tr(locale, "sidebar.newSubprojectDesc").to_string(),
+                                    cx,
+                                )
+                                .on_click(move |_, _, cx| {
+                                    app_opt_proj.update(cx, |s, cx| {
+                                        s.show_new_session_questionnaire = false;
+                                        cx.notify();
+                                    });
+                                    let prompt_text =
+                                        tr(locale, "sidebar.selectProjectFolder").to_string();
+                                    let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+                                        files: false,
+                                        directories: true,
+                                        multiple: false,
+                                        prompt: Some(prompt_text.into()),
+                                    });
+                                    let app_p = app_opt_proj.clone();
+                                    cx.spawn(async move |cx| {
+                                        if let Ok(Ok(Some(paths))) = rx.await {
+                                            if let Some(dir) = paths.into_iter().next() {
+                                                let _ = app_p.update(cx, |s, cx| {
+                                                    s.add_project_path(dir, cx);
+                                                });
+                                            }
+                                        }
+                                    })
+                                    .detach();
+                                }),
+                            )
+                            .child(
+                                option_card(
+                                    "new-sess-opt-temp",
+                                    Icon::new(crate::icons::ClockIcon).small().text_color(cx.theme().primary),
+                                    tr(locale, "sidebar.newTempChat").to_string(),
+                                    tr(locale, "sidebar.newTempChatDesc").to_string(),
+                                    cx,
+                                )
+                                .on_click(move |_, _, cx| {
+                                    app_opt_temp.update(cx, |s, cx| {
+                                        s.show_new_session_questionnaire = false;
+                                        s.chats_section_collapsed = false;
+                                        s.start_new_temp_chat(cx);
+                                    });
+                                }),
+                            ),
+                    ),
+            )
+    }
+}
+
+impl NewSessionQuestionnaireView {
+    pub fn new(
+        app_state: Entity<AppState>,
+        locale: crate::i18n::AppLocale,
+        _cx: &mut Context<Self>,
+    ) -> Self {
+        Self { app_state, locale }
+    }
+
+    pub fn locale(&self) -> crate::i18n::AppLocale {
+        self.locale
     }
 }
 

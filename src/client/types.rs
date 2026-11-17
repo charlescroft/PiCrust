@@ -948,6 +948,14 @@ pub struct AgyLinkSettings {
     pub image_retries: u32,
     #[serde(default)]
     pub image_output_dir: String,
+    #[serde(default)]
+    pub auto_compact_override: u64,
+    #[serde(default = "default_agy_effective_compact_limit")]
+    pub effective_compact_limit: u64,
+    #[serde(default = "default_agy_model_api_max_retries")]
+    pub model_api_max_retries: u32,
+    #[serde(default = "default_agy_slim_prompt_rules")]
+    pub slim_prompt_rules: bool,
 }
 
 fn default_agy_mode() -> String {
@@ -968,6 +976,18 @@ fn default_agy_image_timeout_ms() -> u64 {
 
 fn default_agy_image_retries() -> u32 {
     1
+}
+
+fn default_agy_effective_compact_limit() -> u64 {
+    256_000
+}
+
+fn default_agy_model_api_max_retries() -> u32 {
+    3
+}
+
+fn default_agy_slim_prompt_rules() -> bool {
+    true
 }
 
 impl Default for AgyLinkSettings {
@@ -991,6 +1011,10 @@ impl Default for AgyLinkSettings {
             image_timeout_ms: default_agy_image_timeout_ms(),
             image_retries: default_agy_image_retries(),
             image_output_dir: String::new(),
+            auto_compact_override: 0,
+            effective_compact_limit: default_agy_effective_compact_limit(),
+            model_api_max_retries: default_agy_model_api_max_retries(),
+            slim_prompt_rules: default_agy_slim_prompt_rules(),
         }
     }
 }

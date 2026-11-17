@@ -142,6 +142,8 @@ pub struct AppState {
     pub project_order: Vec<String>,
     pub projects_section_collapsed: bool,
     pub chats_section_collapsed: bool,
+    pub show_new_session_questionnaire: bool,
+    pub last_sidecar_refresh: std::time::Instant,
     pub renaming_session_id: Option<String>,
     pub active_session_id: Option<String>,
     pub messages: Vec<ChatMessage>,
@@ -294,8 +296,17 @@ impl AppState {
         }
         let temp_chat_ids = crate::client::local_store::load_active_temp_chat_ids(now_ms);
 
+        let chat_prefs = crate::app_settings::load_app_settings().chat;
+        let archived_projects: HashSet<String> = chat_prefs.archived_projects.iter().cloned().collect();
+        let archived_session_ids: HashSet<String> = chat_prefs.archived_session_ids.iter().cloned().collect();
+
         let mut cwd = user_home();
-        let sessions = scan_local_sessions(&pi_sessions_root());
+        let mut sessions = scan_local_sessions(&pi_sessions_root());
+        for s in &mut sessions {
+            if archived_session_ids.contains(&s.id) {
+                s.archived = true;
+            }
+        }
         let mut ctrl = SessionController::default();
 
         let mut messages = Vec::new();
@@ -472,12 +483,14 @@ impl AppState {
             has_earlier_messages: false,
             is_loading_earlier: false,
             collapsed_projects: HashSet::new(),
-            archived_projects: HashSet::new(),
-            archived_session_ids: HashSet::new(),
+            archived_projects,
+            archived_session_ids,
             extra_projects: Vec::new(),
-            project_order: crate::app_settings::load_app_settings().chat.project_order,
+            project_order: chat_prefs.project_order,
             projects_section_collapsed: false,
             chats_section_collapsed: false,
+            show_new_session_questionnaire: false,
+            last_sidecar_refresh: std::time::Instant::now(),
             renaming_session_id: None,
             active_session_id,
             messages,
@@ -1046,16 +1059,54 @@ impl AppState {
         .detach();
     }
 
+    pub fn sync_archived_flags(&mut self) {
+        for sess in &mut self.sessions {
+            sess.archived = self.archived_session_ids.contains(&sess.id);
+        }
+    }
+
     pub fn toggle_archive_session(&mut self, session_id: String, cx: &mut Context<Self>) {
-        if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session_id) {
-            sess.archived = !sess.archived;
-        }
-        if self.archived_session_ids.contains(&session_id) {
-            self.archived_session_ids.remove(&session_id);
+        let currently_archived = self.archived_session_ids.contains(&session_id)
+            || self.sessions.iter().any(|s| s.id == session_id && s.archived);
+        let now_archived = !currently_archived;
+        if now_archived {
+            self.archived_session_ids.insert(session_id.clone());
         } else {
-            self.archived_session_ids.insert(session_id);
+            self.archived_session_ids.remove(&session_id);
         }
+        if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == session_id) {
+            sess.archived = now_archived;
+        }
+        let ids: Vec<String> = self.archived_session_ids.iter().cloned().collect();
+        crate::app_settings::update_app_settings(|s| {
+            s.chat.archived_session_ids = ids;
+        });
         cx.notify();
+    }
+
+    pub fn archive_project(&mut self, project_name: String, cx: &mut Context<Self>) {
+        if self.archived_projects.insert(project_name) {
+            let projects: Vec<String> = self.archived_projects.iter().cloned().collect();
+            crate::app_settings::update_app_settings(|s| {
+                s.chat.archived_projects = projects;
+            });
+            cx.notify();
+        }
+    }
+
+    pub fn on_window_activated(&mut self, cx: &mut Context<Self>) {
+        if self.last_sidecar_refresh.elapsed() >= std::time::Duration::from_secs(15) {
+            self.refresh_from_sidecar(cx);
+        } else if self.sidecar_connected {
+            if !self.running_events_subscribed {
+                self.subscribe_running_events(cx);
+            }
+            if let Some(sid) = self.active_session_id.clone() {
+                if self.controller.sse_task.is_none() {
+                    self.connect_session_sse(sid, cx);
+                }
+            }
+        }
     }
 
     pub fn reorder_project_group(&mut self, from_name: &str, to_name: &str, cx: &mut Context<Self>) {
@@ -1598,6 +1649,7 @@ impl AppState {
                 let scanned = scan_local_sessions(&pi_sessions_root());
                 if !scanned.is_empty() {
                     self.sessions = scanned;
+                    self.sync_archived_flags();
                 }
                 self.select_session(new_id, cx);
             }
@@ -1894,6 +1946,7 @@ impl AppState {
 
             let _ = entity.update(cx, |this, cx| {
                 this.sidecar_connected = true;
+                this.last_sidecar_refresh = std::time::Instant::now();
                 this.subscribe_running_events(cx);
                 if let Some(val) = sessions_val {
                     if let Some(arr) = val.get("sessions").and_then(Value::as_array) {
@@ -1905,6 +1958,7 @@ impl AppState {
                         // empty one: otherwise deleted sessions (and the old
                         // demo workspace) survived in the sidebar forever.
                         this.sessions = parsed;
+                        this.sync_archived_flags();
                         this.cleanup_expired_temp_chats(cx);
                     }
                     if let Some(ids) = val.get("runningSessionIds").and_then(Value::as_array) {
@@ -2102,12 +2156,21 @@ impl AppState {
             .as_ref()
             .map(|s| s.settings.hidden_models.iter().map(|id| id.trim()).collect())
             .unwrap_or_default();
-        if hidden.is_empty() {
-            return self.models.clone();
-        }
         self.models
             .iter()
-            .filter(|m| !(m.provider == "agy-link" && hidden.contains(m.id.as_str())))
+            .filter(|m| {
+                if m.provider == "agy-link" && hidden.contains(m.id.as_str()) {
+                    return false;
+                }
+                if let Some(cfg_prov) = self
+                    .configured_providers
+                    .iter()
+                    .find(|p| p.id == m.provider)
+                {
+                    return cfg_prov.models.iter().any(|cm| cm.id == m.id);
+                }
+                true
+            })
             .cloned()
             .collect()
     }
@@ -2954,6 +3017,9 @@ impl AppState {
             let _ = entity.update(cx, |s, cx| {
                 s.expanded_configured_providers.remove(&provider_id);
                 s.settings_deleting_keys.remove(&del_key);
+                if s.discover_error.as_ref().is_some_and(|(pid, _)| pid == &provider_id) {
+                    s.discover_error = None;
+                }
                 for prov in &mut s.enabled_models_overview.providers {
                     if prov.id == provider_id {
                         for m in &mut prov.models {
@@ -2962,10 +3028,10 @@ impl AppState {
                         prov.enabled_count = 0;
                     }
                 }
-                for m in &mut s.models {
-                    if m.provider == provider_id {
-                        m.enabled = Some(false);
-                    }
+                s.models.retain(|m| m.provider != provider_id);
+                if s.selected_model.as_ref().is_some_and(|m| m.provider == provider_id) {
+                    s.selected_model = s.models.first().cloned();
+                    s.clamp_thinking_level_to_model();
                 }
                 s.apply_models_config_response(&local_cfg);
                 if sidecar_connected {
@@ -3005,12 +3071,47 @@ impl AppState {
             arr.retain(|m| m.get("id").and_then(Value::as_str) != Some(model_id.as_str()));
         }
         let _ = crate::client::local_store::save_models_config_local(&config);
+        let model_ref = format!("{provider_id}/{model_id}");
+        let _ = crate::client::local_store::update_enabled_models_local(&json!({
+            "op": "toggle",
+            "modelRef": model_ref,
+            "enabled": false,
+        }));
+        if self.discover_error.as_ref().is_some_and(|(pid, _)| pid == &provider_id) {
+            self.discover_error = None;
+        }
+        self.models
+            .retain(|m| !(m.provider == provider_id && m.id == model_id));
+        if self
+            .selected_model
+            .as_ref()
+            .is_some_and(|m| m.provider == provider_id && m.id == model_id)
+        {
+            self.selected_model = self.models.first().cloned();
+            self.clamp_thinking_level_to_model();
+        }
+        for prov in &mut self.enabled_models_overview.providers {
+            if prov.id == provider_id {
+                prov.models.retain(|m| m.id != model_id);
+                prov.enabled_count = prov.models.iter().filter(|m| m.enabled).count();
+            }
+        }
         self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
         if self.sidecar_connected {
             let client = self.client.clone();
             let entity = cx.entity().clone();
+            let cwd_str = self.active_cwd.to_string_lossy().into_owned();
             cx.spawn(async move |_, cx| {
                 let _ = client.put_models_config(config).await;
+                let _ = client
+                    .set_enabled_model(json!({
+                        "op": "toggle",
+                        "modelRef": model_ref,
+                        "enabled": false,
+                        "cwd": cwd_str,
+                    }))
+                    .await;
+                let _ = client.refresh_model_catalog().await;
                 let _ = entity.update(cx, |s, cx| {
                     s.settings_deleting_keys.remove(&del_key);
                     s.refresh_from_sidecar(cx);
@@ -3963,8 +4064,12 @@ impl AppState {
             let prov = m_obj.get("provider").and_then(Value::as_str);
             let mid = m_obj.get("id").and_then(Value::as_str);
             if let (Some(p), Some(id)) = (prov, mid) {
-                if let Some(found) = self.models.iter().find(|m| m.provider == p && m.id == id) {
-                    self.selected_model = Some(found.clone());
+                if let Some(found) = self
+                    .visible_picker_models()
+                    .into_iter()
+                    .find(|m| m.provider == p && m.id == id)
+                {
+                    self.selected_model = Some(found);
                 }
             }
         }
@@ -4171,6 +4276,7 @@ impl AppState {
                                                 if !parsed.is_empty() {
                                                     let _ = e2.update(cx, |s, cx| {
                                                         s.sessions = parsed;
+                                                        s.sync_archived_flags();
                                                         cx.notify();
                                                     });
                                                 }
@@ -4291,7 +4397,8 @@ impl AppState {
     }
 
     pub fn is_session_temp_chat(&self, sid: &str) -> bool {
-        self.temp_chat_ids.contains(sid)
+        (self.active_is_temp_chat && self.active_session_id.as_deref() == Some(sid))
+            || self.temp_chat_ids.contains(sid)
             || self.sessions.iter().any(|s| {
                 s.id == sid
                     && s.cwd.as_deref().is_some_and(|c| {
@@ -4466,7 +4573,11 @@ impl AppState {
 
             let (extracted_model, extracted_thinking) = extract_model_and_thinking_from_jsonl(p);
             if let Some((prov, mid)) = extracted_model {
-                if let Some(found) = self.models.iter().find(|m| m.provider == prov && m.id == mid).cloned() {
+                if let Some(found) = self
+                    .visible_picker_models()
+                    .into_iter()
+                    .find(|m| m.provider == prov && m.id == mid)
+                {
                     self.selected_model = Some(found);
                 }
             }
@@ -4707,9 +4818,13 @@ impl AppState {
                 if self.suppress_next_prompt_reload {
                     return;
                 }
+                for m in &mut self.messages {
+                    if m.role == MessageRole::Assistant {
+                        m.is_streaming = false;
+                    }
+                }
                 if let Some(last) = self.messages.last_mut() {
                     if last.role == MessageRole::Assistant {
-                        last.is_streaming = false;
                         if last.timestamp.as_ref() == "streaming" || last.timestamp.is_empty() {
                             last.timestamp = current_local_hhmm();
                         }
@@ -4760,9 +4875,21 @@ impl AppState {
                 self.continuing_prefix_text.clear();
         self.continuing_msg_id = None;
         self.continuing_prefix_text.clear();
+                for m in &mut self.messages {
+                    if m.role == MessageRole::Assistant {
+                        m.is_streaming = false;
+                        for tc in &mut m.tool_calls {
+                            tc.is_running = false;
+                        }
+                        for step in &mut m.process_steps {
+                            if let ProcessStep::ToolCall(tc) = step {
+                                tc.is_running = false;
+                            }
+                        }
+                    }
+                }
                 if let Some(last) = self.messages.last_mut() {
                     if last.role == MessageRole::Assistant {
-                        last.is_streaming = false;
                         if last.timestamp.as_ref() == "streaming" || last.timestamp.is_empty() {
                             last.timestamp = current_local_hhmm();
                         }
@@ -4963,6 +5090,9 @@ impl AppState {
                     }
                 }
 
+                for m in &mut self.messages {
+                    m.is_streaming = false;
+                }
                 let id = self.controller.alloc_msg_id();
                 self.messages.push(ChatMessage {
                     id,
@@ -5788,6 +5918,9 @@ impl AppState {
                         return;
                     }
                 }
+                for m in &mut self.messages {
+                    m.is_streaming = false;
+                }
                 let id = self.controller.alloc_msg_id();
                 self.messages.push(ChatMessage {
                     id,
@@ -6231,6 +6364,7 @@ impl AppState {
                 let scanned = scan_local_sessions(&pi_sessions_root());
                 if !scanned.is_empty() {
                     self.sessions = scanned;
+                    self.sync_archived_flags();
                 }
                 self.select_session(new_id, cx);
             }
@@ -7102,6 +7236,7 @@ impl AppState {
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_initial_page = 0;
         self.settings_open_nonce = self.settings_open_nonce.wrapping_add(1);
+        self.discover_error = None;
         self.settings_open = true;
         self.refresh_settings_data(cx);
         cx.notify();
@@ -7112,6 +7247,7 @@ impl AppState {
     pub fn open_model_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_initial_page = 1;
         self.settings_open_nonce = self.settings_open_nonce.wrapping_add(1);
+        self.discover_error = None;
         self.settings_open = true;
         self.refresh_settings_data(cx);
         cx.notify();

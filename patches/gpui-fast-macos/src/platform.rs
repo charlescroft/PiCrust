@@ -231,6 +231,16 @@ impl MacPlatform {
             Arc::new(gpui::NoopTextSystem::new())
         };
 
+        if !headless {
+            let reason = NSString::from_str("Keep desktop client timers, SSE streams, and UI responsive");
+            let activity = NSProcessInfo::processInfo()
+                .beginActivityWithOptions_reason(
+                    NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
+                    &reason,
+                );
+            std::mem::forget(activity);
+        }
+
         let keyboard_layout = MacKeyboardLayout::new();
         let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
 

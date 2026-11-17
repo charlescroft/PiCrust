@@ -1683,6 +1683,109 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
             .description("Prevent agy CLI background auto-updater from spawning extra child processes."),
         );
 
+    let app_compact_r = app_state.clone();
+    let app_compact_w = app_state.clone();
+    let app_retry_r = app_state.clone();
+    let app_retry_w = app_state.clone();
+    let app_slim_r = app_state.clone();
+    let app_slim_w = app_state.clone();
+
+    let compact_options = vec![
+        (SharedString::from("default"), SharedString::from("Default (256K)")),
+        (SharedString::from("512k"), SharedString::from("512K")),
+        (SharedString::from("850k"), SharedString::from("850K")),
+        (SharedString::from("900k"), SharedString::from("900K (Recommended)")),
+        (SharedString::from("1m"), SharedString::from("1M")),
+    ];
+
+    let api_retry_options = vec![
+        (SharedString::from("0"), SharedString::from("0 (agy default)")),
+        (SharedString::from("1"), SharedString::from("1")),
+        (SharedString::from("3"), SharedString::from("3 (Recommended)")),
+        (SharedString::from("5"), SharedString::from("5")),
+        (SharedString::from("8"), SharedString::from("8")),
+        (SharedString::from("10"), SharedString::from("10")),
+    ];
+
+    let agy_cli_group = SettingGroup::new()
+        .title("agy-cli settings")
+        .item(
+            SettingItem::new(
+                "Auto-Compact Threshold",
+                SettingField::dropdown(
+                    compact_options,
+                    move |cx: &App| {
+                        let ov = app_compact_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.auto_compact_override)
+                            .unwrap_or(0);
+                        let key = match ov {
+                            0 => "default",
+                            512_000 => "512k",
+                            850_000 => "850k",
+                            900_000 => "900k",
+                            1_000_000 => "1m",
+                            _ => "default",
+                        };
+                        SharedString::from(key)
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_compact_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy compact-limit {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Override agy's internal 256K auto-compaction budget via AGY_CLI_AUTO_COMPACT_OVERRIDE (also updates Pi's reported context window)."),
+        )
+        .item(
+            SettingItem::new(
+                "Model API Max Retries",
+                SettingField::dropdown(
+                    api_retry_options,
+                    move |cx: &App| {
+                        let r = app_retry_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.model_api_max_retries)
+                            .unwrap_or(3);
+                        SharedString::from(r.to_string())
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_retry_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy net retries {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Inject AGY_CLI_MODEL_API_MAX_RETRIES to improve resilience against transient network failures."),
+        )
+        .item(
+            SettingItem::new(
+                "Slim Execution Guardrails",
+                SettingField::switch(
+                    move |cx: &App| {
+                        app_slim_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.slim_prompt_rules)
+                            .unwrap_or(true)
+                    },
+                    move |val: bool, cx: &mut App| {
+                        let cmd = if val { "/agy slim on" } else { "/agy slim off" };
+                        app_slim_w.update(cx, |s, cx| s.send_agy_command(cmd.to_string(), cx));
+                    },
+                ),
+            )
+            .description("Pass --disable-slash-commands in print mode and prepend concise execution guardrails."),
+        );
+
     SettingPage::new("Antigravity")
         .icon(IconName::Bot)
         .default_open(true)
@@ -1692,4 +1795,5 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
         .group(visibility_group)
         .group(image_group)
         .group(exec_group)
+        .group(agy_cli_group)
 }

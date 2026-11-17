@@ -29,7 +29,7 @@ use std::borrow::Cow;
 
 // Icons this client uses that are absent from the component's default set:
 // the asset source only serves what these lists embed.
-icon_assets!(ExtraIcons, [Zap, Shield, Database, Pencil, Trash, AtSign, LoaderCircle, GitBranch, Archive]);
+icon_assets!(ExtraIcons, [Zap, Shield, Database, Pencil, Trash, AtSign, LoaderCircle, GitBranch, Archive, Clock, Play]);
 
 struct PiAssets;
 
@@ -97,8 +97,78 @@ fn save_window_bounds(bounds: WindowBounds) {
     });
 }
 
+fn open_main_window(
+    app_state: gpui_kit::Entity<AppState>,
+    cx: &mut gpui_kit::App,
+) -> gpui_kit::AnyWindowHandle {
+    let window_bounds = load_window_bounds();
+    let options = WindowOptions {
+        window_bounds: Some(window_bounds),
+        window_min_size: Some(size(px(760.), px(520.))),
+        ..TitleBar::window_options()
+    };
+
+    let (window_handle, _workspace) = open_window(options, cx, |window, cx| {
+        let ui_sz = app_state.read(cx).ui_font_size.clamp(5.0, 21.0);
+        window.set_rem_size(px(ui_sz));
+        let is_system_dark = matches!(
+            window.appearance(),
+            gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+        );
+        app_state.update(cx, |s, cx| {
+            if s.theme_mode == "system" && s.dark_mode != is_system_dark {
+                s.dark_mode = is_system_dark;
+                themes::apply_appearance(
+                    s.dark_mode,
+                    &s.light_theme_name,
+                    &s.dark_theme_name,
+                    cx,
+                );
+            }
+        });
+
+        let state = app_state.clone();
+        window.on_window_should_close(cx, |window, _| {
+            save_window_bounds(window.window_bounds());
+            true
+        });
+        cx.new(|cx| {
+            cx.observe_window_bounds(window, |_, win, _| {
+                save_window_bounds(win.window_bounds());
+            })
+            .detach();
+            let act_state = state.clone();
+            cx.observe_window_activation(window, move |_, win, cx| {
+                if win.is_window_active() {
+                    act_state.update(cx, |s, cx| {
+                        s.on_window_activated(cx);
+                    });
+                }
+            })
+            .detach();
+            WorkspaceView::new(state, window, cx)
+        })
+    })
+    .expect("failed to open PiCrust GPUI window");
+    window_handle
+}
+
 fn main() {
-    application().with_assets(PiAssets).run(|cx| {
+    let app = application().with_assets(PiAssets);
+    app.on_reopen(|cx| {
+        if let Some(win) = cx.windows().into_iter().next() {
+            let _ = win.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+        } else {
+            let app_state = cx.new(|cx| AppState::new(cx));
+            let wh = open_main_window(app_state, cx);
+            let _ = wh.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+        }
+    });
+    app.run(|cx| {
         init(cx);
         #[cfg(target_os = "windows")]
         cx.set_app_identity("works.earendil.picrust", "PiCrust");
@@ -129,52 +199,11 @@ fn main() {
         ]);
 
         let app_state = cx.new(|cx| AppState::new(cx));
-        let window_bounds = load_window_bounds();
-
-        let options = WindowOptions {
-            window_bounds: Some(window_bounds),
-            window_min_size: Some(size(px(760.), px(520.))),
-            ..TitleBar::window_options()
-        };
-
-        let (window_handle, _workspace) = open_window(options, cx, |window, cx| {
-            let ui_sz = app_state.read(cx).ui_font_size.clamp(5.0, 21.0);
-            window.set_rem_size(px(ui_sz));
-            let is_system_dark = matches!(
-                window.appearance(),
-                gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
-            );
-            app_state.update(cx, |s, cx| {
-                if s.theme_mode == "system" && s.dark_mode != is_system_dark {
-                    s.dark_mode = is_system_dark;
-                    themes::apply_appearance(
-                        s.dark_mode,
-                        &s.light_theme_name,
-                        &s.dark_theme_name,
-                        cx,
-                    );
-                }
-            });
-
-            let state = app_state.clone();
-            window.on_window_should_close(cx, |window, _| {
-                save_window_bounds(window.window_bounds());
-                true
-            });
-            cx.new(|cx| {
-                cx.observe_window_bounds(window, |_, win, _| {
-                    save_window_bounds(win.window_bounds());
-                })
-                .detach();
-                WorkspaceView::new(state, window, cx)
-            })
-        })
-        .expect("failed to open PiCrust GPUI window");
+        let window_handle = open_main_window(app_state, cx);
 
         cx.on_app_quit({
-            let wh = window_handle;
             move |cx| {
-                let _ = wh.update(cx, |_, window, _| {
+                let _ = window_handle.update(cx, |_, window, _| {
                     save_window_bounds(window.window_bounds());
                 });
                 async {}

@@ -563,6 +563,9 @@ impl ChatPanel {
             self.scroller.update(cx, |s, cx| {
                 if s.is_scrolled_up() {
                     let _ = s.splice(new_count..old_count, 0, cx);
+                    if new_count > 0 {
+                        let _ = s.remeasure_items(new_count - 1..new_count, cx);
+                    }
                 } else {
                     s.reset(new_count, cx);
                 }

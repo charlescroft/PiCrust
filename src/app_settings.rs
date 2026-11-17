@@ -123,6 +123,10 @@ pub struct ChatSettings {
     pub todos_hidden: bool,
     #[serde(default)]
     pub project_order: Vec<String>,
+    #[serde(default)]
+    pub archived_session_ids: Vec<String>,
+    #[serde(default)]
+    pub archived_projects: Vec<String>,
 }
 
 impl Default for ChatSettings {
@@ -135,6 +139,8 @@ impl Default for ChatSettings {
             chat_content_width: default_chat_content_width(),
             todos_hidden: false,
             project_order: Vec::new(),
+            archived_session_ids: Vec::new(),
+            archived_projects: Vec::new(),
         }
     }
 }

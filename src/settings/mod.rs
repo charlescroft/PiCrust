@@ -184,6 +184,7 @@ pub fn render_settings_overlay(
                 if !s.settings_busy {
                     s.settings_open = false;
                     s.settings_add_kind = None;
+                    s.discover_error = None;
                     cx.notify();
                 }
             });
