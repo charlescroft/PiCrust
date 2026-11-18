@@ -127,6 +127,14 @@ pub struct ChatSettings {
     pub archived_session_ids: Vec<String>,
     #[serde(default)]
     pub archived_projects: Vec<String>,
+    #[serde(default)]
+    pub chats_section_collapsed: bool,
+    #[serde(default)]
+    pub projects_section_collapsed: bool,
+    #[serde(default)]
+    pub archived_section_collapsed: bool,
+    #[serde(default)]
+    pub collapsed_projects: Vec<String>,
 }
 
 impl Default for ChatSettings {
@@ -141,6 +149,10 @@ impl Default for ChatSettings {
             project_order: Vec::new(),
             archived_session_ids: Vec::new(),
             archived_projects: Vec::new(),
+            chats_section_collapsed: false,
+            projects_section_collapsed: false,
+            archived_section_collapsed: false,
+            collapsed_projects: Vec::new(),
         }
     }
 }

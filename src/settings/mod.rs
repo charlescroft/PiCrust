@@ -76,6 +76,7 @@ pub fn config_path_field(
                         app_open.update(cx, |s, cx| {
                             s.open_file(open_path.clone(), cx);
                             s.settings_open = false;
+                            s.discover_error = None;
                         });
                     } else if let Some(parent) = open_path.parent() {
                         let _ = open::that(parent);
@@ -107,6 +108,7 @@ pub fn config_path_field(
                                 let _ = app_b.update(cx, |s, cx| {
                                     s.open_file(p, cx);
                                     s.settings_open = false;
+                                    s.discover_error = None;
                                 });
                             }
                         }
@@ -234,6 +236,7 @@ pub fn render_settings_overlay(
                                         if !s.settings_busy {
                                             s.settings_open = false;
                                             s.settings_add_kind = None;
+                                            s.discover_error = None;
                                             cx.notify();
                                         }
                                     });
@@ -291,6 +294,7 @@ pub fn render_settings_overlay(
                                     // Save applies pending edits and reloads settings in place:
                                     // the dialog stays open so further changes need no reopen.
                                     app_footer_save.update(cx, |s, cx| {
+                                        s.discover_error = None;
                                         s.refresh_settings_data(cx);
                                         s.refresh_from_sidecar(cx);
                                         s.settings_saved_flash = true;

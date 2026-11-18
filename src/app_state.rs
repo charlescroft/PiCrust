@@ -61,6 +61,14 @@ pub enum WorkspacePage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Success,
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RightPanelTab {
     Artifact,
     Files,
@@ -68,6 +76,7 @@ pub enum RightPanelTab {
     Terminal,
     Inspector,
     GitGraph,
+    Workflows,
 }
 
 pub struct AppState {
@@ -142,9 +151,15 @@ pub struct AppState {
     pub project_order: Vec<String>,
     pub projects_section_collapsed: bool,
     pub chats_section_collapsed: bool,
+    pub archived_section_collapsed: bool,
+    pub toast_message: Option<SharedString>,
+    pub toast_kind: ToastKind,
+    pub toast_seq: u64,
     pub show_new_session_questionnaire: bool,
     pub last_sidecar_refresh: std::time::Instant,
     pub renaming_session_id: Option<String>,
+    pub forking_entry_id: Option<String>,
+    pub pending_async_ops: std::collections::HashSet<String>,
     pub active_session_id: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub branch_siblings: Vec<BranchSibling>,
@@ -168,6 +183,8 @@ pub struct AppState {
     pub discovering_provider_id: Option<String>,
     /// Last model-discovery failure, keyed by provider id (`None` = clear).
     pub discover_error: Option<(String, String)>,
+    pub discover_error_seq: u64,
+    pub deleted_model_refs: HashSet<(String, String)>,
     pub auth_providers: Vec<(String, String, bool)>,
     pub oauth_providers: Vec<(String, String, bool)>,
     pub running_events_subscribed: bool,
@@ -225,11 +242,14 @@ pub struct AppState {
     pub retry_status: Option<SharedString>,
     pub draft_restore_text: Option<String>,
     pub pending_composer_mention: Option<String>,
+    pub pending_composer_paste: Option<String>,
     #[allow(dead_code)]
     pub status_banner: Option<SharedString>,
     pub agy_link_state: Option<AgyLinkState>,
     pub agy_link_status_text: Option<String>,
     pub agy_link_modal_open: bool,
+    pub notes_modal_open: bool,
+    pub credentials_modal_open: bool,
     pub agy_link_modal_tab: usize,
     pub agy_link_loading: bool,
     pub agy_link_copy_auth_url_pending: bool,
@@ -482,16 +502,22 @@ impl AppState {
             artifacts_type_filter: "all".to_string(),
             has_earlier_messages: false,
             is_loading_earlier: false,
-            collapsed_projects: HashSet::new(),
+            collapsed_projects: chat_prefs.collapsed_projects.iter().cloned().collect(),
             archived_projects,
             archived_session_ids,
             extra_projects: Vec::new(),
             project_order: chat_prefs.project_order,
-            projects_section_collapsed: false,
-            chats_section_collapsed: false,
+            projects_section_collapsed: chat_prefs.projects_section_collapsed,
+            chats_section_collapsed: chat_prefs.chats_section_collapsed,
+            archived_section_collapsed: chat_prefs.archived_section_collapsed,
+            toast_message: None,
+            toast_kind: ToastKind::Info,
+            toast_seq: 0,
             show_new_session_questionnaire: false,
             last_sidecar_refresh: std::time::Instant::now(),
             renaming_session_id: None,
+            forking_entry_id: None,
+            pending_async_ops: std::collections::HashSet::new(),
             active_session_id,
             messages,
             branch_siblings: initial_siblings,
@@ -509,6 +535,8 @@ impl AppState {
             expanded_configured_providers: HashSet::new(),
             discovering_provider_id: None,
             discover_error: None,
+            discover_error_seq: 0,
+            deleted_model_refs: HashSet::new(),
             auth_providers: Vec::new(),
             oauth_providers: Vec::new(),
             running_events_subscribed: false,
@@ -552,10 +580,13 @@ impl AppState {
             retry_status: None,
             draft_restore_text: None,
             pending_composer_mention: None,
+            pending_composer_paste: None,
             status_banner: None,
             agy_link_state: None,
             agy_link_status_text: None,
             agy_link_modal_open: false,
+            notes_modal_open: false,
+            credentials_modal_open: false,
             agy_link_modal_tab: 0,
             agy_link_loading: false,
             agy_link_copy_auth_url_pending: false,
@@ -1081,7 +1112,15 @@ impl AppState {
         crate::app_settings::update_app_settings(|s| {
             s.chat.archived_session_ids = ids;
         });
-        cx.notify();
+        let msg = crate::i18n::tr(
+            self.locale,
+            if now_archived {
+                "toast.sessionArchived"
+            } else {
+                "toast.sessionUnarchived"
+            },
+        );
+        self.show_success_toast(msg, cx);
     }
 
     pub fn archive_project(&mut self, project_name: String, cx: &mut Context<Self>) {
@@ -1090,7 +1129,8 @@ impl AppState {
             crate::app_settings::update_app_settings(|s| {
                 s.chat.archived_projects = projects;
             });
-            cx.notify();
+            let msg = crate::i18n::tr(self.locale, "toast.projectArchived");
+            self.show_success_toast(msg, cx);
         }
     }
 
@@ -1149,16 +1189,31 @@ impl AppState {
         self.start_new_composer(WorkspaceKind::Project, cx);
     }
 
+    pub fn save_sidebar_collapse_state(&self) {
+        let chats = self.chats_section_collapsed;
+        let projects = self.projects_section_collapsed;
+        let archived = self.archived_section_collapsed;
+        let collapsed: Vec<String> = self.collapsed_projects.iter().cloned().collect();
+        crate::app_settings::update_app_settings(|s| {
+            s.chat.chats_section_collapsed = chats;
+            s.chat.projects_section_collapsed = projects;
+            s.chat.archived_section_collapsed = archived;
+            s.chat.collapsed_projects = collapsed;
+        });
+    }
+
     pub fn collapse_all_projects(&mut self, cx: &mut Context<Self>) {
         let keys: Vec<String> = self.grouped_project_sessions().keys().cloned().collect();
         for k in keys {
             self.collapsed_projects.insert(k);
         }
+        self.save_sidebar_collapse_state();
         cx.notify();
     }
 
     pub fn expand_all_projects(&mut self, cx: &mut Context<Self>) {
         self.collapsed_projects.clear();
+        self.save_sidebar_collapse_state();
         cx.notify();
     }
 
@@ -1642,7 +1697,12 @@ impl AppState {
         entry_id: String,
         cx: &mut Context<Self>,
     ) {
+        if self.forking_entry_id.is_some() {
+            return;
+        }
         if !self.sidecar_connected {
+            self.forking_entry_id = Some(entry_id.clone());
+            cx.notify();
             if let Ok((new_id, _path)) =
                 crate::client::local_store::fork_session_local(&id, Some(&entry_id))
             {
@@ -1652,14 +1712,22 @@ impl AppState {
                     self.sync_archived_flags();
                 }
                 self.select_session(new_id, cx);
+                let msg = crate::i18n::tr(self.locale, "toast.sessionForked");
+                self.show_success_toast(msg, cx);
             }
+            self.forking_entry_id = None;
+            cx.notify();
             return;
         }
+        self.forking_entry_id = Some(entry_id.clone());
+        cx.notify();
         let client = self.client.clone();
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
-            if let Ok(val) = client.fork_session(&id, &entry_id).await {
-                let _ = entity.update(cx, |this, cx| {
+            let res = client.fork_session(&id, &entry_id).await;
+            let _ = entity.update(cx, |this, cx| {
+                this.forking_entry_id = None;
+                if let Ok(val) = res {
                     this.refresh_from_sidecar(cx);
                     if let Some(new_id) = val
                         .get("session")
@@ -1668,9 +1736,14 @@ impl AppState {
                         .and_then(Value::as_str)
                     {
                         this.select_session(new_id.to_string(), cx);
+                        let msg = crate::i18n::tr(this.locale, "toast.sessionForked");
+                        this.show_success_toast(msg, cx);
                     }
-                });
-            }
+                } else if let Err(err) = res {
+                    this.show_error_toast(err.to_string(), cx);
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -1990,6 +2063,7 @@ impl AppState {
                     this.apply_models_config_response(&val);
                     this.enrich_thinking_levels_from_config();
                 }
+                this.ensure_selected_model_visible(cx);
                 if let Some(val) = artifacts_settings_val {
                     if let Some(en) = val.get("enabled").and_then(Value::as_bool) {
                         this.artifacts_prompt_enabled = en;
@@ -2159,8 +2233,31 @@ impl AppState {
         self.models
             .iter()
             .filter(|m| {
+                if self
+                    .deleted_model_refs
+                    .contains(&(m.provider.clone(), m.id.clone()))
+                {
+                    return false;
+                }
+                if m.enabled == Some(false) {
+                    return false;
+                }
                 if m.provider == "agy-link" && hidden.contains(m.id.as_str()) {
                     return false;
+                }
+                if !self.enabled_models_overview.all_enabled {
+                    if let Some(ep) = self
+                        .enabled_models_overview
+                        .providers
+                        .iter()
+                        .find(|p| p.id == m.provider)
+                    {
+                        if let Some(em) = ep.models.iter().find(|em| em.id == m.id) {
+                            if !em.enabled {
+                                return false;
+                            }
+                        }
+                    }
                 }
                 if let Some(cfg_prov) = self
                     .configured_providers
@@ -2173,6 +2270,38 @@ impl AppState {
             })
             .cloned()
             .collect()
+    }
+
+    /// Ensures `selected_model` always points to a model currently present in
+    /// `visible_picker_models()`. If the previously selected model was deleted or
+    /// disabled, falls back to the first visible model and syncs the active session.
+    pub fn ensure_selected_model_visible(&mut self, cx: &mut Context<Self>) {
+        let visible = self.visible_picker_models();
+        let still_visible = self.selected_model.as_ref().is_some_and(|sel| {
+            visible
+                .iter()
+                .any(|m| m.provider == sel.provider && m.id == sel.id)
+        });
+        if still_visible {
+            return;
+        }
+        self.selected_model = visible.into_iter().next();
+        self.clamp_thinking_level_to_model();
+        if let (Some(sid), Some(next_model)) =
+            (self.active_session_id.clone(), self.selected_model.clone())
+        {
+            if self.sidecar_connected {
+                let client = self.client.clone();
+                let clamped_lvl = self.thinking_level;
+                cx.spawn(async move |_, _| {
+                    let _ = client
+                        .set_session_model(&sid, &next_model.provider, &next_model.id)
+                        .await;
+                    let _ = client.set_thinking_level(&sid, clamped_lvl).await;
+                })
+                .detach();
+            }
+        }
     }
 
     fn apply_models_response(&mut self, val: &Value) {
@@ -2730,8 +2859,32 @@ impl AppState {
         self.configured_providers = out;
     }
 
+    pub fn begin_async_op(&mut self, key: impl Into<String>, cx: &mut Context<Self>) -> bool {
+        let key = key.into();
+        if self.pending_async_ops.insert(key) {
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn end_async_op(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.pending_async_ops.remove(key) {
+            cx.notify();
+        }
+    }
+
+    pub fn is_async_op_pending(&self, key: &str) -> bool {
+        self.pending_async_ops.contains(key)
+    }
+
     /// Enables or disables every model of a provider in the enabled-model list.
     pub fn set_provider_enabled(&mut self, provider_id: String, enabled: bool, cx: &mut Context<Self>) {
+        let op_key = format!("provider:enable:{provider_id}");
+        if !self.begin_async_op(op_key.clone(), cx) {
+            return;
+        }
         if !self.sidecar_connected {
             let refs: Vec<String> = self
                 .enabled_models_overview
@@ -2765,30 +2918,45 @@ impl AppState {
                     m.enabled = Some(enabled);
                 }
             }
-            cx.notify();
+            if enabled {
+                self.deleted_model_refs.retain(|(p, _)| p != &provider_id);
+            }
+            self.ensure_selected_model_visible(cx);
+            self.end_async_op(&op_key, cx);
+            let msg = crate::i18n::tr(self.locale, "toast.modelUpdated");
+            self.show_success_toast(msg, cx);
             return;
         }
         let client = self.client.clone();
         let cwd = self.active_cwd.to_string_lossy().into_owned();
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
-            if let Ok(res) = client
+            let res = client
                 .set_enabled_model(json!({
                     "op": "provider",
                     "provider": provider_id,
                     "enabled": enabled,
                     "cwd": cwd,
                 }))
-                .await
-            {
-                let _ = entity.update(cx, |s, cx| {
-                    s.apply_enabled_models_response(&res);
-                    s.refresh_from_sidecar(cx);
-                });
-            }
+                .await;
+            let _ = entity.update(cx, |s, cx| {
+                s.end_async_op(&op_key, cx);
+                match res {
+                    Ok(res) => {
+                        if enabled {
+                            s.deleted_model_refs.retain(|(p, _)| p != &provider_id);
+                        }
+                        s.apply_enabled_models_response(&res);
+                        s.ensure_selected_model_visible(cx);
+                        s.refresh_from_sidecar(cx);
+                        let msg = crate::i18n::tr(s.locale, "toast.modelUpdated");
+                        s.show_success_toast(msg, cx);
+                    }
+                    Err(e) => s.show_error_toast(e.to_string(), cx),
+                }
+            });
         })
         .detach();
-        cx.notify();
     }
 
     /// Enables or disables one model reference (`provider/model`) in the enabled-model list.
@@ -2798,6 +2966,10 @@ impl AppState {
         enabled: bool,
         cx: &mut Context<Self>,
     ) {
+        let op_key = format!("model:enable:{model_ref}");
+        if !self.begin_async_op(op_key.clone(), cx) {
+            return;
+        }
         if !self.sidecar_connected {
             let _ = crate::client::local_store::update_enabled_models_local(&json!({
                 "op": "model",
@@ -2817,30 +2989,49 @@ impl AppState {
                     m.enabled = Some(enabled);
                 }
             }
-            cx.notify();
+            if enabled {
+                if let Some((p, id)) = model_ref.split_once('/') {
+                    self.deleted_model_refs.remove(&(p.to_string(), id.to_string()));
+                }
+            }
+            self.ensure_selected_model_visible(cx);
+            self.end_async_op(&op_key, cx);
+            let msg = crate::i18n::tr(self.locale, "toast.modelUpdated");
+            self.show_success_toast(msg, cx);
             return;
         }
         let client = self.client.clone();
         let cwd = self.active_cwd.to_string_lossy().into_owned();
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
-            if let Ok(res) = client
+            let res = client
                 .set_enabled_model(json!({
                     "op": "models",
                     "refs": [model_ref],
                     "enabled": enabled,
                     "cwd": cwd,
                 }))
-                .await
-            {
-                let _ = entity.update(cx, |s, cx| {
-                    s.apply_enabled_models_response(&res);
-                    s.refresh_from_sidecar(cx);
-                });
-            }
+                .await;
+            let _ = entity.update(cx, |s, cx| {
+                s.end_async_op(&op_key, cx);
+                match res {
+                    Ok(res) => {
+                        if enabled {
+                            if let Some((p, id)) = model_ref.split_once('/') {
+                                s.deleted_model_refs.remove(&(p.to_string(), id.to_string()));
+                            }
+                        }
+                        s.apply_enabled_models_response(&res);
+                        s.ensure_selected_model_visible(cx);
+                        s.refresh_from_sidecar(cx);
+                        let msg = crate::i18n::tr(s.locale, "toast.modelUpdated");
+                        s.show_success_toast(msg, cx);
+                    }
+                    Err(e) => s.show_error_toast(e.to_string(), cx),
+                }
+            });
         })
         .detach();
-        cx.notify();
     }
 
     /// Rewrites one provider's editable fields in `models.json` (id stays the key).
@@ -2883,6 +3074,7 @@ impl AppState {
                 entry.insert("apiKey".to_string(), json!(api_key.trim()));
             }
         }
+        self.discover_error = None;
         let _ = crate::client::local_store::save_models_config_local(&config);
         self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
         if self.sidecar_connected {
@@ -3020,20 +3212,23 @@ impl AppState {
                 if s.discover_error.as_ref().is_some_and(|(pid, _)| pid == &provider_id) {
                     s.discover_error = None;
                 }
+                for m in &s.models {
+                    if m.provider == provider_id {
+                        s.deleted_model_refs.insert((provider_id.clone(), m.id.clone()));
+                    }
+                }
                 for prov in &mut s.enabled_models_overview.providers {
                     if prov.id == provider_id {
                         for m in &mut prov.models {
+                            s.deleted_model_refs.insert((provider_id.clone(), m.id.clone()));
                             m.enabled = false;
                         }
                         prov.enabled_count = 0;
                     }
                 }
                 s.models.retain(|m| m.provider != provider_id);
-                if s.selected_model.as_ref().is_some_and(|m| m.provider == provider_id) {
-                    s.selected_model = s.models.first().cloned();
-                    s.clamp_thinking_level_to_model();
-                }
                 s.apply_models_config_response(&local_cfg);
+                s.ensure_selected_model_visible(cx);
                 if sidecar_connected {
                     s.refresh_from_sidecar(cx);
                 } else {
@@ -3080,16 +3275,10 @@ impl AppState {
         if self.discover_error.as_ref().is_some_and(|(pid, _)| pid == &provider_id) {
             self.discover_error = None;
         }
+        self.deleted_model_refs
+            .insert((provider_id.clone(), model_id.clone()));
         self.models
             .retain(|m| !(m.provider == provider_id && m.id == model_id));
-        if self
-            .selected_model
-            .as_ref()
-            .is_some_and(|m| m.provider == provider_id && m.id == model_id)
-        {
-            self.selected_model = self.models.first().cloned();
-            self.clamp_thinking_level_to_model();
-        }
         for prov in &mut self.enabled_models_overview.providers {
             if prov.id == provider_id {
                 prov.models.retain(|m| m.id != model_id);
@@ -3097,6 +3286,7 @@ impl AppState {
             }
         }
         self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
+        self.ensure_selected_model_visible(cx);
         if self.sidecar_connected {
             let client = self.client.clone();
             let entity = cx.entity().clone();
@@ -3175,7 +3365,21 @@ impl AppState {
                 }
             }
         }
-        self.expanded_configured_providers.insert(provider_id);
+        self.expanded_configured_providers.insert(provider_id.clone());
+        self.discover_error = None;
+        if let Some(arr) = config
+            .get("providers")
+            .and_then(|p| p.get(&provider_id))
+            .and_then(|p| p.get("models"))
+            .and_then(Value::as_array)
+        {
+            for m in arr {
+                if let Some(mid) = m.get("id").and_then(Value::as_str) {
+                    self.deleted_model_refs
+                        .remove(&(provider_id.clone(), mid.to_string()));
+                }
+            }
+        }
         let _ = crate::client::local_store::save_models_config_local(&config);
         self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
         if self.sidecar_connected {
@@ -3231,7 +3435,21 @@ impl AppState {
                 }
             }
         }
-        self.expanded_configured_providers.insert(provider_id);
+        self.expanded_configured_providers.insert(provider_id.clone());
+        self.discover_error = None;
+        if let Some(arr) = config
+            .get("providers")
+            .and_then(|p| p.get(&provider_id))
+            .and_then(|p| p.get("models"))
+            .and_then(Value::as_array)
+        {
+            for m in arr {
+                if let Some(mid) = m.get("id").and_then(Value::as_str) {
+                    self.deleted_model_refs
+                        .remove(&(provider_id.clone(), mid.to_string()));
+                }
+            }
+        }
         let _ = crate::client::local_store::save_models_config_local(&config);
         self.apply_models_config_response(&crate::client::local_store::read_models_config_local());
         if self.sidecar_connected {
@@ -3334,7 +3552,22 @@ impl AppState {
             }
             let _ = entity.update(cx, |s, cx| {
                 s.discovering_provider_id = None;
+                s.discover_error_seq = s.discover_error_seq.wrapping_add(1);
+                let err_seq = s.discover_error_seq;
                 s.discover_error = failure.map(|msg| (pid_for_error.clone(), msg));
+                if s.discover_error.is_some() {
+                    let weak_s = cx.entity().downgrade();
+                    cx.spawn(async move |_, cx| {
+                        smol::Timer::after(std::time::Duration::from_secs(8)).await;
+                        let _ = weak_s.update(cx, |s, cx| {
+                            if s.discover_error_seq == err_seq && s.discover_error.is_some() {
+                                s.discover_error = None;
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .detach();
+                }
                 s.expanded_configured_providers.insert(provider_id.clone());
                 if !parsed_models.is_empty() {
                     s.settings_add_kind = Some(SettingsAddKind::DiscoveredModelsPicker {
@@ -4085,10 +4318,33 @@ impl AppState {
                 let win = cu.get("contextWindow").and_then(Value::as_u64);
                 let tok = cu.get("tokens").and_then(Value::as_u64);
                 let pct = cu.get("percent").and_then(Value::as_f64).map(|p| p as f32);
-                self.stats.context_window = win;
-                self.stats.context_tokens = tok;
-                self.stats.context_used_pct = pct.unwrap_or(0.0);
-                self.stats.has_context_usage = true;
+                if let Some(w) = win {
+                    self.stats.context_window = Some(w);
+                }
+                // Some providers (e.g. agy-link) report `usage.totalTokens` without `cacheRead`,
+                // so `contextUsage.tokens` from `get_state` undercounts compared to
+                // `input + output + cacheRead + cacheWrite` computed from messages.
+                let effective_tok = match (self.stats.context_tokens, tok) {
+                    (Some(existing), Some(reported))
+                        if self.stats.has_context_usage && existing > reported =>
+                    {
+                        Some(existing)
+                    }
+                    (_, Some(reported)) => Some(reported),
+                    (existing, None) => existing,
+                };
+                self.stats.context_tokens = effective_tok;
+                if let (Some(t), Some(w)) = (
+                    effective_tok,
+                    self.stats.context_window.filter(|&w| w > 0),
+                ) {
+                    self.stats.context_used_pct =
+                        ((t as f64 / w as f64) * 100.0).clamp(0.0, 100.0) as f32;
+                    self.stats.has_context_usage = true;
+                } else if let Some(p) = pct {
+                    self.stats.context_used_pct = p;
+                    self.stats.has_context_usage = true;
+                }
             }
         }
         if let Some(widgets) = st.get("extensionWidgets").and_then(Value::as_array) {
@@ -4389,7 +4645,8 @@ impl AppState {
         if self.active_session_id.as_deref() == Some(session_id.as_str()) {
             self.active_is_temp_chat = false;
         }
-        cx.notify();
+        let msg = crate::i18n::tr(self.locale, "toast.tempChatPromoted");
+        self.show_success_toast(msg, cx);
     }
 
     pub fn release_temp_chat(&mut self, session_id: String, cx: &mut Context<Self>) {
@@ -4585,6 +4842,7 @@ impl AppState {
                 self.thinking_level = tl;
             }
             self.clamp_thinking_level_to_model();
+            self.ensure_selected_model_visible(cx);
 
             let sid_ref = Some(session_id.as_str());
             for msg in &self.messages {
@@ -4713,6 +4971,7 @@ impl AppState {
                 if let Some(st_val) = agent_state {
                     this.apply_agent_state_response(&st_val);
                 }
+                this.ensure_selected_model_visible(cx);
                 cx.notify();
             });
         });
@@ -4908,6 +5167,9 @@ impl AppState {
                         let state_res = client.get_agent_state(&sid).await.ok();
                         let _ = entity.update(cx, |this, cx| {
                             if this.active_session_id.as_deref() == Some(sid.as_str()) {
+                                if let Some(st_val) = state_res {
+                                    this.apply_agent_state_response(&st_val);
+                                }
                                 if let Ok(payload) = session_res {
                                     if let Some(path_str) = this
                                         .sessions
@@ -4965,9 +5227,6 @@ impl AppState {
                                             ((ctx_tok as f64 / window as f64) * 100.0).clamp(0.0, 100.0) as f32;
                                         this.stats.has_context_usage = true;
                                     }
-                                }
-                                if let Some(st_val) = state_res {
-                                    this.apply_agent_state_response(&st_val);
                                 }
                             }
                             cx.notify();
@@ -5953,7 +6212,9 @@ impl AppState {
                 self.is_compacting = false;
                 let was_aborted = aborted.unwrap_or(false);
                 if let Some(err) = error_message {
-                    self.record_assistant_error(format!("Compaction failed: {err}"));
+                    let msg = format!("Compaction failed: {err}");
+                    self.record_assistant_error(msg.clone());
+                    self.show_error_toast(msg, cx);
                 }
                 let raw_summary = summary
                     .or_else(|| {
@@ -6139,8 +6400,11 @@ impl AppState {
 
     pub fn open_agy_link_modal(&mut self, cx: &mut Context<Self>) {
         self.agy_link_modal_open = false;
+        self.notes_modal_open = false;
+        self.credentials_modal_open = false;
         self.settings_initial_page = 6;
         self.settings_open_nonce = self.settings_open_nonce.wrapping_add(1);
+        self.discover_error = None;
         self.settings_open = true;
         cx.notify();
     }
@@ -6148,6 +6412,30 @@ impl AppState {
     pub fn close_agy_link_modal(&mut self, cx: &mut Context<Self>) {
         self.agy_link_modal_open = false;
         self.agy_link_details_account_id = None;
+        cx.notify();
+    }
+
+    pub fn open_notes_modal(&mut self, cx: &mut Context<Self>) {
+        self.agy_link_modal_open = false;
+        self.credentials_modal_open = false;
+        self.notes_modal_open = true;
+        cx.notify();
+    }
+
+    pub fn close_notes_modal(&mut self, cx: &mut Context<Self>) {
+        self.notes_modal_open = false;
+        cx.notify();
+    }
+
+    pub fn open_credentials_modal(&mut self, cx: &mut Context<Self>) {
+        self.agy_link_modal_open = false;
+        self.notes_modal_open = false;
+        self.credentials_modal_open = true;
+        cx.notify();
+    }
+
+    pub fn close_credentials_modal(&mut self, cx: &mut Context<Self>) {
+        self.credentials_modal_open = false;
         cx.notify();
     }
 
@@ -6233,6 +6521,7 @@ impl AppState {
                     this.apply_models_response(&val);
                     this.enrich_thinking_levels_from_config();
                     this.sync_agy_selected_model_visibility(cx);
+                    this.ensure_selected_model_visible(cx);
                     cx.notify();
                 });
             }
@@ -6265,11 +6554,48 @@ impl AppState {
                 s.suppress_next_prompt_reload = false;
                 if s.agy_link_loading {
                     s.agy_link_loading = false;
+                    let msg = crate::i18n::tr(s.locale, "agy.refreshTimeout");
+                    s.show_toast(msg, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn show_toast_with_kind(
+        &mut self,
+        kind: ToastKind,
+        msg: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.toast_seq = self.toast_seq.wrapping_add(1);
+        let seq = self.toast_seq;
+        self.toast_kind = kind;
+        self.toast_message = Some(msg.into());
+        cx.notify();
+        let entity = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            smol::Timer::after(std::time::Duration::from_secs(4)).await;
+            let _ = entity.update(cx, |s, cx| {
+                if s.toast_seq == seq {
+                    s.toast_message = None;
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+
+    pub fn show_toast(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.show_toast_with_kind(ToastKind::Info, msg, cx);
+    }
+
+    pub fn show_success_toast(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.show_toast_with_kind(ToastKind::Success, msg, cx);
+    }
+
+    pub fn show_error_toast(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.show_toast_with_kind(ToastKind::Error, msg, cx);
     }
 
     fn record_assistant_error(&mut self, err: String) {
@@ -6328,14 +6654,25 @@ impl AppState {
             })
             .detach();
         }
-        cx.notify();
+        let msg = crate::i18n::tr(self.locale, "toast.sessionRenamed");
+        self.show_success_toast(msg, cx);
     }
 
     pub fn toggle_pin_session(&mut self, id: String, cx: &mut Context<Self>) {
+        let mut now_pinned = false;
         if let Some(sess) = self.sessions.iter_mut().find(|s| s.id == id) {
             sess.pinned = !sess.pinned;
+            now_pinned = sess.pinned;
         }
-        cx.notify();
+        let msg = crate::i18n::tr(
+            self.locale,
+            if now_pinned {
+                "toast.sessionPinned"
+            } else {
+                "toast.sessionUnpinned"
+            },
+        );
+        self.show_success_toast(msg, cx);
     }
 
     pub fn delete_session_by_id(&mut self, id: String, cx: &mut Context<Self>) {
@@ -6353,11 +6690,17 @@ impl AppState {
             })
             .detach();
         }
-        cx.notify();
+        let msg = crate::i18n::tr(self.locale, "toast.sessionDeleted");
+        self.show_success_toast(msg, cx);
     }
 
     pub fn fork_session_by_id(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.forking_entry_id.is_some() {
+            return;
+        }
         if !self.sidecar_connected {
+            self.forking_entry_id = Some("__session__".to_string());
+            cx.notify();
             if let Ok((new_id, _path)) =
                 crate::client::local_store::fork_session_local(&id, None)
             {
@@ -6367,20 +6710,33 @@ impl AppState {
                     self.sync_archived_flags();
                 }
                 self.select_session(new_id, cx);
+                let msg = crate::i18n::tr(self.locale, "toast.sessionForked");
+                self.show_success_toast(msg, cx);
             }
+            self.forking_entry_id = None;
+            cx.notify();
             return;
         }
+        self.forking_entry_id = Some("__session__".to_string());
+        cx.notify();
         let client = self.client.clone();
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
-            if let Ok(val) = client.fork_session(&id, "").await {
-                let _ = entity.update(cx, |this, cx| {
+            let res = client.fork_session(&id, "").await;
+            let _ = entity.update(cx, |this, cx| {
+                this.forking_entry_id = None;
+                if let Ok(val) = res {
                     this.refresh_from_sidecar(cx);
                     if let Some(new_id) = val.get("session").and_then(|s| s.get("id")).and_then(Value::as_str) {
                         this.select_session(new_id.to_string(), cx);
+                        let msg = crate::i18n::tr(this.locale, "toast.sessionForked");
+                        this.show_success_toast(msg, cx);
                     }
-                });
-            }
+                } else if let Err(err) = res {
+                    this.show_error_toast(err.to_string(), cx);
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -6512,10 +6868,11 @@ impl AppState {
                 let entity = cx.entity().clone();
                 cx.spawn(async move |_, cx| {
                     let res = client.send_agent_command(&sid, json!({ "type": "compact" })).await;
-                    if res.is_err() {
+                    if let Err(err) = res {
                         let _ = entity.update(cx, |this, cx| {
                             this.is_compacting = false;
-                            cx.notify();
+                            this.status_banner = None;
+                            this.show_error_toast(format!("Compaction failed: {err}"), cx);
                         });
                     }
                 })
@@ -6558,17 +6915,7 @@ impl AppState {
                 true
             }
             "compact" => {
-                if let Some(sid) = self.active_session_id.clone() {
-                    if self.sidecar_connected {
-                        let client = self.client.clone();
-                        cx.spawn(async move |_, _| {
-                            let _ = client.send_agent_command(&sid, json!({ "type": "compact" })).await;
-                        })
-                        .detach();
-                    }
-                    self.status_banner = Some(SharedString::from("Compacting session context..."));
-                    cx.notify();
-                }
+                self.trigger_compact(cx);
                 true
             }
             "reload" => {
@@ -6640,6 +6987,14 @@ impl AppState {
             stop_reason: None,
             error_message: None,
         });
+
+        let text = if let Some(cred_block) =
+            crate::client::workspace_extras::auto_discover_prompt_block()
+        {
+            format!("{text}\n\n{cred_block}")
+        } else {
+            text
+        };
 
         // If sidecar is offline, attempt native Rust LLM streaming + built-in tool execution
         // (§6.3.2), falling back to the local preview only when no provider key is configured.

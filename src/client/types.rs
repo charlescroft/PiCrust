@@ -576,6 +576,8 @@ pub struct ScheduledTask {
     pub thinking_level: Option<String>,
     #[serde(default = "default_scheduled_preset")]
     pub tool_preset: String, // "none" | "read-only" | "default" | "full"
+    #[serde(default = "default_execution_target", alias = "execution_target")]
+    pub execution_target: String, // "new" | "reuse"
     #[serde(default = "default_max_duration_min")]
     pub max_duration_min: u64,
     pub enabled: bool,
@@ -591,6 +593,10 @@ pub struct ScheduledTask {
 
 fn default_scheduled_preset() -> String {
     "read-only".to_string()
+}
+
+fn default_execution_target() -> String {
+    "new".to_string()
 }
 
 fn default_max_duration_min() -> u64 {
@@ -912,6 +918,8 @@ pub struct AgyLinkAccount {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgyLinkSettings {
+    #[serde(default)]
+    pub agy_plugins_enabled: Vec<String>,
     #[serde(default = "default_agy_mode")]
     pub mode: String,
     #[serde(default)]
@@ -993,6 +1001,7 @@ fn default_agy_slim_prompt_rules() -> bool {
 impl Default for AgyLinkSettings {
     fn default() -> Self {
         Self {
+            agy_plugins_enabled: Vec::new(),
             mode: default_agy_mode(),
             proxy_url: String::new(),
             permission_mode: default_agy_permission(),

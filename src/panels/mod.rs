@@ -1,10 +1,13 @@
 pub mod agy_link_modal;
 pub mod artifact_panel;
+pub mod credentials_modal;
 pub mod file_explorer;
 pub mod file_viewer;
 pub mod git_graph;
 pub mod inspector_panels;
+pub mod notes_modal;
 pub mod terminal_panel;
+pub mod workflows_panel;
 
 use crate::app_state::{AppState, RightPanelTab};
 use crate::i18n::{AppLocale, tr};
@@ -14,6 +17,7 @@ use crate::panels::file_viewer::FileViewerView;
 use crate::panels::git_graph::GitGraphView;
 use crate::panels::inspector_panels::render_inspector_panel;
 use crate::panels::terminal_panel::TerminalHostView;
+use crate::panels::workflows_panel::WorkflowsPanelView;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -31,6 +35,7 @@ pub struct WorkbenchPanel {
     file_viewer: Entity<FileViewerView>,
     terminal: Entity<TerminalHostView>,
     git_graph: Entity<GitGraphView>,
+    workflows: Entity<WorkflowsPanelView>,
 }
 
 impl EventEmitter<PanelEvent> for WorkbenchPanel {}
@@ -80,6 +85,7 @@ fn tab_title(tab: RightPanelTab, file_name: Option<SharedString>, locale: AppLoc
         RightPanelTab::Terminal => SharedString::from(tr(locale, "panel.terminal")),
         RightPanelTab::Inspector => SharedString::from(tr(locale, "panel.session")),
         RightPanelTab::GitGraph => SharedString::from(tr(locale, "git.graphTitle")),
+        RightPanelTab::Workflows => SharedString::from(tr(locale, "workflows.title")),
     }
 }
 
@@ -91,6 +97,7 @@ fn tab_icon(tab: RightPanelTab) -> IconName {
         RightPanelTab::Terminal => IconName::SquareTerminal,
         RightPanelTab::Inspector => IconName::Inspector,
         RightPanelTab::GitGraph => IconName::Network,
+        RightPanelTab::Workflows => IconName::LayoutDashboard,
     }
 }
 
@@ -101,6 +108,7 @@ impl WorkbenchPanel {
         let file_viewer = cx.new(|cx| FileViewerView::new(app_state.clone(), window, cx));
         let terminal = cx.new(|cx| TerminalHostView::new(app_state.clone(), cx));
         let git_graph = cx.new(|cx| GitGraphView::new(app_state.clone(), window, cx));
+        let workflows = cx.new(|cx| WorkflowsPanelView::new(app_state.clone(), window, cx));
 
         cx.observe(&app_state, |_, _, cx| cx.notify()).detach();
 
@@ -112,6 +120,7 @@ impl WorkbenchPanel {
             file_viewer,
             terminal,
             git_graph,
+            workflows,
         }
     }
 }
@@ -198,6 +207,7 @@ impl Render for WorkbenchPanel {
                 render_inspector_panel(&self.app_state, window, cx).into_any_element()
             }
             RightPanelTab::GitGraph => div().size_full().child(self.git_graph.clone()).into_any_element(),
+            RightPanelTab::Workflows => div().size_full().child(self.workflows.clone()).into_any_element(),
         };
 
         v_flex()

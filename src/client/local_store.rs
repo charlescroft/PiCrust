@@ -426,7 +426,9 @@ pub fn fork_session_local(session_id: &str, entry_id: Option<&str>) -> Result<(S
     let ts_prefix = now.format("%Y-%m-%dT%H-%M-%S-%3fZ").to_string();
     let new_path = parent_dir.join(format!("{ts_prefix}_{new_id}.jsonl"));
 
-    let mut out_lines = Vec::new();
+    let mut header_line: Option<String> = None;
+    let mut entries_by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    let mut ordered_entries: Vec<Value> = Vec::new();
     for (idx, line) in raw.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -445,17 +447,107 @@ pub fn fork_session_local(session_id: &str, entry_id: Option<&str>) -> Result<(S
                 );
             }
             if let Ok(s) = serde_json::to_string(&val) {
-                out_lines.push(s);
+                header_line = Some(s);
             }
             continue;
         }
+        if let Some(eid) = val.get("id").and_then(Value::as_str).map(str::to_string) {
+            entries_by_id.insert(eid, val.clone());
+        }
+        ordered_entries.push(val);
+    }
+
+    let requested_eid = entry_id.map(str::trim).filter(|s| !s.is_empty());
+    let target_id = requested_eid
+        .map(str::to_string)
+        .or_else(|| {
+            ordered_entries
+                .last()
+                .and_then(|v| v.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+        });
+
+    let mut branch_entries: Vec<Value> = Vec::new();
+    if let Some(mut cur_id) = target_id {
+        let mut seen = std::collections::HashSet::new();
+        while seen.insert(cur_id.clone()) {
+            let Some(entry) = entries_by_id.get(&cur_id) else {
+                break;
+            };
+            branch_entries.push(entry.clone());
+            match entry.get("parentId").and_then(Value::as_str) {
+                Some(pid) if !pid.is_empty() => cur_id = pid.to_string(),
+                _ => break,
+            }
+        }
+        branch_entries.reverse();
+    } else {
+        branch_entries = ordered_entries;
+    }
+
+    // When forking from a specific message entry, extract only that single section
+    // (from its preceding user message up to `target_id`) plus active model/thinking/tool metadata.
+    if requested_eid.is_some() && !branch_entries.is_empty() {
+        let start_idx = branch_entries
+            .iter()
+            .rposition(|e| {
+                e.get("type").and_then(Value::as_str) == Some("message")
+                    && e.get("message")
+                        .and_then(|m| m.get("role"))
+                        .and_then(Value::as_str)
+                        == Some("user")
+            })
+            .unwrap_or_else(|| branch_entries.len().saturating_sub(1));
+
+        let mut last_model: Option<Value> = None;
+        let mut last_thinking: Option<Value> = None;
+        let mut last_tool_sel: Option<Value> = None;
+        for entry in &branch_entries[..start_idx] {
+            match entry.get("type").and_then(Value::as_str) {
+                Some("model_change") => last_model = Some(entry.clone()),
+                Some("thinking_level_change") => last_thinking = Some(entry.clone()),
+                Some("custom")
+                    if entry.get("customType").and_then(Value::as_str)
+                        == Some("pi-web:tool-selection") =>
+                {
+                    last_tool_sel = Some(entry.clone());
+                }
+                _ => {}
+            }
+        }
+
+        let mut section_entries = Vec::new();
+        if let Some(m) = last_model {
+            section_entries.push(m);
+        }
+        if let Some(t) = last_thinking {
+            section_entries.push(t);
+        }
+        if let Some(ts) = last_tool_sel {
+            section_entries.push(ts);
+        }
+        section_entries.extend(branch_entries[start_idx..].iter().cloned());
+
+        let mut prev_id: Option<String> = None;
+        for entry in &mut section_entries {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert(
+                    "parentId".to_string(),
+                    prev_id.clone().map(Value::String).unwrap_or(Value::Null),
+                );
+            }
+            prev_id = entry.get("id").and_then(Value::as_str).map(str::to_string);
+        }
+        branch_entries = section_entries;
+    }
+
+    let mut out_lines = Vec::new();
+    if let Some(h) = header_line {
+        out_lines.push(h);
+    }
+    for val in branch_entries {
         if let Ok(s) = serde_json::to_string(&val) {
             out_lines.push(s);
-        }
-        if let Some(target_eid) = entry_id {
-            if val.get("id").and_then(Value::as_str) == Some(target_eid) {
-                break;
-            }
         }
     }
 

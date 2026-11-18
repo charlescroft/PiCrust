@@ -9,7 +9,7 @@ use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::input::{Editor, EditorState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message::{Message, MessageAlignment, MessageContent, MessageFooter};
 use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::spinner::Spinner;
@@ -69,11 +69,11 @@ pub fn render_message_row(
     let mut newly_created = false;
     let row_cache = cache.entry(msg_id).or_insert_with(|| {
         newly_created = true;
-        let initial_text = strip_artifact_blocks(&msg.content);
+        let initial_text = prepare_display_markdown(&msg.content, msg.is_streaming);
         let text_state = cx.new(|cx| TextViewState::markdown(&initial_text, cx).selectable(true));
         CachedRowEntities {
             text_state,
-            last_text_len: initial_text.len(),
+            last_text_len: msg.content.len(),
             last_text_snapshot: initial_text,
             last_raw_content: msg.content.clone(),
             last_find_query: String::new(),
@@ -110,14 +110,11 @@ pub fn render_message_row(
 
     // Incremental update of retained TextViewState (fast path when unchanged)
     let content_changed = msg.content.len() != row_cache.last_text_len
-        || (msg.content.contains(":::artifact") && msg.content != row_cache.last_raw_content);
+        || msg.content != row_cache.last_raw_content;
     if !newly_created && content_changed {
-        let display_md = if msg.content.contains(":::artifact") {
-            strip_artifact_blocks(&msg.content)
-        } else {
-            msg.content.clone()
-        };
+        let display_md = prepare_display_markdown(&msg.content, msg.is_streaming);
         row_cache.last_raw_content = msg.content.clone();
+        row_cache.last_text_len = msg.content.len();
         if display_md != row_cache.last_text_snapshot {
             let prev = &row_cache.last_text_snapshot;
             let is_append = display_md.starts_with(prev.as_str());
@@ -133,7 +130,6 @@ pub fn render_message_row(
                     state.set_text(&display_md, cx);
                 });
             }
-            row_cache.last_text_len = display_md.len();
             row_cache.last_text_snapshot = display_md;
         }
     }
@@ -160,15 +156,17 @@ pub fn render_message_row(
         }
     }
 
-    let (is_turn_live, is_last_turn, font_px, locale, user_collapse_chars) = {
+    let (is_turn_live, is_last_turn, font_px, locale, user_collapse_chars, repeated_scheduled_occurrence) = {
         let state = app_state.read(cx);
         let is_last = state.messages.last().map(|m| m.id) == Some(msg.id);
+        let repeat_occ = repeated_scheduled_prompt_occurrence(msg, &state.messages, &state.scheduled_tasks);
         (
             msg.is_streaming || (is_last && (state.is_agent_running || state.is_compacting)),
             is_last,
             state.chat_font_size,
             state.locale,
             state.user_collapse_chars,
+            repeat_occ,
         )
     };
 
@@ -177,15 +175,38 @@ pub fn render_message_row(
             render_subagent_notice_card(msg, parsed, row_cache, font_px, locale, cx)
         } else {
             match msg.role {
-                MessageRole::User => render_user_row(
-                    msg,
-                    row_cache,
-                    user_collapse_chars,
-                    font_px,
-                    locale,
-                    app_state,
-                    cx,
-                ),
+                MessageRole::User => {
+                    if let Some(repeat_n) = repeated_scheduled_occurrence {
+                        if !row_cache.user_expanded {
+                            render_repeated_scheduled_divider(msg, repeat_n, locale, cx)
+                        } else {
+                            v_flex()
+                                .gap_1p5()
+                                .min_w_0()
+                                .child(render_repeated_scheduled_expanded_header(msg.id, repeat_n, locale, cx))
+                                .child(render_user_row(
+                                    msg,
+                                    row_cache,
+                                    user_collapse_chars,
+                                    font_px,
+                                    locale,
+                                    app_state,
+                                    cx,
+                                ))
+                                .into_any_element()
+                        }
+                    } else {
+                        render_user_row(
+                            msg,
+                            row_cache,
+                            user_collapse_chars,
+                            font_px,
+                            locale,
+                            app_state,
+                            cx,
+                        )
+                    }
+                }
                 MessageRole::System | MessageRole::Notice => {
                     render_notice_row(msg, row_cache, font_px, locale, cx)
                 }
@@ -323,27 +344,6 @@ fn render_user_row(
                     let eid = entry_id_edit.clone();
                     app_edit.update(cx, |s, cx| {
                         s.edit_user_message(txt, eid, cx);
-                    });
-                }),
-        )
-        .child(
-            Button::new(("fork-user", msg.id))
-                .ghost()
-                .small()
-                .h(px(24.))
-                .icon(IconName::Redo2)
-                .label(tr(locale, "chat.fork"))
-                .tooltip(tr(locale, "chat.forkFromHereTooltip"))
-                .on_click(move |_, _, cx| {
-                    let eid = entry_id_fork.clone();
-                    app_fork.update(cx, |s, cx| {
-                        if let Some(sid) = s.active_session_id.clone() {
-                            if let Some(target_eid) = eid {
-                                s.fork_session_from_entry(sid, target_eid.to_string(), cx);
-                            } else {
-                                s.fork_session_by_id(sid, cx);
-                            }
-                        }
                     });
                 }),
         );
@@ -1105,13 +1105,39 @@ fn render_assistant_row(
         } else {
             view.into_any_element()
         };
+        let copy_str = row_cache.last_text_snapshot.clone();
+        let paste_str = row_cache.last_text_snapshot.clone();
+        let app_paste = app_state.clone();
         stack = stack.child(
             div()
+                .id(("assistant-body-ctx", msg.id))
                 .w_full()
                 .min_w_0()
                 .font_family(cx.theme().font_family.clone())
                 .text_size(px(font_px))
                 .line_height(rems(1.65))
+                .context_menu(move |menu, _, _| {
+                    let c_txt = copy_str.clone();
+                    let p_txt = paste_str.clone();
+                    let app_p = app_paste.clone();
+                    menu.item(
+                        gpui_kit::component::menu::PopupMenuItem::new(tr(locale, "chat.copyContent"))
+                            .icon(IconName::Copy)
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(c_txt.clone()));
+                            }),
+                    )
+                    .item(
+                        gpui_kit::component::menu::PopupMenuItem::new(tr(locale, "chat.pasteToInput"))
+                            .icon(IconName::Plus)
+                            .on_click(move |_, _, cx| {
+                                app_p.update(cx, |s, cx| {
+                                    s.pending_composer_paste = Some(p_txt.clone());
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                })
                 .child(body_content),
         );
     }
@@ -1696,6 +1722,40 @@ fn render_assistant_row(
                     .on_click(move |_, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy_md.clone()));
                         window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
+                    }),
+            );
+        }
+        {
+            let app_fork = app_state.clone();
+            let entry_id_fork = msg.entry_id.clone();
+            let forking_id = app_state.read(cx).forking_entry_id.clone();
+            let any_forking = forking_id.is_some();
+            let is_forking = match (&forking_id, &entry_id_fork) {
+                (Some(fid), Some(eid)) => fid == eid.as_ref(),
+                (Some(fid), None) => fid == "__session__",
+                _ => false,
+            };
+            left_actions = left_actions.child(
+                Button::new(("fork-assistant", msg.id))
+                    .ghost()
+                    .small()
+                    .h(px(28.))
+                    .icon(IconName::Redo2)
+                    .label(tr(locale, "chat.fork"))
+                    .loading(is_forking)
+                    .disabled(any_forking)
+                    .tooltip(tr(locale, "chat.forkFromHereTooltip"))
+                    .on_click(move |_, _, cx| {
+                        let eid = entry_id_fork.clone();
+                        app_fork.update(cx, |s, cx| {
+                            if let Some(sid) = s.active_session_id.clone() {
+                                if let Some(target_eid) = eid {
+                                    s.fork_session_from_entry(sid, target_eid.to_string(), cx);
+                                } else {
+                                    s.fork_session_by_id(sid, cx);
+                                }
+                            }
+                        });
                     }),
             );
         }
@@ -2820,5 +2880,491 @@ mod modified_files_tests {
         assert!(!is_context_limit_error("404 Not Found"));
         assert!(!is_context_limit_error("500 Internal Server Error"));
         assert!(!is_context_limit_error("Connection closed"));
+    }
+
+    #[test]
+    fn linkifies_file_paths_outside_code_blocks_and_existing_links() {
+        let input = "See `/Users/charles/test.rs` and [already](file:///tmp/a.txt) and /Volumes/Ext/app.md.\n```\n/Users/charles/in_code.rs\n```";
+        let out = super::linkify_file_paths(input);
+        assert!(out.contains("[`/Users/charles/test.rs`](file:///Users/charles/test.rs)"));
+        assert!(out.contains("[already](file:///tmp/a.txt)"));
+        assert!(out.contains("[/Volumes/Ext/app.md](file:///Volumes/Ext/app.md)"));
+        assert!(out.contains("```\n/Users/charles/in_code.rs\n```"));
+    }
+
+    #[test]
+    fn normalizes_cjk_bold_delimiters_outside_code() {
+        let input = "这是**“重要”**内容和**（说明）**继续，还有** 加粗 **以及`**raw**`。";
+        let out = super::normalize_cjk_bold_markdown(input);
+        assert!(out.contains("**\u{200B}“重要”\u{200B}**"));
+        assert!(out.contains("**\u{200B}（说明）\u{200B}**"));
+        assert!(out.contains("**加粗**"));
+        assert!(out.contains("`**raw**`"));
+    }
+}
+
+fn prepare_display_markdown(content: &str, is_streaming: bool) -> String {
+    let raw_md = if content.contains(":::artifact") {
+        strip_artifact_blocks(content)
+    } else {
+        content.to_string()
+    };
+    let normalized = normalize_cjk_bold_markdown(&raw_md);
+    if is_streaming {
+        normalized
+    } else {
+        linkify_file_paths(&normalized)
+    }
+}
+
+fn is_cjk_or_ascii_punct(c: char) -> bool {
+    c.is_ascii_punctuation()
+        || matches!(
+            c,
+            '“' | '”'
+                | '‘'
+                | '’'
+                | '（'
+                | '）'
+                | '【'
+                | '】'
+                | '《'
+                | '》'
+                | '「'
+                | '」'
+                | '『'
+                | '』'
+                | '、'
+                | '。'
+                | '，'
+                | '：'
+                | '；'
+                | '！'
+                | '？'
+                | '—'
+                | '…'
+                | '·'
+        )
+}
+
+/// Normalizes `**...**` spans so CommonMark parses them as bold even when adjacent to CJK
+/// characters + punctuation (e.g. `这是**“词”**内容`) or accidental inner spaces (`** 词 **`).
+fn normalize_cjk_bold_markdown(md: &str) -> String {
+    if !md.contains("**") {
+        return md.to_string();
+    }
+    let mut out = String::with_capacity(md.len() + 16);
+    let mut in_fence = false;
+
+    for line in md.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_fence || !line.contains("**") {
+            out.push_str(line);
+            continue;
+        }
+
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'`' {
+                if let Some(close_tick) = line[i + 1..].find('`') {
+                    let end = i + 1 + close_tick + 1;
+                    out.push_str(&line[i..end]);
+                    i = end;
+                    continue;
+                }
+            }
+            if line[i..].starts_with("**")
+                && !line[i..].starts_with("***")
+                && (i == 0 || bytes[i - 1] != b'*')
+                && (i == 0 || bytes[i - 1] != b'\\')
+            {
+                let after_open = i + 2;
+                // Find matching closing `**` on the same line (outside inline code).
+                let mut j = after_open;
+                let mut found_close = None;
+                while j < bytes.len() {
+                    if bytes[j] == b'`' {
+                        if let Some(ct) = line[j + 1..].find('`') {
+                            j = j + 1 + ct + 1;
+                            continue;
+                        }
+                    }
+                    if line[j..].starts_with("**")
+                        && !line[j..].starts_with("***")
+                        && (j == 0 || bytes[j - 1] != b'*')
+                        && (j == 0 || bytes[j - 1] != b'\\')
+                    {
+                        found_close = Some(j);
+                        break;
+                    }
+                    let ch_len = line[j..].chars().next().map(char::len_utf8).unwrap_or(1);
+                    j += ch_len;
+                }
+                if let Some(close_idx) = found_close {
+                    let raw_inner = &line[after_open..close_idx];
+                    let inner_trimmed = raw_inner.trim_matches(|c| c == ' ' || c == '\t');
+                    if !inner_trimmed.is_empty() && !inner_trimmed.contains('\n') {
+                        let prev_ch = line[..i].chars().next_back();
+                        let next_ch = line[close_idx + 2..].chars().next();
+                        let first_in = inner_trimmed.chars().next();
+                        let last_in = inner_trimmed.chars().next_back();
+
+                        let need_left_zws = prev_ch
+                            .is_some_and(|p| !p.is_whitespace() && !is_cjk_or_ascii_punct(p))
+                            && first_in.is_some_and(is_cjk_or_ascii_punct);
+                        let need_right_zws = last_in.is_some_and(is_cjk_or_ascii_punct)
+                            && next_ch
+                                .is_some_and(|n| !n.is_whitespace() && !is_cjk_or_ascii_punct(n));
+
+                        out.push_str("**");
+                        if need_left_zws {
+                            out.push('\u{200B}');
+                        }
+                        out.push_str(inner_trimmed);
+                        if need_right_zws {
+                            out.push('\u{200B}');
+                        }
+                        out.push_str("**");
+                        i = close_idx + 2;
+                        continue;
+                    }
+                }
+            }
+            let ch_len = line[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+            out.push_str(&line[i..i + ch_len]);
+            i += ch_len;
+        }
+    }
+    out
+}
+
+/// Converts standalone absolute file paths (and inline-coded absolute paths) outside fenced
+/// code blocks and existing markdown links into clickable `file://` hyperlinks.
+fn linkify_file_paths(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut in_fence = false;
+
+    for (line_idx, line) in md.split_inclusive('\n').enumerate() {
+        let _ = line_idx;
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            continue;
+        }
+
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            // Preserve existing markdown links `[...](...)`
+            if bytes[i] == b'[' {
+                if let Some(close_br) = line[i + 1..].find(']') {
+                    let after_br = i + 1 + close_br + 1;
+                    if bytes.get(after_br) == Some(&b'(') {
+                        if let Some(close_par) = line[after_br + 1..].find(')') {
+                            let end = after_br + 1 + close_par + 1;
+                            out.push_str(&line[i..end]);
+                            i = end;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Handle inline code `` `/abs/path/file.ext` ``
+            if bytes[i] == b'`' {
+                if let Some(close_tick) = line[i + 1..].find('`') {
+                    let inner = &line[i + 1..i + 1 + close_tick];
+                    if is_linkable_abs_file_path(inner) {
+                        let uri = path_to_file_uri(inner);
+                        out.push_str(&format!("[`{inner}`]({uri})"));
+                    } else {
+                        out.push_str(&line[i..i + 1 + close_tick + 1]);
+                    }
+                    i += 1 + close_tick + 1;
+                    continue;
+                }
+            }
+
+            // Handle bare `/Users/...`, `/Volumes/...`, `/Applications/...`, `/tmp/...`, `/home/...`
+            let rest = &line[i..];
+            let at_boundary = i == 0
+                || line[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_whitespace() || matches!(c, '(' | '[' | '"' | '\'' | '：' | ':'));
+            if at_boundary
+                && (rest.starts_with("/Users/")
+                    || rest.starts_with("/Volumes/")
+                    || rest.starts_with("/Applications/")
+                    || rest.starts_with("/tmp/")
+                    || rest.starts_with("/home/"))
+            {
+                let end = rest
+                    .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\'' | '`' | '，' | '。' | ',' | ';'))
+                    .unwrap_or(rest.len());
+                let cand = rest[..end].trim_end_matches('.');
+                if is_linkable_abs_file_path(cand) {
+                    let uri = path_to_file_uri(cand);
+                    out.push_str(&format!("[{cand}]({uri})"));
+                    i += cand.len();
+                    continue;
+                }
+            }
+
+            let ch = line[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn is_linkable_abs_file_path(s: &str) -> bool {
+    if s.contains("://") || s.contains('\n') || s.len() < 4 {
+        return false;
+    }
+    let is_abs = s.starts_with('/')
+        || (s.len() >= 3 && s.as_bytes()[1] == b':' && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'));
+    if !is_abs {
+        return false;
+    }
+    let last_seg = s.rsplit(['/', '\\']).next().unwrap_or("");
+    last_seg.contains('.') && !last_seg.ends_with('.')
+}
+
+fn path_to_file_uri(path: &str) -> String {
+    let norm = path.replace('\\', "/");
+    let encoded = norm.replace(' ', "%20");
+    if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        format!("file:///{encoded}")
+    }
+}
+
+/// Returns `Some(occurrence_number)` (>= 2) if `msg` is a repeated scheduled/recurring
+/// user prompt after the first occurrence in the current conversation.
+fn repeated_scheduled_prompt_occurrence(
+    msg: &ChatMessage,
+    messages: &[ChatMessage],
+    scheduled_tasks: &[crate::client::types::ScheduledTask],
+) -> Option<usize> {
+    if msg.role != MessageRole::User || !msg.attachments.is_empty() {
+        return None;
+    }
+    let normalized = msg.content.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    let matches_scheduled_task = scheduled_tasks
+        .iter()
+        .any(|t| t.prompt.trim() == normalized);
+    let looks_substantial_or_scheduled = matches_scheduled_task
+        || normalized.chars().count() >= 20
+        || normalized.contains('\n')
+        || normalized.starts_with("[Scheduled")
+        || normalized.starts_with("/schedule");
+    if !looks_substantial_or_scheduled {
+        return None;
+    }
+    let mut count = 0usize;
+    for m in messages {
+        if m.role == MessageRole::User && m.attachments.is_empty() && m.content.trim() == normalized {
+            count += 1;
+        }
+        if m.id == msg.id {
+            break;
+        }
+    }
+    if count >= 2 { Some(count) } else { None }
+}
+
+fn render_repeated_scheduled_divider(
+    msg: &ChatMessage,
+    repeat_n: usize,
+    locale: AppLocale,
+    cx: &mut Context<crate::chat::ChatPanel>,
+) -> AnyElement {
+    let msg_id = msg.id;
+    let first_line = msg
+        .content
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let preview: String = if first_line.chars().count() > 48 {
+        let mut s: String = first_line.chars().take(48).collect();
+        s.push('…');
+        s
+    } else {
+        first_line.to_string()
+    };
+
+    let mut pill = h_flex()
+        .id(("scheduled-repeat-pill", msg_id))
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_1()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border.opacity(0.8))
+        .bg(cx.theme().secondary.opacity(0.55))
+        .hover(|s| s.bg(cx.theme().secondary.opacity(0.85)))
+        .cursor_pointer()
+        .on_click(cx.listener(move |panel, _, _, cx| {
+            panel.toggle_user_expanded(msg_id, cx);
+        }))
+        .child(
+            Icon::new(IconName::Calendar)
+                .xsmall()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(cx.theme().foreground)
+                .child(format!("{} #{repeat_n}", tr(locale, "chat.scheduledRunDivider"))),
+        );
+
+    if !msg.timestamp.is_empty() {
+        pill = pill.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(msg.timestamp.clone()),
+        );
+    }
+    if !preview.is_empty() {
+        pill = pill.child(
+            div()
+                .max_w(px(220.))
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(preview),
+        );
+    }
+    pill = pill.child(
+        Icon::new(IconName::ChevronDown)
+            .xsmall()
+            .text_color(cx.theme().muted_foreground),
+    );
+
+    div()
+        .id(("scheduled-repeat-divider", msg_id))
+        .w_full()
+        .my_1()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(div().flex_1().h(px(1.)).bg(cx.theme().border.opacity(0.6)))
+        .child(pill)
+        .child(div().flex_1().h(px(1.)).bg(cx.theme().border.opacity(0.6)))
+        .into_any_element()
+}
+
+fn render_repeated_scheduled_expanded_header(
+    msg_id: u64,
+    repeat_n: usize,
+    locale: AppLocale,
+    cx: &mut Context<crate::chat::ChatPanel>,
+) -> AnyElement {
+    h_flex()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .bg(cx.theme().secondary.opacity(0.45))
+        .child(
+            h_flex()
+                .items_center()
+                .gap_1p5()
+                .child(
+                    Icon::new(IconName::Calendar)
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("{} #{repeat_n}", tr(locale, "chat.scheduledRunDivider"))),
+                ),
+        )
+        .child(
+            Button::new(("scheduled-repeat-collapse", msg_id))
+                .ghost()
+                .xsmall()
+                .icon(IconName::ChevronUp)
+                .label(tr(locale, "chat.collapseUserMsg"))
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    panel.toggle_user_expanded(msg_id, cx);
+                })),
+        )
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_msg(id: u64, content: &str) -> ChatMessage {
+        ChatMessage {
+            id,
+            entry_id: None,
+            role: MessageRole::User,
+            model_label: None,
+            timestamp: SharedString::default(),
+            thinking: SharedString::default(),
+            process_steps: Vec::new(),
+            process_message_count: 1,
+            thinking_ms: None,
+            thinking_expanded: false,
+            content: content.to_string(),
+            tool_calls: Vec::new(),
+            attachments: Vec::new(),
+            is_streaming: false,
+            turn_duration_ms: None,
+            token_summary: None,
+            turn_usage: None,
+            stop_reason: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn repeated_scheduled_prompt_collapses_after_first() {
+        let prompt = "Check the build status and summarize any new errors.";
+        let m1 = user_msg(1, prompt);
+        let m2 = user_msg(2, prompt);
+        let m3 = user_msg(3, prompt);
+        let msgs = vec![m1.clone(), m2.clone(), m3.clone()];
+        assert_eq!(repeated_scheduled_prompt_occurrence(&m1, &msgs, &[]), None);
+        assert_eq!(repeated_scheduled_prompt_occurrence(&m2, &msgs, &[]), Some(2));
+        assert_eq!(repeated_scheduled_prompt_occurrence(&m3, &msgs, &[]), Some(3));
+    }
+
+    #[test]
+    fn short_non_scheduled_reply_is_not_collapsed() {
+        let m1 = user_msg(1, "continue");
+        let m2 = user_msg(2, "continue");
+        let msgs = vec![m1.clone(), m2.clone()];
+        assert_eq!(repeated_scheduled_prompt_occurrence(&m2, &msgs, &[]), None);
     }
 }

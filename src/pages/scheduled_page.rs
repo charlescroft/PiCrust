@@ -8,6 +8,7 @@ use crate::i18n::{AppLocale, format_commas, tr};
 use chrono::{DateTime, Local, NaiveTime, Offset as _, Timelike};
 use gpui_kit::component::badge::Badge;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle};
 use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants as _};
@@ -257,7 +258,12 @@ impl ScheduledPageView {
                 .map(|m| (m.provider.clone(), m.model_id.clone()));
             self.thinking_level = t.thinking_level.clone();
             self.tool_preset = t.tool_preset.clone();
-            self.acknowledged_writes = false;
+            self.execution_target = if t.execution_target == "reuse" {
+                "reuse".to_string()
+            } else {
+                "new".to_string()
+            };
+            self.acknowledged_writes = matches!(self.tool_preset.as_str(), "default" | "full");
 
             match &t.schedule {
                 TaskScheduleSpec::Manual => {
@@ -296,6 +302,7 @@ impl ScheduledPageView {
             self.mode = ScheduledViewMode::Edit(Some(t.id.clone()));
         } else {
             self.editing_task_id = None;
+            self.execution_target = "new".to_string();
             self.timezone = local_timezone_name();
             self.name_input.update(cx, |s, cx| s.set_value("", window, cx));
             self.desc_input.update(cx, |s, cx| s.set_value("", window, cx));
@@ -322,7 +329,7 @@ impl ScheduledPageView {
             self.model_key = None;
             self.thinking_level = None;
             self.tool_preset = "default".to_string();
-            self.acknowledged_writes = false;
+            self.acknowledged_writes = true;
             self.mode = ScheduledViewMode::Edit(None);
         }
         self.preview_cron_now(cx);
@@ -440,30 +447,26 @@ impl ScheduledPageView {
             }
         };
 
-        let model_val = self
-            .model_key
-            .as_ref()
-            .map(|(p, id)| json!({ "provider": p, "modelId": id }))
-            .unwrap_or(Value::Null);
-        let thinking_val = self
-            .thinking_level
-            .as_ref()
-            .map(|t| Value::String(t.clone()))
-            .unwrap_or(Value::Null);
-
         let mut payload = json!({
             "name": name,
-            "description": if desc.is_empty() { Value::Null } else { Value::String(desc) },
             "prompt": prompt,
             "cwd": cwd,
             "schedule": schedule_val,
-            "model": model_val,
-            "thinkingLevel": thinking_val,
             "toolPreset": self.tool_preset,
+            "executionTarget": self.execution_target,
             "maxDurationMin": max_dur,
         });
-        if matches!(self.tool_preset.as_str(), "default" | "full") {
-            if let Some(obj) = payload.as_object_mut() {
+        if let Some(obj) = payload.as_object_mut() {
+            if !desc.is_empty() {
+                obj.insert("description".into(), Value::String(desc));
+            }
+            if let Some((ref p, ref id)) = self.model_key {
+                obj.insert("model".into(), json!({ "provider": p, "modelId": id }));
+            }
+            if let Some(ref tl) = self.thinking_level {
+                obj.insert("thinkingLevel".into(), Value::String(tl.clone()));
+            }
+            if matches!(self.tool_preset.as_str(), "default" | "full") {
                 obj.insert("acknowledgeUnattendedWrites".into(), json!(self.acknowledged_writes));
             }
         }
@@ -486,12 +489,21 @@ impl ScheduledPageView {
             };
             match local_res {
                 Ok(tid) => {
-                    app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+                    let msg_key = if edit_id.is_some() {
+                        "toast.scheduledUpdated"
+                    } else {
+                        "toast.scheduledCreated"
+                    };
+                    app_state.update(cx, |s, cx| {
+                        s.refresh_scheduled_tasks(cx);
+                        let msg = crate::i18n::tr(s.locale, msg_key);
+                        s.show_success_toast(msg, cx);
+                    });
                     self.load_run_history(tid.clone(), None, cx);
                     self.mode = ScheduledViewMode::Detail(tid);
                 }
                 Err(e) => {
-                    self.action_error = Some(e);
+                    app_state.update(cx, |s, cx| s.show_toast(e, cx));
                 }
             }
             cx.notify();
@@ -510,13 +522,25 @@ impl ScheduledPageView {
                 view.busy = false;
                 match res {
                     Ok(val) => {
+                        let is_edit = edit_id.is_some();
                         let new_id = val
                             .get("task")
                             .and_then(|t| t.get("id"))
                             .and_then(Value::as_str)
                             .map(String::from)
                             .or(edit_id);
-                        app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+                        app_state.update(cx, |s, cx| {
+                            s.refresh_scheduled_tasks(cx);
+                            let msg = crate::i18n::tr(
+                                s.locale,
+                                if is_edit {
+                                    "toast.scheduledUpdated"
+                                } else {
+                                    "toast.scheduledCreated"
+                                },
+                            );
+                            s.show_success_toast(msg, cx);
+                        });
                         if let Some(tid) = new_id {
                             view.load_run_history(tid.clone(), None, cx);
                             view.mode = ScheduledViewMode::Detail(tid);
@@ -525,7 +549,8 @@ impl ScheduledPageView {
                         }
                     }
                     Err(e) => {
-                        view.action_error = Some(e.to_string());
+                        let msg = e.to_string();
+                        app_state.update(cx, |s, cx| s.show_toast(msg, cx));
                     }
                 }
                 cx.notify();
@@ -595,7 +620,7 @@ impl ScheduledPageView {
                 s.locale,
                 s.scheduled_running_ids.clone(),
                 s.scheduler_owner.clone(),
-                s.models.clone(),
+                s.visible_picker_models(),
             )
         };
 
@@ -632,27 +657,37 @@ impl ScheduledPageView {
                         .child(Icon::new(IconName::Info).small())
                         .child(div().text_xs().child(tr(locale, "scheduled.ownerNotice"))),
                 )
-                .child(
+                .child({
+                    let is_taking_over = self.app_state.read(cx).is_async_op_pending("sched:takeover");
                     Button::new("sched-takeover")
                         .outline()
                         .small()
                         .h(px(28.))
+                        .loading(is_taking_over)
+                        .loading_icon(Icon::new(crate::icons::LoaderCircleIcon))
+                        .disabled(is_taking_over)
                         .label(tr(locale, "scheduled.takeOver"))
                         .on_click(move |_, _, cx| {
-                            let home = crate::client::native_index::user_home();
-                            let _ = std::fs::remove_file(home.join(".pi/agent/scheduled-tasks/scheduler.lock"));
-                            let _ = std::fs::remove_file(home.join(".pi/agent/scheduled-tasks/scheduler-lease.json"));
                             app_takeover.update(cx, |s, cx| {
+                                if !s.begin_async_op("sched:takeover", cx) {
+                                    return;
+                                }
+                                let home = crate::client::native_index::user_home();
+                                let _ = std::fs::remove_file(home.join(".pi/agent/scheduled-tasks/scheduler.lock"));
+                                let _ = std::fs::remove_file(home.join(".pi/agent/scheduled-tasks/scheduler-lease.json"));
                                 let client = s.client.clone();
                                 let ent = cx.entity().clone();
                                 cx.spawn(async move |_, cx| {
                                     let _ = client.takeover_scheduler().await;
-                                    let _ = ent.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+                                    let _ = ent.update(cx, |s, cx| {
+                                        s.end_async_op("sched:takeover", cx);
+                                        s.refresh_scheduled_tasks(cx);
+                                    });
                                 })
                                 .detach();
                             });
-                        }),
-                )
+                        })
+                })
         });
 
         let mut shell = v_flex()
@@ -1721,6 +1756,7 @@ impl ScheduledPageView {
                                                     .selected(self.tool_preset == "full")
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.tool_preset = "full".to_string();
+                                                        this.acknowledged_writes = true;
                                                         cx.notify();
                                                     })),
                                             )
@@ -1731,6 +1767,7 @@ impl ScheduledPageView {
                                                     .selected(self.tool_preset == "default")
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.tool_preset = "default".to_string();
+                                                        this.acknowledged_writes = true;
                                                         cx.notify();
                                                     })),
                                             )
@@ -1746,14 +1783,37 @@ impl ScheduledPageView {
                                             )
                                             .into_any_element(),
                                         cx,
-                                    )),
+                                    ))
+                                    .children(
+                                        matches!(self.tool_preset.as_str(), "default" | "full")
+                                            .then(|| {
+                                                v_flex()
+                                                    .gap_2()
+                                                    .p_2p5()
+                                                    .rounded_md()
+                                                    .bg(cx.theme().warning.opacity(0.08))
+                                                    .border_1()
+                                                    .border_color(cx.theme().warning.opacity(0.35))
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(cx.theme().foreground)
+                                                            .child(tr(locale, "scheduled.tools.writeWarning")),
+                                                    )
+                                                    .child(
+                                                        Checkbox::new("sched-ack-writes")
+                                                            .checked(self.acknowledged_writes)
+                                                            .label(tr(locale, "scheduled.tools.writeAck"))
+                                                            .on_click(cx.listener(
+                                                                |this, checked: &bool, _, cx| {
+                                                                    this.acknowledged_writes = *checked;
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    )
+                                            }),
+                                    ),
                             )
-                            .children(self.action_error.as_ref().map(|e| {
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().danger)
-                                    .child(SharedString::from(e.clone()))
-                            }))
                             .child(
                                 h_flex()
                                     .justify_end()
@@ -1876,9 +1936,14 @@ impl ScheduledPageView {
             let _ = this.update(cx, |view, cx| {
                 view.busy = false;
                 if let Err(e) = res {
-                    view.action_error = Some(e.to_string());
+                    let msg = e.to_string();
+                    app_state.update(cx, |s, cx| s.show_toast(msg, cx));
                 } else {
-                    app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+                    app_state.update(cx, |s, cx| {
+                        s.refresh_scheduled_tasks(cx);
+                        let msg = crate::i18n::tr(s.locale, "toast.scheduledTriggered");
+                        s.show_success_toast(msg, cx);
+                    });
                     view.load_run_history(id, None, cx);
                 }
                 cx.notify();
@@ -1907,9 +1972,21 @@ impl ScheduledPageView {
             let _ = this.update(cx, |view, cx| {
                 view.busy = false;
                 if let Err(e) = res {
-                    view.action_error = Some(e.to_string());
+                    let msg = e.to_string();
+                    app_state.update(cx, |s, cx| s.show_toast(msg, cx));
                 } else {
-                    app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+                    app_state.update(cx, |s, cx| {
+                        s.refresh_scheduled_tasks(cx);
+                        let msg = crate::i18n::tr(
+                            s.locale,
+                            if enabled {
+                                "toast.scheduledEnabled"
+                            } else {
+                                "toast.scheduledDisabled"
+                            },
+                        );
+                        s.show_success_toast(msg, cx);
+                    });
                 }
                 cx.notify();
             });
@@ -1933,9 +2010,14 @@ impl ScheduledPageView {
             let _ = this.update(cx, |view, cx| {
                 view.busy = false;
                 if let Err(e) = res {
-                    view.action_error = Some(e.to_string());
+                    let msg = e.to_string();
+                    app_state.update(cx, |s, cx| s.show_toast(msg, cx));
                 } else {
-                    app_state.update(cx, |s, cx| s.refresh_scheduled_tasks(cx));
+                    app_state.update(cx, |s, cx| {
+                        s.refresh_scheduled_tasks(cx);
+                        let msg = crate::i18n::tr(s.locale, "toast.scheduledDeleted");
+                        s.show_success_toast(msg, cx);
+                    });
                     view.mode = ScheduledViewMode::List;
                 }
                 cx.notify();

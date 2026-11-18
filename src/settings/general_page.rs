@@ -2,16 +2,19 @@ use crate::app_state::AppState;
 use crate::client::native_index::user_home;
 use crate::client::types::SendShortcut;
 use crate::i18n::{AppLocale, tr};
+use crate::icons::LoaderCircleIcon;
 use crate::settings::{SETTINGS_BTN_W, SETTINGS_DROPDOWN_W, config_path_field};
 use crate::themes::{dark_theme_names, light_theme_names};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::slider::Slider;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Axis, Entity, ParentElement as _, SharedString, Styled as _, div, px,
 };
@@ -402,43 +405,97 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
         ))
         .item(SettingItem::new(
             tr(locale, "settings.artifactsInPanel"),
-            SettingField::switch(
-                move |cx: &App| app_art_read.read(cx).artifacts_prompt_enabled,
-                move |val: bool, cx: &mut App| {
-                    app_art_write.update(cx, |s, cx| {
-                        s.artifacts_prompt_enabled = val;
-                        let _ = crate::client::local_store::set_artifacts_prompt_local(val);
-                        if s.sidecar_connected {
-                            let client = s.client.clone();
-                            cx.spawn(async move |_, _| {
-                                let _ = client.set_artifacts_settings(val).await;
-                            })
-                            .detach();
-                        }
-                        cx.notify();
-                    });
-                },
-            ),
+            SettingField::render(move |_, _, cx| {
+                let checked = app_art_read.read(cx).artifacts_prompt_enabled;
+                let is_pending = app_art_read.read(cx).is_async_op_pending("settings:artifacts");
+                let app_write = app_art_write.clone();
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .when(is_pending, |el| {
+                        el.child(Spinner::new().xsmall().icon(Icon::new(LoaderCircleIcon)))
+                    })
+                    .child(
+                        Switch::new("settings-artifacts-switch")
+                            .checked(checked)
+                            .disabled(is_pending)
+                            .on_click(move |val: &bool, _, cx| {
+                                let val = *val;
+                                app_write.update(cx, |s, cx| {
+                                    if !s.begin_async_op("settings:artifacts", cx) {
+                                        return;
+                                    }
+                                    s.artifacts_prompt_enabled = val;
+                                    let _ = crate::client::local_store::set_artifacts_prompt_local(val);
+                                    if s.sidecar_connected {
+                                        let client = s.client.clone();
+                                        let entity = cx.entity().clone();
+                                        cx.spawn(async move |_, cx| {
+                                            let _ = client.set_artifacts_settings(val).await;
+                                            let _ = entity.update(cx, |s, cx| {
+                                                s.end_async_op("settings:artifacts", cx);
+                                                let msg = tr(s.locale, "toast.settingsSaved");
+                                                s.show_success_toast(msg, cx);
+                                            });
+                                        })
+                                        .detach();
+                                    } else {
+                                        s.end_async_op("settings:artifacts", cx);
+                                        let msg = tr(s.locale, "toast.settingsSaved");
+                                        s.show_success_toast(msg, cx);
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    )
+            }),
         ))
         .item(SettingItem::new(
             tr(locale, "settings.autoTitle"),
-            SettingField::switch(
-                move |cx: &App| app_title_read.read(cx).auto_title_enabled,
-                move |val: bool, cx: &mut App| {
-                    app_title_write.update(cx, |s, cx| {
-                        s.auto_title_enabled = val;
-                        let _ = crate::client::local_store::set_auto_session_title_local(val);
-                        if s.sidecar_connected {
-                            let client = s.client.clone();
-                            cx.spawn(async move |_, _| {
-                                let _ = client.set_session_title_settings(val).await;
-                            })
-                            .detach();
-                        }
-                        cx.notify();
-                    });
-                },
-            ),
+            SettingField::render(move |_, _, cx| {
+                let checked = app_title_read.read(cx).auto_title_enabled;
+                let is_pending = app_title_read.read(cx).is_async_op_pending("settings:auto_title");
+                let app_write = app_title_write.clone();
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .when(is_pending, |el| {
+                        el.child(Spinner::new().xsmall().icon(Icon::new(LoaderCircleIcon)))
+                    })
+                    .child(
+                        Switch::new("settings-auto-title-switch")
+                            .checked(checked)
+                            .disabled(is_pending)
+                            .on_click(move |val: &bool, _, cx| {
+                                let val = *val;
+                                app_write.update(cx, |s, cx| {
+                                    if !s.begin_async_op("settings:auto_title", cx) {
+                                        return;
+                                    }
+                                    s.auto_title_enabled = val;
+                                    let _ = crate::client::local_store::set_auto_session_title_local(val);
+                                    if s.sidecar_connected {
+                                        let client = s.client.clone();
+                                        let entity = cx.entity().clone();
+                                        cx.spawn(async move |_, cx| {
+                                            let _ = client.set_session_title_settings(val).await;
+                                            let _ = entity.update(cx, |s, cx| {
+                                                s.end_async_op("settings:auto_title", cx);
+                                                let msg = tr(s.locale, "toast.settingsSaved");
+                                                s.show_success_toast(msg, cx);
+                                            });
+                                        })
+                                        .detach();
+                                    } else {
+                                        s.end_async_op("settings:auto_title", cx);
+                                        let msg = tr(s.locale, "toast.settingsSaved");
+                                        s.show_success_toast(msg, cx);
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    )
+            }),
         ));
 
     let notify_group = SettingGroup::new()
@@ -732,42 +789,65 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
         )
         .item(SettingItem::new(
             tr(locale, "settings.proxyEnabled"),
-            SettingField::switch(
-                move |cx: &App| app_proxy_read.read(cx).network_proxy.enabled,
-                move |val: bool, cx: &mut App| {
-                    app_proxy_write.update(cx, |s, cx| {
-                        s.network_proxy.enabled = val;
-                        let _ = crate::client::local_store::save_network_proxy_local(
-                            val,
-                            &s.network_proxy.url,
-                            &s.network_proxy.no_proxy,
-                        );
-                        if s.sidecar_connected {
-                            let client = s.client.clone();
-                            let url = s.network_proxy.url.clone();
-                            let no_proxy = s.network_proxy.no_proxy.clone();
-                            let entity = cx.entity().clone();
-                            cx.spawn(async move |_, cx| {
-                                if let Ok(res) = client
-                                    .set_network_proxy(json!({
-                                        "enabled": val,
-                                        "url": url,
-                                        "noProxy": no_proxy,
-                                    }))
-                                    .await
-                                {
-                                    let _ = entity.update(cx, |s, cx| {
-                                        s.apply_network_proxy_response(&res);
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                            .detach();
-                        }
-                        cx.notify();
-                    });
-                },
-            ),
+            SettingField::render(move |_, _, cx| {
+                let checked = app_proxy_read.read(cx).network_proxy.enabled;
+                let is_pending = app_proxy_read.read(cx).is_async_op_pending("settings:proxy_enabled");
+                let app_write = app_proxy_write.clone();
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .when(is_pending, |el| {
+                        el.child(Spinner::new().xsmall().icon(Icon::new(LoaderCircleIcon)))
+                    })
+                    .child(
+                        Switch::new("settings-proxy-switch")
+                            .checked(checked)
+                            .disabled(is_pending)
+                            .on_click(move |val: &bool, _, cx| {
+                                let val = *val;
+                                app_write.update(cx, |s, cx| {
+                                    if !s.begin_async_op("settings:proxy_enabled", cx) {
+                                        return;
+                                    }
+                                    s.network_proxy.enabled = val;
+                                    let _ = crate::client::local_store::save_network_proxy_local(
+                                        val,
+                                        &s.network_proxy.url,
+                                        &s.network_proxy.no_proxy,
+                                    );
+                                    if s.sidecar_connected {
+                                        let client = s.client.clone();
+                                        let url = s.network_proxy.url.clone();
+                                        let no_proxy = s.network_proxy.no_proxy.clone();
+                                        let entity = cx.entity().clone();
+                                        cx.spawn(async move |_, cx| {
+                                            let res = client
+                                                .set_network_proxy(json!({
+                                                    "enabled": val,
+                                                    "url": url,
+                                                    "noProxy": no_proxy,
+                                                }))
+                                                .await;
+                                            let _ = entity.update(cx, |s, cx| {
+                                                s.end_async_op("settings:proxy_enabled", cx);
+                                                if let Ok(res) = res {
+                                                    s.apply_network_proxy_response(&res);
+                                                }
+                                                let msg = tr(s.locale, "toast.settingsSaved");
+                                                s.show_success_toast(msg, cx);
+                                            });
+                                        })
+                                        .detach();
+                                    } else {
+                                        s.end_async_op("settings:proxy_enabled", cx);
+                                        let msg = tr(s.locale, "toast.settingsSaved");
+                                        s.show_success_toast(msg, cx);
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    )
+            }),
         ))
         .item(SettingItem::new(
             tr(locale, "settings.proxyUrl"),

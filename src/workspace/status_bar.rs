@@ -34,7 +34,7 @@ pub fn render_status_bar(
     } else if state.active_workspace_kind == WorkspaceKind::Chat {
         SharedString::from(tr(locale, "status.chatWorkspace"))
     } else {
-        SharedString::from(state.active_cwd.to_string_lossy().into_owned())
+        SharedString::from(format_compact_cwd_path(&state.active_cwd))
     };
 
     let status_color = if sidecar_ok || is_running {
@@ -440,4 +440,123 @@ pub fn get_local_git_branches(cwd: &std::path::Path) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(String::from)
         .collect()
+}
+
+pub fn format_compact_cwd_path(path: &std::path::Path) -> String {
+    let home = crate::client::native_index::user_home();
+    format_compact_cwd_path_with_home(path, Some(&home))
+}
+
+fn format_compact_cwd_path_with_home(
+    path: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> String {
+    let raw = path.to_string_lossy().into_owned();
+    let sep = if raw.contains('\\') && !raw.contains('/') {
+        '\\'
+    } else {
+        '/'
+    };
+
+    // Replace home prefix with `~` when applicable
+    let display = if let Some(h) = home {
+        let h_str = h.to_string_lossy();
+        let h_norm = h_str.trim_end_matches(['/', '\\']);
+        let raw_norm = raw.trim_end_matches(['/', '\\']);
+        if !h_norm.is_empty() && raw_norm == h_norm {
+            return "~".to_string();
+        } else if !h_norm.is_empty()
+            && raw.starts_with(h_norm)
+            && raw
+                .as_bytes()
+                .get(h_norm.len())
+                .is_some_and(|&b| b == b'/' || b == b'\\')
+        {
+            format!("~{}", &raw[h_norm.len()..])
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
+
+    if display.chars().count() <= 34 {
+        return display;
+    }
+
+    // Split into prefix (drive/root/`~`) and normal segments, handling both `/` and `\`
+    let (prefix, rest) = if let Some(after_tilde) = display.strip_prefix('~') {
+        ("~".to_string(), after_tilde.trim_start_matches(['/', '\\']))
+    } else if display.starts_with("\\\\") {
+        // Windows UNC: \\server\share\...
+        ("\\\\".to_string(), display.trim_start_matches('\\'))
+    } else if display.len() >= 2 && display.as_bytes()[1] == b':' {
+        let drive = &display[..2];
+        let after = display[2..].trim_start_matches(['/', '\\']);
+        (format!("{drive}{sep}"), after)
+    } else if display.starts_with('/') {
+        ("/".to_string(), display.trim_start_matches('/'))
+    } else {
+        (String::new(), display.as_str())
+    };
+
+    let parts: Vec<&str> = rest
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if parts.len() <= 2 {
+        return display;
+    }
+
+    let tail_two = format!("{}{sep}{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+    let candidate = if prefix.is_empty() {
+        format!("…{sep}{tail_two}")
+    } else if prefix == "~" {
+        format!("~{sep}…{sep}{tail_two}")
+    } else {
+        format!("{prefix}…{sep}{tail_two}")
+    };
+
+    if candidate.chars().count() <= 40 {
+        candidate
+    } else {
+        format!("…{sep}{}", parts[parts.len() - 1])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn formats_compact_paths_across_platforms() {
+        let home = Path::new("/Users/charles");
+        assert_eq!(
+            format_compact_cwd_path_with_home(Path::new("/Users/charles"), Some(home)),
+            "~"
+        );
+        assert_eq!(
+            format_compact_cwd_path_with_home(
+                Path::new("/Users/charles/Documents/Projects/very-long-workspace/pi-agent-desktop"),
+                Some(home)
+            ),
+            "~/…/very-long-workspace/pi-agent-desktop"
+        );
+        assert_eq!(
+            format_compact_cwd_path_with_home(
+                Path::new("/Volumes/Ext/dev/Rust/pi-agent-desktop"),
+                Some(home)
+            ),
+            "/…/Rust/pi-agent-desktop"
+        );
+        assert_eq!(
+            format_compact_cwd_path_with_home(
+                Path::new(r"C:\Users\Charles\Documents\Projects\my-app\sub-dir"),
+                None
+            ),
+            r"C:\…\my-app\sub-dir"
+        );
+    }
 }

@@ -294,6 +294,7 @@ pub fn render_sidebar(
         .on_click(move |_, _, cx| {
             app_chats_fold.update(cx, |s, cx| {
                 s.chats_section_collapsed = !s.chats_section_collapsed;
+                s.save_sidebar_collapse_state();
                 cx.notify();
             });
         })
@@ -440,6 +441,7 @@ pub fn render_sidebar(
         .on_click(move |_, _, cx| {
             app_proj_fold.update(cx, |s, cx| {
                 s.projects_section_collapsed = !s.projects_section_collapsed;
+                s.save_sidebar_collapse_state();
                 cx.notify();
             });
         })
@@ -593,6 +595,7 @@ pub fn render_sidebar(
                         } else {
                             s.collapsed_projects.insert(proj_key.clone());
                         }
+                        s.save_sidebar_collapse_state();
                         cx.notify();
                     });
                 })
@@ -704,28 +707,54 @@ pub fn render_sidebar(
         })
         .collect();
 
+    let archived_collapsed = state.archived_section_collapsed;
     if !archived_list.is_empty() {
-        scroll_body = scroll_body.child(
-            v_flex()
-                .w_full()
-                .gap_1()
-                .pt_3()
-                .child(
-                    h_flex()
-                        .px_2p5()
-                        .py_1()
-                        .items_center()
-                        .gap_1p5()
-                        .child(Icon::new(crate::icons::ArchiveIcon).xsmall().text_color(cx.theme().muted_foreground))
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_semibold()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!("{} ({})", tr(locale, "sidebar.archivedGroup"), format_commas(archived_list.len()))),
-                        ),
-                )
-                .children(archived_list.into_iter().enumerate().map(|(a_idx, (sid, title, is_run, is_unr, is_pin, rel_time))| {
+        let app_arch_toggle = app_state.clone();
+        let mut archived_sec = v_flex()
+            .w_full()
+            .gap_1()
+            .pt_3()
+            .child(
+                h_flex()
+                    .id("archived-section-header")
+                    .px_2p5()
+                    .py_1()
+                    .items_center()
+                    .gap_1p5()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(cx.theme().sidebar_accent.opacity(0.6)))
+                    .on_click(move |_, _, cx| {
+                        app_arch_toggle.update(cx, |s, cx| {
+                            s.archived_section_collapsed = !s.archived_section_collapsed;
+                            s.save_sidebar_collapse_state();
+                            cx.notify();
+                        });
+                    })
+                    .child(
+                        Icon::new(if archived_collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_medium()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} ({})",
+                                tr(locale, "sidebar.archivedGroup"),
+                                format_commas(archived_list.len())
+                            )),
+                    ),
+            );
+        if !archived_collapsed {
+            archived_sec = archived_sec.children(archived_list.into_iter().enumerate().map(
+                |(a_idx, (sid, title, is_run, is_unr, is_pin, rel_time))| {
                     build_session_row(
                         ("arch-sess", a_idx),
                         sid,
@@ -743,8 +772,10 @@ pub fn render_sidebar(
                         locale,
                         cx,
                     )
-                })),
-        );
+                },
+            ));
+        }
+        scroll_body = scroll_body.child(archived_sec);
     }
 
     v_flex()
@@ -771,6 +802,65 @@ pub fn render_sidebar(
             }),
         )
         .child(scroll_body)
+        .child({
+            let app_notes = app_state.clone();
+            let app_creds = app_state.clone();
+            let app_wf = app_state.clone();
+            v_flex()
+                .w_full()
+                .px_2()
+                .py_1p5()
+                .gap_1()
+                .border_t_1()
+                .border_color(cx.theme().sidebar_border)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .items_center()
+                        .child(
+                            Button::new("sidebar-notes-btn")
+                                .ghost()
+                                .small()
+                                .flex_1()
+                                .h(px(28.))
+                                .icon(IconName::FileText)
+                                .label(tr(locale, "sidebar.notes"))
+                                .tooltip(tr(locale, "sidebar.notesTooltip"))
+                                .on_click(move |_, _, cx| {
+                                    app_notes.update(cx, |s, cx| s.open_notes_modal(cx));
+                                }),
+                        )
+                        .child(
+                            Button::new("sidebar-credentials-btn")
+                                .ghost()
+                                .small()
+                                .flex_1()
+                                .h(px(28.))
+                                .icon(Icon::new(crate::icons::KeyRoundIcon))
+                                .label(tr(locale, "sidebar.credentials"))
+                                .tooltip(tr(locale, "sidebar.credentialsTooltip"))
+                                .on_click(move |_, _, cx| {
+                                    app_creds.update(cx, |s, cx| s.open_credentials_modal(cx));
+                                }),
+                        ),
+                )
+                .child(
+                    Button::new("sidebar-workflows-btn")
+                        .ghost()
+                        .small()
+                        .w_full()
+                        .h(px(28.))
+                        .icon(Icon::new(crate::icons::PlayIcon))
+                        .label(tr(locale, "sidebar.workflows"))
+                        .tooltip(tr(locale, "sidebar.workflowsTooltip"))
+                        .on_click(move |_, _, cx| {
+                            app_wf.update(cx, |s, cx| {
+                                s.toggle_right_tab(RightPanelTab::Workflows, cx);
+                            });
+                        }),
+                )
+        })
 }
 
 fn build_nav_row(

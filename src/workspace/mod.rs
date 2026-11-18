@@ -34,6 +34,8 @@ pub struct WorkspaceView {
     settings_add_dialog: Entity<SettingsAddDialogView>,
     artifacts_search_input: Entity<gpui_kit::component::input::InputState>,
     new_session_questionnaire: Option<Entity<crate::chat::questionnaire::NewSessionQuestionnaireView>>,
+    notes_modal: Option<Entity<crate::panels::notes_modal::NotesModal>>,
+    credentials_modal: Option<Entity<crate::panels::credentials_modal::CredentialsModal>>,
     rename_state: Option<InlineRenameState>,
     resizing_right: bool,
 }
@@ -80,6 +82,8 @@ impl WorkspaceView {
             settings_add_dialog,
             artifacts_search_input,
             new_session_questionnaire: None,
+            notes_modal: None,
+            credentials_modal: None,
             rename_state: None,
             resizing_right: false,
         }
@@ -94,7 +98,31 @@ impl Render for WorkspaceView {
         let right_open = state.right_panel_open;
         let right_target_w = f32::from(state.right_panel_width);
         let show_new_sess_q = state.show_new_session_questionnaire;
+        let show_notes_modal = state.notes_modal_open;
+        let show_credentials_modal = state.credentials_modal_open;
         let locale = state.locale;
+
+        if show_notes_modal {
+            if self.notes_modal.is_none() {
+                let app = self.app_state.clone();
+                self.notes_modal = Some(cx.new(|cx| {
+                    crate::panels::notes_modal::NotesModal::new(app, window, cx)
+                }));
+            }
+        } else {
+            self.notes_modal = None;
+        }
+
+        if show_credentials_modal {
+            if self.credentials_modal.is_none() {
+                let app = self.app_state.clone();
+                self.credentials_modal = Some(cx.new(|cx| {
+                    crate::panels::credentials_modal::CredentialsModal::new(app, window, cx)
+                }));
+            }
+        } else {
+            self.credentials_modal = None;
+        }
 
         if show_new_sess_q {
             let needs_create = self
@@ -275,6 +303,8 @@ impl Render for WorkspaceView {
                     if !s.settings_busy {
                         if s.settings_open {
                             s.settings_open = false;
+                            s.settings_add_kind = None;
+                            s.discover_error = None;
                             cx.notify();
                         } else {
                             s.open_settings(cx);
@@ -341,6 +371,49 @@ impl Render for WorkspaceView {
                 cx,
             ))
             .children(self.new_session_questionnaire.clone())
+            .children(self.notes_modal.clone())
+            .children(self.credentials_modal.clone())
+            .children(self.app_state.read(cx).toast_message.clone().map(|msg| {
+                let kind = self.app_state.read(cx).toast_kind;
+                let (icon_name, icon_color) = match kind {
+                    crate::app_state::ToastKind::Success => {
+                        (gpui_kit::component::IconName::CircleCheck, cx.theme().success)
+                    }
+                    crate::app_state::ToastKind::Info => {
+                        (gpui_kit::component::IconName::Info, cx.theme().primary)
+                    }
+                    crate::app_state::ToastKind::Warning => {
+                        (gpui_kit::component::IconName::TriangleAlert, cx.theme().warning)
+                    }
+                    crate::app_state::ToastKind::Error => {
+                        (gpui_kit::component::IconName::TriangleAlert, cx.theme().danger)
+                    }
+                };
+                h_flex()
+                    .absolute()
+                    .bottom_10()
+                    .right_4()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .shadow_lg()
+                    .child(
+                        gpui_kit::component::Icon::new(icon_name)
+                            .size(px(14.))
+                            .text_color(icon_color),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().foreground)
+                            .child(msg),
+                    )
+            }))
     }
 }
 

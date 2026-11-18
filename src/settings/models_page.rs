@@ -166,6 +166,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                             .label(tr(locale, "settings.addProvider"))
                             .on_click(move |_, _, cx| {
                                 app_btn.update(cx, |s, cx| {
+                                    s.discover_error = None;
                                     s.settings_add_kind = Some(SettingsAddKind::AddProviderPicker);
                                     cx.notify();
                                 });
@@ -174,23 +175,28 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                 ))
                 .item(SettingItem::new(
                     tr(locale, "settings.refreshCatalog"),
-                    SettingField::render(move |_, _, _| {
+                    SettingField::render(move |_, _, cx| {
                         let app_btn = app_refresh.clone();
+                        let is_refreshing = app_btn.read(cx).is_async_op_pending("models:refresh");
                         Button::new("refresh-catalog-btn")
                             .outline()
                             .small()
                             .h(px(28.))
                             .w(SETTINGS_BTN_W)
                             .icon(IconName::RefreshCw)
+                            .loading(is_refreshing)
+                            .loading_icon(Icon::new(LoaderCircleIcon))
+                            .disabled(is_refreshing)
                             .label(tr(locale, "page.refresh"))
                             .on_click(move |_, _, cx| {
                                 app_btn.update(cx, |s, cx| {
-                                    if s.sidecar_connected {
+                                    if s.sidecar_connected && s.begin_async_op("models:refresh", cx) {
                                         let client = s.client.clone();
                                         let entity = cx.entity().clone();
                                         cx.spawn(async move |_, cx| {
                                             let _ = client.refresh_model_catalog().await;
                                             let _ = entity.update(cx, |s, cx| {
+                                                s.end_async_op("models:refresh", cx);
                                                 s.refresh_from_sidecar(cx);
                                             });
                                         })
@@ -365,10 +371,27 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                     .flex_shrink_0()
                                     .items_center()
                                     .gap_1p5()
+                                    .when(
+                                        app_cards
+                                            .read(cx)
+                                            .is_async_op_pending(&format!("provider:enable:{pid_enable}")),
+                                        |el| {
+                                            el.child(
+                                                Spinner::new()
+                                                    .xsmall()
+                                                    .icon(Icon::new(LoaderCircleIcon)),
+                                            )
+                                        },
+                                    )
                                     .child(
                                         Switch::new(("cfg-prov-enable", pidx))
                                             .checked(toggle_on)
-                                            .disabled(is_prov_deleting)
+                                            .disabled(
+                                                is_prov_deleting
+                                                    || app_cards.read(cx).is_async_op_pending(
+                                                        &format!("provider:enable:{pid_enable}"),
+                                                    ),
+                                            )
                                             .on_click({
                                                 let app_hdr_toggle = app_cards.clone();
                                                 move |checked: &bool, _, cx| {
@@ -391,6 +414,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                             .tooltip(tr(locale, "settings.editingProvider"))
                                             .on_click(move |_, _, cx| {
                                                 app_edit_prov.update(cx, |s, cx| {
+                                                    s.discover_error = None;
                                                     s.settings_add_kind =
                                                         Some(SettingsAddKind::EditProvider {
                                                             provider_id: pid_edit.clone(),
@@ -537,18 +561,37 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                                         ),
                                                 )
                                             })
-                                            .child(
+                                            .child({
+                                                let r_key = if m_from_catalog {
+                                                    mref.clone()
+                                                } else {
+                                                    format!("{}/{}", pid_m, mid)
+                                                };
+                                                let is_model_toggling = app_cards
+                                                    .read(cx)
+                                                    .is_async_op_pending(&format!(
+                                                        "model:enable:{r_key}"
+                                                    ));
                                                 h_flex()
                                                     .flex_shrink_0()
                                                     .items_center()
                                                     .gap_1p5()
+                                                    .when(is_model_toggling, |el| {
+                                                        el.child(
+                                                            Spinner::new()
+                                                                .xsmall()
+                                                                .icon(Icon::new(LoaderCircleIcon)),
+                                                        )
+                                                    })
                                                     .child(
                                                         Switch::new((
                                                             "cfg-model-enable",
                                                             pidx * 1000 + midx,
                                                         ))
                                                         .checked(m_enabled)
-                                                        .disabled(is_model_deleting)
+                                                        .disabled(
+                                                            is_model_deleting || is_model_toggling,
+                                                        )
                                                         .on_click(move |checked: &bool, _, cx| {
                                                             let next = *checked;
                                                             let prov = pid_m.clone();
@@ -621,8 +664,8 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                                                 );
                                                             });
                                                         }),
-                                                    ),
-                                            ),
+                                                    )
+                                            }),
                                     );
                                 }
                             }
@@ -665,6 +708,7 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                             .label(tr(locale, "settings.addModel"))
                                             .on_click(move |_, _, cx| {
                                                 app_footer.update(cx, |s, cx| {
+                                                    s.discover_error = None;
                                                     s.settings_add_kind =
                                                         Some(SettingsAddKind::AddModelToProvider {
                                                             provider_id: target.clone(),
@@ -675,60 +719,84 @@ pub fn models_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                     }),
                             );
 
-                            if let Some(err) = discovery_error {
-                                let app_dismiss_err = app_cards.clone();
-                                body = body.child(
-                                    h_flex()
-                                        .w_full()
-                                        .p_2p5()
-                                        .gap_2()
-                                        .items_start()
-                                        .justify_between()
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(cx.theme().danger.opacity(0.35))
-                                        .bg(cx.theme().danger.opacity(0.08))
-                                        .child(
-                                            h_flex()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .gap_2()
-                                                .items_start()
-                                                .child(
-                                                    Icon::new(IconName::TriangleAlert)
-                                                        .xsmall()
-                                                        .text_color(cx.theme().danger)
-                                                        .mt(px(2.)),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .whitespace_normal()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().danger)
-                                                        .child(SharedString::from(err)),
-                                                ),
-                                        )
-                                        .child(
-                                            Button::new(("dismiss-discover-err", pidx))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(IconName::Close)
-                                                .on_click(move |_, _, cx| {
-                                                    app_dismiss_err.update(cx, |s, cx| {
-                                                        s.discover_error = None;
-                                                        cx.notify();
-                                                    });
-                                                }),
-                                        ),
-                                );
-                            }
-
                             card = card.child(body);
                         }
 
                         col = col.child(card);
+
+                        if let Some(err) = discovery_error {
+                            let app_dismiss_err = app_cards.clone();
+                            let prov_label = prov
+                                .display_name
+                                .clone()
+                                .filter(|n| !n.is_empty())
+                                .unwrap_or_else(|| pid.clone());
+                            col = col.child(
+                                v_flex()
+                                    .w_full()
+                                    .p_3()
+                                    .gap_2()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(cx.theme().danger.opacity(0.45))
+                                    .bg(cx.theme().popover)
+                                    .shadow_sm()
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_2()
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(
+                                                        Icon::new(IconName::TriangleAlert)
+                                                            .small()
+                                                            .text_color(cx.theme().danger),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_semibold()
+                                                            .text_color(cx.theme().danger)
+                                                            .child(SharedString::from(format!(
+                                                                "{} · {}",
+                                                                tr(
+                                                                    locale,
+                                                                    "settings.discoverModelsFailed"
+                                                                ),
+                                                                prov_label
+                                                            ))),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new(("dismiss-discover-err", pidx))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Close)
+                                                    .on_click(move |_, _, cx| {
+                                                        app_dismiss_err.update(cx, |s, cx| {
+                                                            s.discover_error = None;
+                                                            cx.notify();
+                                                        });
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .p_2p5()
+                                            .rounded_md()
+                                            .bg(cx.theme().danger.opacity(0.08))
+                                            .text_xs()
+                                            .text_color(cx.theme().danger)
+                                            .whitespace_normal()
+                                            .child(SharedString::from(err)),
+                                    ),
+                            );
+                        }
                     }
                 col
             }),

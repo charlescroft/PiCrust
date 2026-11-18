@@ -20,6 +20,15 @@ impl IconNamed for ShieldIcon {
 }
 
 #[derive(Clone, Copy)]
+pub struct KeyRoundIcon;
+
+impl IconNamed for KeyRoundIcon {
+    fn path(self) -> SharedString {
+        gpui_kit::assets::IconName::KeyRound.path()
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct DatabaseIcon;
 
 impl IconNamed for DatabaseIcon {

@@ -59,13 +59,6 @@ pub fn render_title_bar(
                         .items_center()
                         .gap_1p5()
                         .child(
-                            svg()
-                                .path("picrust-mark.svg")
-                                .size(px(18.))
-                                .flex_shrink_0()
-                                .text_color(cx.theme().foreground),
-                        )
-                        .child(
                             div()
                                 .text_sm()
                                 .font_semibold()

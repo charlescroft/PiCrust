@@ -21,6 +21,7 @@ const MAX_TEXT_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewKind {
     Html,
+    WebUrl,
     Pdf,
     Svg,
     Image,
@@ -208,7 +209,48 @@ impl ArtifactPanelView {
                     ed.set_value(&code, window, cx);
                 });
             }
-            PreviewKind::Image | PreviewKind::Office | PreviewKind::Binary => {
+            PreviewKind::WebUrl => {
+                self.markdown_content = None;
+                if let Some(url) = art.file_path.as_deref() {
+                    let builder = wry::WebViewBuilder::new().with_url(url);
+                    self.build_webview(builder, window, cx);
+                } else {
+                    self.webview = None;
+                    self.webview_error = Some("Missing URL".to_string());
+                }
+            }
+            PreviewKind::Office => {
+                self.markdown_content = None;
+                const MAX_OFFICE_BYTES: u64 = 20 * 1024 * 1024;
+                if let Some(ref path) = disk_path {
+                    let meta_ok = std::fs::metadata(path)
+                        .map(|m| m.len() <= MAX_OFFICE_BYTES)
+                        .unwrap_or(false);
+                    if meta_ok {
+                        if let Ok(bytes) = std::fs::read(path) {
+                            let ext = path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            let b64 = base64_encode(&bytes);
+                            let html = wrap_office_html(&ext, &b64);
+                            let builder = wry::WebViewBuilder::new().with_html(&html);
+                            self.build_webview(builder, window, cx);
+                        } else {
+                            self.webview = None;
+                            self.webview_error = None;
+                        }
+                    } else {
+                        self.webview = None;
+                        self.webview_error = None;
+                    }
+                } else {
+                    self.webview = None;
+                    self.webview_error = None;
+                }
+            }
+            PreviewKind::Image | PreviewKind::Binary => {
                 self.webview = None;
                 self.webview_error = None;
                 self.markdown_content = None;
@@ -383,7 +425,7 @@ impl ArtifactPanelView {
         cx: &Context<Self>,
     ) -> gpui_kit::AnyElement {
         match self.active_kind {
-            PreviewKind::Html | PreviewKind::Svg => {
+            PreviewKind::Html | PreviewKind::WebUrl | PreviewKind::Svg => {
                 if let Some(ref wv) = self.webview {
                     div().size_full().child(wv.clone()).into_any_element()
                 } else {
@@ -456,12 +498,18 @@ impl ArtifactPanelView {
                     div().size_full().into_any_element()
                 }
             }
-            PreviewKind::Office => render_unsupported_card(
-                locale,
-                tr(locale, "panel.artifactOfficeUnsupported"),
-                art.clone(),
-                cx,
-            ),
+            PreviewKind::Office => {
+                if let Some(ref wv) = self.webview {
+                    div().size_full().child(wv.clone()).into_any_element()
+                } else {
+                    render_unsupported_card(
+                        locale,
+                        tr(locale, "panel.artifactOfficeUnsupported"),
+                        art.clone(),
+                        cx,
+                    )
+                }
+            }
             PreviewKind::Binary => render_unsupported_card(
                 locale,
                 tr(locale, "panel.artifactBinaryUnsupported"),
@@ -553,6 +601,13 @@ fn extract_extension(art: &ArtifactRecord) -> Option<String> {
 }
 
 fn resolve_preview_kind(art: &ArtifactRecord) -> PreviewKind {
+    if art
+        .file_path
+        .as_deref()
+        .is_some_and(|p| p.starts_with("http://") || p.starts_with("https://"))
+    {
+        return PreviewKind::WebUrl;
+    }
     if let Some(ext) = extract_extension(art) {
         match ext.as_str() {
             "html" | "htm" => return PreviewKind::Html,
@@ -660,6 +715,7 @@ fn preview_subtitle(art: &ArtifactRecord, kind: PreviewKind) -> String {
     let ext = extract_extension(art).map(|s| s.to_ascii_uppercase());
     match (kind, ext) {
         (PreviewKind::Html, _) => "HTML".to_string(),
+        (PreviewKind::WebUrl, _) => "Web".to_string(),
         (PreviewKind::Pdf, _) => "PDF".to_string(),
         (PreviewKind::Svg, _) => "SVG".to_string(),
         (PreviewKind::Image, Some(e)) => e,
@@ -736,6 +792,94 @@ fn open_artifact_externally(art: &ArtifactRecord) {
     if std::fs::write(&tmp_path, art.content.as_bytes()).is_ok() {
         let _ = open::that_detached(tmp_path);
     }
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+fn wrap_office_html(ext: &str, b64: &str) -> String {
+    let script_body = match ext {
+        "docx" => r#"
+<script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://unpkg.com/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
+<script>
+(async () => {
+  try {
+    const bin = Uint8Array.from(atob(window.__OFFICE_B64__), c => c.charCodeAt(0));
+    await docx.renderAsync(bin.buffer, document.getElementById('root'));
+  } catch (e) {
+    document.getElementById('root').innerHTML = '<p style="color:#c00;padding:16px">Preview failed: ' + (e && e.message ? e.message : e) + '</p>';
+  }
+})();
+</script>"#,
+        "xlsx" | "xls" | "ods" => r#"
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+(() => {
+  try {
+    const bin = Uint8Array.from(atob(window.__OFFICE_B64__), c => c.charCodeAt(0));
+    const wb = XLSX.read(bin, { type: 'array' });
+    const tabs = document.createElement('div');
+    tabs.style.cssText = 'display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap;background:#f9fafb';
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:12px;overflow:auto';
+    const root = document.getElementById('root');
+    root.innerHTML = '';
+    root.appendChild(tabs);
+    root.appendChild(body);
+    const renderSheet = (name) => {
+      body.innerHTML = XLSX.utils.sheet_to_html(wb.Sheets[name]);
+    };
+    wb.SheetNames.forEach((name, idx) => {
+      const btn = document.createElement('button');
+      btn.textContent = name;
+      btn.style.cssText = 'padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;background:#fff;cursor:pointer;font-size:12px';
+      btn.onclick = () => renderSheet(name);
+      tabs.appendChild(btn);
+      if (idx === 0) renderSheet(name);
+    });
+  } catch (e) {
+    document.getElementById('root').innerHTML = '<p style="color:#c00;padding:16px">Preview failed: ' + (e && e.message ? e.message : e) + '</p>';
+  }
+})();
+</script>"#,
+        _ => r#"
+<script>
+document.getElementById('root').innerHTML = '<p style="padding:16px;color:#6b7280">Use "Open Externally" to view this Office format.</p>';
+</script>"#,
+    };
+
+    format!(
+        r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#fff; color:#111827; }}
+  table {{ border-collapse:collapse; font-size:12px; }}
+  td, th {{ border:1px solid #e5e7eb; padding:4px 8px; text-align:left; }}
+</style>
+</head>
+<body>
+<div id="root"><p style="padding:16px;color:#6b7280">Loading preview...</p></div>
+<script>window.__OFFICE_B64__ = "{b64}";</script>
+{script_body}
+</body>
+</html>"#
+    )
 }
 
 #[cfg(test)]

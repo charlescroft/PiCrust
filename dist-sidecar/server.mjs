@@ -49247,6 +49247,7 @@ async function executeRun(task, info, deps, onSessionReady, onAttention) {
       toolNames,
       ...task.model ? { initialModel: task.model } : {},
       ...task.thinkingLevel ? { thinkingLevel: task.thinkingLevel } : {},
+      ...info.reuseSessionId ? { reuseSessionId: info.reuseSessionId } : {},
       allowInitialModelFallback: true
     });
     const started = await Promise.race([starting, gaveUp.then(() => void 0)]);
@@ -49264,10 +49265,13 @@ async function executeRun(task, info, deps, onSessionReady, onAttention) {
       trigger: info.trigger,
       ...info.scheduledFor ? { scheduledFor: info.scheduledFor } : {}
     });
-    await Promise.race([
-      session.send({ type: "set_session_name", name: runSessionName(task, deps.now()) }).catch(() => void 0),
-      gaveUp
-    ]);
+    if (!started.reused) {
+      const targetName = task.executionTarget === "reuse" ? task.name : runSessionName(task, deps.now());
+      await Promise.race([
+        session.send({ type: "set_session_name", name: targetName }).catch(() => void 0),
+        gaveUp
+      ]);
+    }
     if (timedOut) return timeLimit();
     onSessionReady?.(sessionId);
     let resolveDone;
@@ -49704,7 +49708,10 @@ var Scheduler = class {
           countsAsFailure: true
         };
       } else {
-        outcome = await executeRun(task, { runId, trigger: info.trigger, scheduledFor: info.scheduledFor }, this.options.runnerDeps, (sessionId) => {
+        const reuseSessionId = task.executionTarget === "reuse"
+          ? [...listRuns(task.id, this.agentDir)].reverse().find((r) => r.runId !== runId && typeof r.sessionId === "string" && r.sessionId.trim() !== "")?.sessionId
+          : void 0;
+        outcome = await executeRun(task, { runId, trigger: info.trigger, scheduledFor: info.scheduledFor, ...reuseSessionId ? { reuseSessionId } : {} }, this.options.runnerDeps, (sessionId) => {
           const withSession = updateRun(task.id, runId, (run2) => ({ ...run2, sessionId }), this.agentDir) ?? { ...record3, sessionId };
           emitScheduledTaskEvent({ type: "run_started", taskId: task.id, taskName: task.name, runId, sessionId, trigger: info.trigger });
           announce(withSession);
@@ -49771,11 +49778,30 @@ var Scheduler = class {
 var liveRunnerDeps = {
   now: () => /* @__PURE__ */ new Date(),
   async startSession(cwd, options2) {
-    const [{ startRpcSession: startRpcSession2 }, { allowFileRoot: allowFileRoot2 }, { invalidateSessionListCache: invalidateSessionListCache2 }] = await Promise.all([
+    const [{ startRpcSession: startRpcSession2, getRpcSession: getRpcSession2 }, { allowFileRoot: allowFileRoot2 }, { invalidateSessionListCache: invalidateSessionListCache2, resolveSessionPath: resolveSessionPath2 }] = await Promise.all([
       Promise.resolve().then(() => (init_rpc_manager(), rpc_manager_exports)),
       Promise.resolve().then(() => (init_file_access(), file_access_exports)),
       Promise.resolve().then(() => (init_session_reader(), session_reader_exports))
     ]);
+    if (options2.reuseSessionId) {
+      const existing = getRpcSession2(options2.reuseSessionId);
+      if (existing?.isAlive()) {
+        allowFileRoot2(cwd);
+        return { session: existing, sessionId: options2.reuseSessionId, reused: true };
+      }
+      const existingFile = await resolveSessionPath2(options2.reuseSessionId);
+      if (existingFile) {
+        const { session, realSessionId } = await startRpcSession2(options2.reuseSessionId, existingFile, void 0, {
+          toolNames: options2.toolNames,
+          ...options2.initialModel ? { initialModel: options2.initialModel } : {},
+          ...options2.thinkingLevel ? { thinkingLevel: options2.thinkingLevel } : {},
+          allowInitialModelFallback: options2.allowInitialModelFallback
+        });
+        allowFileRoot2(cwd);
+        invalidateSessionListCache2();
+        return { session, sessionId: realSessionId || options2.reuseSessionId, reused: true };
+      }
+    }
     const { session, realSessionId } = await startRpcSession2(`__scheduled__${crypto.randomUUID()}`, "", cwd, {
       toolNames: options2.toolNames,
       ...options2.initialModel ? { initialModel: options2.initialModel } : {},
@@ -49784,7 +49810,7 @@ var liveRunnerDeps = {
     });
     allowFileRoot2(cwd);
     invalidateSessionListCache2();
-    return { session, sessionId: realSessionId };
+    return { session, sessionId: realSessionId, reused: false };
   }
 };
 
@@ -53804,6 +53830,88 @@ function forkSessionBranch(sourcePath, liveLeafId, sourceTitle) {
     typeof manager.getHeader()?.parentSession === "string"
   ));
 }
+function forkSessionSection(sourcePath, targetEntryId, sourceTitle) {
+  if (!existsSync24(sourcePath)) {
+    throw new SessionForkError("not_found", "Session not found");
+  }
+  const manager = SessionManager8.open(sourcePath);
+  if (!manager.getEntry(targetEntryId)) {
+    throw new SessionForkError("unsaved", "This session has not been saved yet. Send a message before forking it.");
+  }
+  const branch = manager.getBranch(targetEntryId);
+  if (readSubagentRun(branch, "", sourcePath)) {
+    throw new SessionForkError("subagent", "A subagent session cannot be forked");
+  }
+  if (readSideRelation(branch)) {
+    throw new SessionForkError("side", "A side chat cannot be forked");
+  }
+  if (!branch.some((entry) => entry.type === "message")) {
+    throw new SessionForkError("empty", "Nothing to fork: the session has no messages");
+  }
+  let startIdx = -1;
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (entry.type === "message" && entry.message?.role === "user") {
+      startIdx = i;
+      break;
+    }
+  }
+  const section = startIdx >= 0 ? branch.slice(startIdx) : branch.slice(-1);
+  const prefix = startIdx > 0 ? branch.slice(0, startIdx) : [];
+  let lastModel = null;
+  let lastThinking = null;
+  let lastToolSel = null;
+  for (const entry of prefix) {
+    if (entry.type === "model_change") lastModel = entry;
+    else if (entry.type === "thinking_level_change") lastThinking = entry;
+    else if (entry.type === "custom" && entry.customType === "pi-web:tool-selection") lastToolSel = entry;
+  }
+  const copied = [
+    ...lastModel ? [lastModel] : [],
+    ...lastThinking ? [lastThinking] : [],
+    ...lastToolSel ? [lastToolSel] : [],
+    ...section
+  ].map((entry) => ({ ...entry }));
+  let prevId = null;
+  for (const entry of copied) {
+    entry.parentId = prevId;
+    prevId = entry.id;
+  }
+  const sourceSessionId = manager.getSessionId();
+  const header = manager.getHeader();
+  const newSessionId = randomUUID11();
+  const now = /* @__PURE__ */ new Date();
+  const tsPrefix = now.toISOString().replace(/[:.]/g, "-");
+  const newPath = join2(dirname(sourcePath), `${tsPrefix}_${newSessionId}.jsonl`);
+  const sourceUserMsg = section.find((e) => e.type === "message" && e.message?.role === "user");
+  const firstUserText = typeof sourceUserMsg?.message?.content === "string" ? sourceUserMsg.message.content : Array.isArray(sourceUserMsg?.message?.content) ? sourceUserMsg.message.content.find((b) => b?.type === "text")?.text ?? "" : "";
+  const titleBase = firstUserText.trim() || sourceTitle?.trim() || sourceSessionId.slice(0, 12);
+  const name = sourceTitle === null ? void 0 : forkSessionName(
+    titleBase,
+    randomBytes6(2).toString("hex"),
+    typeof header?.parentSession === "string"
+  );
+  if (name) {
+    copied.push({
+      type: "session_info",
+      id: randomUUID11().slice(0, 8),
+      parentId: prevId,
+      timestamp: now.toISOString(),
+      name
+    });
+  }
+  const newHeader = {
+    type: "session",
+    version: header?.version ?? 3,
+    id: newSessionId,
+    timestamp: now.toISOString(),
+    cwd: header?.cwd ?? process.cwd(),
+    parentSession: sourcePath
+  };
+  const content = [newHeader, ...copied].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+  writeFileSync7(newPath, content, { encoding: "utf8", flag: "wx" });
+  return { sessionId: newSessionId, path: newPath, name, sourceSessionId, toolSelection: readSessionToolSelection(copied) };
+}
 function createSideSession(sourcePath, liveLeafId, name = SIDE_SESSION_NAME) {
   const copy = copySessionBranch(sourcePath, liveLeafId, () => name);
   const [header, first2, ...rest2] = readFileSync24(copy.path, "utf8").trimEnd().split("\n");
@@ -53869,6 +53977,7 @@ async function POST14(req, { params }) {
     const body = await req.json().catch(() => null);
     const side = body?.side === true;
     const sideName = typeof body?.name === "string" ? sideChatNameFromText(body.name) ?? void 0 : void 0;
+    const requestedEntryId = typeof body?.entryId === "string" && body.entryId.trim() ? body.entryId.trim() : void 0;
     const opened = getRpcSession(id);
     const sourcePath = (opened?.isAlive() ? opened.sessionFile : "") || await resolveSessionPath(id);
     if (!sourcePath) {
@@ -53877,12 +53986,12 @@ async function POST14(req, { params }) {
     }
     const sourceTitle = side ? null : await readForkSourceTitle(sourcePath);
     const wrapper = getRpcSession(id);
-    let liveLeafId = wrapper?.isAlive() ? wrapper.inner.sessionManager.getLeafId() : void 0;
-    if (wrapper && liveLeafId !== void 0 && !wrapper.isRunning()) {
+    let liveLeafId = requestedEntryId ?? (wrapper?.isAlive() ? wrapper.inner.sessionManager.getLeafId() : void 0);
+    if (!requestedEntryId && wrapper && liveLeafId !== void 0 && !wrapper.isRunning()) {
       const diskLatest = readLatestSessionEntryId(wrapper.sessionFile);
       if (diskLatest && !wrapper.inner.sessionManager.getEntry(diskLatest)) liveLeafId = void 0;
     }
-    const fork = side ? createSideSession(sourcePath, liveLeafId, sideName) : forkSessionBranch(sourcePath, liveLeafId, sourceTitle);
+    const fork = side ? createSideSession(sourcePath, liveLeafId, sideName) : requestedEntryId ? forkSessionSection(sourcePath, requestedEntryId, sourceTitle) : forkSessionBranch(sourcePath, liveLeafId, sourceTitle);
     cacheSessionPath(fork.sessionId, fork.path);
     invalidateSessionListCache();
     const info = await readSessionInfo(fork.path);
@@ -55522,6 +55631,7 @@ function buildTask(input, context) {
     ...model ? { model } : {},
     ...thinkingLevel ? { thinkingLevel } : {},
     toolPreset,
+    executionTarget: input.executionTarget === "reuse" ? "reuse" : "new",
     maxDurationMin: input.maxDurationMin === void 0 ? DEFAULT_MAX_DURATION_MINUTES : parseMaxDuration(input.maxDurationMin),
     enabled: input.enabled === void 0 ? true : parseEnabled(input.enabled),
     createdAt: now,
@@ -55575,6 +55685,9 @@ function applyTaskPatch(existing, patch, context) {
     }
     if (patch.toolPreset !== existing.toolPreset) requireWriteAcknowledgement(patch.toolPreset, patch);
     next.toolPreset = patch.toolPreset;
+  }
+  if (patch.executionTarget !== void 0) {
+    next.executionTarget = patch.executionTarget === "reuse" ? "reuse" : "new";
   }
   if (patch.maxDurationMin !== void 0) next.maxDurationMin = parseMaxDuration(patch.maxDurationMin);
   let restartWindow = false;

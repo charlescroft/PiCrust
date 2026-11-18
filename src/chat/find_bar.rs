@@ -1,12 +1,15 @@
 use crate::app_state::{AppState, RightPanelTab, WorkspacePage};
 use crate::chat::ConversationScrollerState;
+use crate::client::workspace_extras::{
+    NoteScope, WorkflowScope, list_credentials, list_notes, list_workflows,
+};
 use crate::i18n::{AppLocale, format_commas, tr};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::{ActiveTheme as _, IconName};
 use gpui_kit::{
     AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, div, px,
+    KeyDownEvent, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, px,
 };
 
 /// One row of the conversation command palette.
@@ -21,6 +24,9 @@ pub enum PaletteAction {
     Artifacts,
     ToggleRightPanel,
     Theme,
+    OpenNotes,
+    OpenCredentials,
+    OpenWorkflows,
 }
 
 pub struct ConversationCommandPalette {
@@ -180,14 +186,28 @@ impl ConversationCommandPalette {
                 s.dark_mode = !s.dark_mode;
                 cx.notify();
             }),
+            PaletteAction::OpenNotes => self.app_state.update(cx, |s, cx| {
+                s.open_notes_modal(cx);
+            }),
+            PaletteAction::OpenCredentials => self.app_state.update(cx, |s, cx| {
+                s.open_credentials_modal(cx);
+            }),
+            PaletteAction::OpenWorkflows => self.app_state.update(cx, |s, cx| {
+                s.open_right_tab(RightPanelTab::Workflows, cx);
+            }),
             PaletteAction::Search | PaletteAction::Prev | PaletteAction::Next => {}
         }
     }
 
     /// Builds the visible rows for the current query: the conversation search
-    /// action first, then match navigation, then app actions. Filtering happens
-    /// here so the search row always survives a text query.
-    fn rows(&self, locale: AppLocale, query: &str, matches: usize) -> Vec<(String, PaletteAction)> {
+    /// action first, then match navigation, then notes/credentials/workflows, then app actions.
+    fn rows(
+        &self,
+        locale: AppLocale,
+        query: &str,
+        matches: usize,
+        cx: &gpui_kit::App,
+    ) -> Vec<(String, PaletteAction)> {
         let needle = query.trim().to_lowercase();
         let mut rows: Vec<(String, PaletteAction)> = Vec::new();
 
@@ -208,7 +228,49 @@ impl ConversationCommandPalette {
             rows.push((tr(locale, "find.next").to_string(), PaletteAction::Next));
         }
 
-        let actions: [(PaletteAction, &'static str); 6] = [
+        if !needle.is_empty() {
+            let st = self.app_state.read(cx);
+            let cwd = &st.active_cwd;
+            let kind = st.active_workspace_kind;
+
+            for scope in [NoteScope::Global, NoteScope::Project] {
+                for note in list_notes(scope, cwd, kind) {
+                    if note.name.to_lowercase().contains(&needle) {
+                        rows.push((
+                            format!("{}: {}", tr(locale, "sidebar.notes"), note.name),
+                            PaletteAction::OpenNotes,
+                        ));
+                    }
+                }
+            }
+            for cred in list_credentials() {
+                if cred.name.to_lowercase().contains(&needle)
+                    || cred.description.to_lowercase().contains(&needle)
+                {
+                    rows.push((
+                        format!("{}: {}", tr(locale, "sidebar.credentials"), cred.name),
+                        PaletteAction::OpenCredentials,
+                    ));
+                }
+            }
+            for scope in [WorkflowScope::Global, WorkflowScope::Project] {
+                for wf in list_workflows(scope, cwd, kind) {
+                    if wf.name.to_lowercase().contains(&needle)
+                        || wf.description.to_lowercase().contains(&needle)
+                    {
+                        rows.push((
+                            format!("{}: {}", tr(locale, "sidebar.workflows"), wf.name),
+                            PaletteAction::OpenWorkflows,
+                        ));
+                    }
+                }
+            }
+        }
+
+        let actions: [(PaletteAction, &'static str); 9] = [
+            (PaletteAction::OpenNotes, "sidebar.notes"),
+            (PaletteAction::OpenCredentials, "sidebar.credentials"),
+            (PaletteAction::OpenWorkflows, "sidebar.workflows"),
             (PaletteAction::Settings, "settings.title"),
             (PaletteAction::Tasks, "sidebar.tasks"),
             (PaletteAction::Scheduled, "sidebar.scheduled"),
@@ -260,7 +322,7 @@ impl ConversationCommandPalette {
         let current = if total == 0 { 0 } else { self.current_match + 1 };
         let query_empty = self.last_query.trim().is_empty();
         let query = self.last_query.clone();
-        let rows = self.rows(locale, &query, total);
+        let rows = self.rows(locale, &query, total, cx);
 
         let mut palette = Command::new(&self.state)
             .placeholder(tr(locale, "chat.commandPlaceholder"))
@@ -278,6 +340,9 @@ impl ConversationCommandPalette {
                 PaletteAction::Artifacts => IconName::LayoutDashboard,
                 PaletteAction::ToggleRightPanel => IconName::PanelRightOpen,
                 PaletteAction::Theme => IconName::Sun,
+                PaletteAction::OpenNotes => IconName::FileText,
+                PaletteAction::OpenCredentials => IconName::Eye,
+                PaletteAction::OpenWorkflows => IconName::LayoutDashboard,
             };
             let mut item = CommandItem::new()
                 .label(SharedString::from(label.clone()))
@@ -306,6 +371,17 @@ impl ConversationCommandPalette {
                 });
             }
         });
+        palette = palette.on_cancel({
+            let entity = cx.entity().clone();
+            move |_, app| {
+                let entity = entity.clone();
+                app.defer(move |cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.close(cx);
+                    });
+                });
+            }
+        });
 
         div()
             .id("command-palette-backdrop")
@@ -317,6 +393,12 @@ impl ConversationCommandPalette {
             .justify_center()
             .pt(px(96.))
             .bg(cx.theme().background.opacity(0.30))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.close(cx);
+                }
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.close(cx);
             }))
@@ -326,20 +408,23 @@ impl ConversationCommandPalette {
                     .occlude()
                     .w(px(620.))
                     .max_w_full()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .shadow_lg()
+                    .overflow_hidden()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(|_: &ClickEvent, _, cx| cx.stop_propagation())
-                    .child(
-                        div()
-                            .w_full()
-                            .shadow_lg()
-                            .rounded_lg()
-                            .child(palette),
-                    )
+                    .child(div().w_full().child(palette))
                     .child(
                         div()
                             .w_full()
                             .px_3()
                             .py_1p5()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().popover)
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(SharedString::from(if total > 0 {

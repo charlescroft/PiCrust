@@ -4,6 +4,7 @@ pub mod session_controller;
 pub mod sidecar;
 pub mod sse;
 pub mod types;
+pub mod workspace_extras;
 
 use anyhow::Result;
 use reqwest::{Client, Method, RequestBuilder};
@@ -622,7 +623,22 @@ impl PiDaemonClient {
     }
 
     pub async fn create_scheduled_task_payload(&self, payload: Value) -> Result<Value> {
-        self.post_json("/api/scheduled-tasks", &payload).await
+        let req = self.request(Method::POST, "/api/scheduled-tasks").json(&payload);
+        run_on_tokio(async move {
+            let resp = req.send().await?;
+            let status = resp.status();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            if !status.is_success() {
+                let msg = body
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+                anyhow::bail!("{msg}");
+            }
+            Ok(body)
+        })
+        .await
     }
 
     pub async fn update_scheduled_task(&self, id: &str, payload: Value) -> Result<Value> {
@@ -630,8 +646,18 @@ impl PiDaemonClient {
             .request(Method::PATCH, &format!("/api/scheduled-tasks/{id}"))
             .json(&payload);
         run_on_tokio(async move {
-            let resp = req.send().await?.error_for_status()?;
-            Ok(resp.json().await?)
+            let resp = req.send().await?;
+            let status = resp.status();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            if !status.is_success() {
+                let msg = body
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+                anyhow::bail!("{msg}");
+            }
+            Ok(body)
         })
         .await
     }

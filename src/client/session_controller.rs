@@ -1045,6 +1045,9 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
                     if prev.model_label.is_none() && model_label.is_some() {
                         prev.model_label = model_label;
                     }
+                    if entry_id.is_some() {
+                        prev.entry_id = entry_id;
+                    }
                     continue;
                 }
             }

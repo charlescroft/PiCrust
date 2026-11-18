@@ -295,6 +295,7 @@ pub struct ComposerView {
     bottom_slot_width: f32,
     is_promoted: bool,
     at_query: Option<String>,
+    ignored_at_positions: std::collections::HashSet<usize>,
     file_picker_open: bool,
     file_picker_dir: String,
     file_picker_entries: Vec<FileBrowserEntry>,
@@ -376,25 +377,51 @@ impl ComposerView {
                     this.slash_query = None;
                 }
 
-                if let Some(at_pos) = text.rfind('@') {
-                    let after = &text[at_pos + 1..];
-                    if !after.contains(char::is_whitespace) {
-                        this.at_query = Some(after.to_string());
-                        if after.is_empty() {
-                            this.file_picker_open = true;
-                            this.file_picker_dir.clear();
-                            this.reload_file_browser(cx);
-                        } else {
-                            this.file_picker_open = false;
-                            let q = after.to_string();
-                            app_sub.update(cx, |s, cx| {
-                                s.run_file_fuzzy_search(&q, cx);
-                            });
-                        }
+                this.ignored_at_positions
+                    .retain(|&pos| text.as_bytes().get(pos) == Some(&b'@'));
+
+                let mut cursor_byte = state.read(cx).cursor().min(text.len());
+                while cursor_byte > 0 && !text.is_char_boundary(cursor_byte) {
+                    cursor_byte -= 1;
+                }
+                let before_cursor = &text[..cursor_byte];
+
+                let active_at = before_cursor.rfind('@').and_then(|at_pos| {
+                    if this.ignored_at_positions.contains(&at_pos) {
+                        return None;
+                    }
+                    let preceded_by_boundary = at_pos == 0
+                        || before_cursor[..at_pos]
+                            .chars()
+                            .next_back()
+                            .is_some_and(char::is_whitespace);
+                    if !preceded_by_boundary {
+                        return None;
+                    }
+                    let after = &before_cursor[at_pos + 1..];
+                    if after.contains(char::is_whitespace) {
+                        return None;
+                    }
+                    Some(after)
+                });
+
+                if let Some(after) = active_at {
+                    this.at_query = Some(after.to_string());
+                    if after.is_empty() {
+                        this.file_picker_open = true;
+                        this.file_picker_dir.clear();
+                        this.reload_file_browser(cx);
                     } else {
-                        this.at_query = None;
+                        this.file_picker_open = false;
+                        let q = after.to_string();
+                        app_sub.update(cx, |s, cx| {
+                            s.run_file_fuzzy_search(&q, cx);
+                        });
                     }
                 } else {
+                    if this.at_query.is_some() {
+                        this.file_picker_open = false;
+                    }
                     this.at_query = None;
                 }
                 cx.notify();
@@ -412,10 +439,9 @@ impl ComposerView {
                 let target_key = key_val.clone();
                 app_model.update(cx, |s, cx| {
                     if let Some(m) = s
-                        .models
-                        .iter()
+                        .visible_picker_models()
+                        .into_iter()
                         .find(|m| format!("{}:{}", m.provider, m.id) == target_key.as_ref())
-                        .cloned()
                     {
                         s.selected_model = Some(m.clone());
                         s.clamp_thinking_level_to_model();
@@ -457,7 +483,7 @@ impl ComposerView {
         let weak_self = cx.weak_entity();
         cx.intercept_keystrokes(move |event, window, cx| {
             let key = event.keystroke.key.as_str();
-            if !matches!(key, "up" | "down" | "left" | "right" | "enter" | "escape") {
+            if !matches!(key, "up" | "down" | "left" | "right" | "enter" | "tab" | "escape") {
                 return;
             }
             if event.keystroke.modifiers.control
@@ -539,12 +565,13 @@ impl ComposerView {
                                 .get(this.file_picker_selected_idx)
                                 .cloned()
                             {
-                                if entry.is_dir {
-                                    this.enter_file_picker_dir(entry.relative_path, cx);
+                                let target = if entry.is_dir {
+                                    format!("{}/", entry.relative_path)
                                 } else {
-                                    this.insert_file_reference(&entry.relative_path, window, cx);
-                                    this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                                }
+                                    entry.relative_path
+                                };
+                                this.insert_file_reference(&target, window, cx);
+                                this.textarea.update(cx, |st, cx| st.focus(window, cx));
                             }
                         } else if let Some(m) = file_matches.get(this.file_picker_selected_idx) {
                             let rel = m.relative_path.clone();
@@ -552,12 +579,26 @@ impl ComposerView {
                             this.textarea.update(cx, |st, cx| st.focus(window, cx));
                         }
                     }
+                    "tab" if is_dir_browser => {
+                        if let Some(entry) = this
+                            .file_picker_entries
+                            .get(this.file_picker_selected_idx)
+                            .cloned()
+                        {
+                            handled = true;
+                            let target = if entry.is_dir {
+                                format!("{}/", entry.relative_path)
+                            } else {
+                                entry.relative_path
+                            };
+                            this.insert_file_reference(&target, window, cx);
+                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
+                        }
+                    }
                     "escape" => {
                         handled = true;
-                        this.at_query = None;
-                        this.file_picker_open = false;
+                        this.dismiss_file_picker(cx);
                         this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                        cx.notify();
                     }
                     _ => {}
                 }
@@ -582,6 +623,7 @@ impl ComposerView {
             bottom_slot_width: 560.0,
             is_promoted: false,
             at_query: None,
+            ignored_at_positions: std::collections::HashSet::new(),
             file_picker_open: false,
             file_picker_dir: String::new(),
             file_picker_entries: Vec::new(),
@@ -602,11 +644,28 @@ impl ComposerView {
             state.set_value("", window, cx);
         });
         self.at_query = None;
+        self.ignored_at_positions.clear();
         self.file_picker_open = false;
         self.slash_query = None;
         self.app_state.update(cx, |s, cx| {
             s.submit_prompt(text, cx);
         });
+    }
+
+    fn dismiss_file_picker(&mut self, cx: &mut Context<Self>) {
+        if self.at_query.is_some() {
+            let text = self.textarea.read(cx).value().to_string();
+            let mut cursor_byte = self.textarea.read(cx).cursor().min(text.len());
+            while cursor_byte > 0 && !text.is_char_boundary(cursor_byte) {
+                cursor_byte -= 1;
+            }
+            if let Some(at_pos) = text[..cursor_byte].rfind('@') {
+                self.ignored_at_positions.insert(at_pos);
+            }
+        }
+        self.at_query = None;
+        self.file_picker_open = false;
+        cx.notify();
     }
 
     fn is_dir_browser_mode(&self) -> bool {
@@ -650,11 +709,16 @@ impl ComposerView {
 
     fn insert_file_reference(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
         let cur = self.textarea.read(cx).value().to_string();
-        let updated = if self.at_query.is_some() {
-            if let Some(pos) = cur.rfind('@') {
-                format!("{}@{} ", &cur[..pos], rel)
+        let (updated, inserted_at_pos) = if self.at_query.is_some() {
+            let mut cursor_byte = self.textarea.read(cx).cursor().min(cur.len());
+            while cursor_byte > 0 && !cur.is_char_boundary(cursor_byte) {
+                cursor_byte -= 1;
+            }
+            if let Some(pos) = cur[..cursor_byte].rfind('@') {
+                (format!("{}@{} {}", &cur[..pos], rel, &cur[cursor_byte..]), pos)
             } else {
-                format!("{cur}@{rel} ")
+                let pos = cur.len();
+                (format!("{cur}@{rel} "), pos)
             }
         } else {
             let sep = if cur.is_empty() || cur.ends_with(char::is_whitespace) {
@@ -662,8 +726,12 @@ impl ComposerView {
             } else {
                 " "
             };
-            format!("{cur}{sep}@{rel} ")
+            let pos = cur.len() + sep.len();
+            (format!("{cur}{sep}@{rel} "), pos)
         };
+        self.ignored_at_positions.insert(inserted_at_pos);
+        self.at_query = None;
+        self.file_picker_open = false;
         let line = updated.bytes().filter(|&b| b == b'\n').count() as u32;
         let col = updated
             .rsplit('\n')
@@ -683,8 +751,6 @@ impl ComposerView {
                 );
             });
         });
-        self.at_query = None;
-        self.file_picker_open = false;
         cx.notify();
     }
 
@@ -726,6 +792,39 @@ impl ComposerView {
                 .unwrap_or(0);
             self.textarea.update(cx, |state, cx| {
                 state.set_value(&restored, window, cx);
+            });
+            let textarea = self.textarea.clone();
+            window.defer(cx, move |window, cx| {
+                textarea.update(cx, |state, cx| {
+                    state.set_cursor_position(
+                        gpui_kit::component::input::Position::new(line, col),
+                        window,
+                        cx,
+                    );
+                });
+            });
+        }
+
+        let pending_paste = self
+            .app_state
+            .update(cx, |s, _| s.pending_composer_paste.take());
+        if let Some(paste_text) = pending_paste {
+            let cur = self.textarea.read(cx).value().to_string();
+            let sep = if cur.is_empty() || cur.ends_with('\n') || cur.ends_with(' ') {
+                ""
+            } else {
+                "\n"
+            };
+            let updated = format!("{cur}{sep}{paste_text}");
+            let line = updated.bytes().filter(|&b| b == b'\n').count() as u32;
+            let col = updated
+                .rsplit('\n')
+                .next()
+                .map(|s| s.chars().count() as u32)
+                .unwrap_or(0);
+            self.textarea.update(cx, |state, cx| {
+                state.set_value(&updated, window, cx);
+                state.focus(window, cx);
             });
             let textarea = self.textarea.clone();
             window.defer(cx, move |window, cx| {
@@ -1421,11 +1520,43 @@ impl ComposerView {
                         .child(tr(locale, "chat.noFiles")),
                 );
             } else if is_dir_browser {
+                if !self.file_picker_dir.is_empty() {
+                    list_scroll = list_scroll.child(
+                        h_flex()
+                            .id("at-file-parent-dir")
+                            .w_full()
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .px_2p5()
+                            .py_1p5()
+                            .gap_2()
+                            .items_center()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(cx.theme().secondary))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.exit_file_picker_dir(cx);
+                            }))
+                            .child(
+                                Icon::new(IconName::FolderOpen)
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("..."),
+                            ),
+                    );
+                }
                 let entries = self.file_picker_entries.clone();
                 let selected_ix = self.file_picker_selected_idx;
                 for (idx, entry) in entries.into_iter().enumerate() {
                     let is_selected = idx == selected_ix;
                     let rel = entry.relative_path.clone();
+                    let rel_pick_dir = entry.relative_path.clone();
                     let is_dir = entry.is_dir;
                     list_scroll = list_scroll.child(
                         h_flex()
@@ -1484,9 +1615,30 @@ impl ComposerView {
                                     ),
                             )
                             .children(is_dir.then(|| {
-                                Icon::new(IconName::ChevronRight)
-                                    .xsmall()
-                                    .text_color(cx.theme().muted_foreground)
+                                h_flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        Button::new(("pick-dir-ref", idx))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(crate::icons::AtSignIcon)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.insert_file_reference(
+                                                    &format!("{rel_pick_dir}/"),
+                                                    window,
+                                                    cx,
+                                                );
+                                                this.textarea
+                                                    .update(cx, |st, cx| st.focus(window, cx));
+                                            })),
+                                    )
+                                    .child(
+                                        Icon::new(IconName::ChevronRight)
+                                            .xsmall()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
                             })),
                     );
                 }
@@ -1596,7 +1748,7 @@ impl ComposerView {
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground.opacity(0.75))
                                         .child(if is_dir_browser {
-                                            "↑↓ · ←/→ · Enter · Esc"
+                                            "↑↓ · ←/→ · Enter · Tab · Esc"
                                         } else {
                                             "↑↓ · Enter · Esc"
                                         }),
@@ -1609,10 +1761,8 @@ impl ComposerView {
                                         .w(px(28.))
                                         .icon(IconName::Close)
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            this.at_query = None;
-                                            this.file_picker_open = false;
+                                            this.dismiss_file_picker(cx);
                                             this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                                            cx.notify();
                                         })),
                                 ),
                         ),
@@ -1670,92 +1820,21 @@ impl ComposerView {
                 .into_any_element()
         };
 
-        let file_matches_for_keys = file_matches.clone();
         let build_active_textarea = || {
-            let fm_keys = file_matches_for_keys.clone();
             div()
                 .w_full()
                 .min_w_0()
                 .capture_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     let key = event.keystroke.key.as_str();
 
-                    // Keyboard navigation when @file or "+" directory picker is open
+                    // File picker navigation is handled once by cx.intercept_keystrokes;
+                    // only block Enter submission while the popup is open.
                     if this.file_picker_open || this.at_query.is_some() {
-                        let is_dir_browser = this.is_dir_browser_mode();
-                        let len = if is_dir_browser {
-                            this.file_picker_entries.len()
-                        } else {
-                            fm_keys.len().min(40)
-                        };
-                        match key {
-                            "up" => {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                if len > 0 {
-                                    this.file_picker_selected_idx = this.file_picker_selected_idx.saturating_sub(1);
-                                    this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
-                                    cx.notify();
-                                }
-                                return;
-                            }
-                            "down" => {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                if len > 0 {
-                                    this.file_picker_selected_idx = (this.file_picker_selected_idx + 1).min(len - 1);
-                                    this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
-                                    cx.notify();
-                                }
-                                return;
-                            }
-                            "right" if is_dir_browser => {
-                                if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
-                                    if entry.is_dir {
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                        this.enter_file_picker_dir(entry.relative_path, cx);
-                                        return;
-                                    }
-                                }
-                            }
-                            "left" if is_dir_browser => {
-                                if !this.file_picker_dir.is_empty() {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                    this.exit_file_picker_dir(cx);
-                                    return;
-                                }
-                            }
-                            "enter" => {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                if is_dir_browser {
-                                    if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
-                                        if entry.is_dir {
-                                            this.enter_file_picker_dir(entry.relative_path, cx);
-                                        } else {
-                                            this.insert_file_reference(&entry.relative_path, window, cx);
-                                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                                        }
-                                    }
-                                } else if let Some(m) = fm_keys.get(this.file_picker_selected_idx) {
-                                    let rel = m.relative_path.clone();
-                                    this.insert_file_reference(&rel, window, cx);
-                                    this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                                }
-                                return;
-                            }
-                            "escape" => {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.at_query = None;
-                                this.file_picker_open = false;
-                                this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                                cx.notify();
-                                return;
-                            }
-                            _ => {}
+                        if matches!(key, "up" | "down" | "left" | "right" | "enter" | "tab" | "escape") {
+                            window.prevent_default();
+                            cx.stop_propagation();
                         }
+                        return;
                     }
 
                     if key == "enter" {
@@ -1854,6 +1933,7 @@ impl ComposerView {
             .when_clear_btn(has_text, locale, cx.listener(|this, _, window, cx| {
                 this.textarea.update(cx, |st, cx| st.set_value("", window, cx));
                 this.at_query = None;
+                this.ignored_at_positions.clear();
                 this.file_picker_open = false;
                 this.slash_query = None;
                 cx.notify();

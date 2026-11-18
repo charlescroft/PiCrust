@@ -24,29 +24,60 @@ pub fn subagents_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx
         .title(tr(locale, "settings.subagents"))
         .item(SettingItem::new(
             tr(locale, "settings.builtInSubagents"),
-            SettingField::switch(
-                move |cx: &App| app_builtin_read.read(cx).subagent_built_in_enabled,
-                move |val: bool, cx: &mut App| {
-                    app_builtin_write.update(cx, |s, cx| {
-                        s.subagent_built_in_enabled = val;
-                        let _ = crate::client::local_store::save_subagent_settings_local(
-                            val,
-                            s.subagent_max_concurrent,
-                            None,
-                        );
-                        if s.sidecar_connected {
-                            let client = s.client.clone();
-                            cx.spawn(async move |_, _| {
-                                let _ = client
-                                    .set_subagent_settings(json!({ "enabled": val }))
-                                    .await;
-                            })
-                            .detach();
-                        }
-                        cx.notify();
-                    });
-                },
-            ),
+            SettingField::render(move |_, _, cx| {
+                let checked = app_builtin_read.read(cx).subagent_built_in_enabled;
+                let is_pending = app_builtin_read.read(cx).is_async_op_pending("subagent:builtin");
+                let app_write = app_builtin_write.clone();
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .when(is_pending, |el| {
+                        el.child(
+                            Spinner::new()
+                                .xsmall()
+                                .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                        )
+                    })
+                    .child(
+                        Switch::new("subagent-builtin-switch")
+                            .checked(checked)
+                            .disabled(is_pending)
+                            .on_click(move |val: &bool, _, cx| {
+                                let val = *val;
+                                app_write.update(cx, |s, cx| {
+                                    if !s.begin_async_op("subagent:builtin", cx) {
+                                        return;
+                                    }
+                                    s.subagent_built_in_enabled = val;
+                                    let _ = crate::client::local_store::save_subagent_settings_local(
+                                        val,
+                                        s.subagent_max_concurrent,
+                                        None,
+                                    );
+                                    if s.sidecar_connected {
+                                        let client = s.client.clone();
+                                        let entity = cx.entity().clone();
+                                        cx.spawn(async move |_, cx| {
+                                            let _ = client
+                                                .set_subagent_settings(json!({ "enabled": val }))
+                                                .await;
+                                            let _ = entity.update(cx, |s, cx| {
+                                                s.end_async_op("subagent:builtin", cx);
+                                                let msg = tr(s.locale, "toast.extensionUpdated");
+                                                s.show_success_toast(msg, cx);
+                                            });
+                                        })
+                                        .detach();
+                                    } else {
+                                        s.end_async_op("subagent:builtin", cx);
+                                        let msg = tr(s.locale, "toast.extensionUpdated");
+                                        s.show_success_toast(msg, cx);
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    )
+            }),
         ))
         .item(
             SettingItem::new(
@@ -103,55 +134,88 @@ pub fn subagents_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx
             group = group.item(
                 SettingItem::new(
                     SharedString::from(title),
-                    SettingField::switch(
-                        move |cx: &App| {
-                            app_read
-                                .read(cx)
-                                .subagents
-                                .iter()
-                                .find(|x| x.name == name_read && x.scope == scope_read)
-                                .map(|x| x.enabled)
-                                .unwrap_or(true)
-                        },
-                        move |val: bool, cx: &mut App| {
-                            let n = name.clone();
-                            let sc = scope.clone();
-                            app_write.update(cx, |s, cx| {
-                                if let Some(target) = s
-                                    .subagents
-                                    .iter_mut()
-                                    .find(|x| x.name == n && x.scope == sc)
-                                {
-                                    target.enabled = val;
-                                }
-                                let cwd = s.active_cwd.to_string_lossy().into_owned();
-                                let _ = crate::client::local_store::save_subagent_profile_local(
-                                    Some(&cwd),
-                                    &json!({
-                                        "cwd": cwd,
-                                        "scope": sc,
-                                        "name": n,
-                                        "enabled": val,
+                    SettingField::render(move |_, _, cx| {
+                        let op_key = format!("subagent:toggle:{scope_read}:{name_read}");
+                        let checked = app_read
+                            .read(cx)
+                            .subagents
+                            .iter()
+                            .find(|x| x.name == name_read && x.scope == scope_read)
+                            .map(|x| x.enabled)
+                            .unwrap_or(true);
+                        let is_pending = app_read.read(cx).is_async_op_pending(&op_key);
+                        let n = name.clone();
+                        let sc = scope.clone();
+                        let app_w = app_write.clone();
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .when(is_pending, |el| {
+                                el.child(
+                                    Spinner::new()
+                                        .xsmall()
+                                        .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                                )
+                            })
+                            .child(
+                                Switch::new(SharedString::from(format!("subagent-sw-{scope_read}-{name_read}")))
+                                    .checked(checked)
+                                    .disabled(is_pending)
+                                    .on_click(move |val: &bool, _, cx| {
+                                        let val = *val;
+                                        let n = n.clone();
+                                        let sc = sc.clone();
+                                        let op = op_key.clone();
+                                        app_w.update(cx, |s, cx| {
+                                            if !s.begin_async_op(op.clone(), cx) {
+                                                return;
+                                            }
+                                            if let Some(target) = s
+                                                .subagents
+                                                .iter_mut()
+                                                .find(|x| x.name == n && x.scope == sc)
+                                            {
+                                                target.enabled = val;
+                                            }
+                                            let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                            let _ = crate::client::local_store::save_subagent_profile_local(
+                                                Some(&cwd),
+                                                &json!({
+                                                    "cwd": cwd,
+                                                    "scope": sc,
+                                                    "name": n,
+                                                    "enabled": val,
+                                                }),
+                                            );
+                                            if s.sidecar_connected {
+                                                let client = s.client.clone();
+                                                let entity = cx.entity().clone();
+                                                cx.spawn(async move |_, cx| {
+                                                    let _ = client
+                                                        .toggle_subagent_profile(json!({
+                                                            "cwd": cwd,
+                                                            "scope": sc,
+                                                            "name": n,
+                                                            "enabled": val,
+                                                        }))
+                                                        .await;
+                                                    let _ = entity.update(cx, |s, cx| {
+                                                        s.end_async_op(&op, cx);
+                                                        let msg = tr(s.locale, "toast.extensionUpdated");
+                                                        s.show_success_toast(msg, cx);
+                                                    });
+                                                })
+                                                .detach();
+                                            } else {
+                                                s.end_async_op(&op, cx);
+                                                let msg = tr(s.locale, "toast.extensionUpdated");
+                                                s.show_success_toast(msg, cx);
+                                            }
+                                            cx.notify();
+                                        });
                                     }),
-                                );
-                                if s.sidecar_connected {
-                                    let client = s.client.clone();
-                                    cx.spawn(async move |_, _| {
-                                        let _ = client
-                                            .toggle_subagent_profile(json!({
-                                                "cwd": cwd,
-                                                "scope": sc,
-                                                "name": n,
-                                                "enabled": val,
-                                            }))
-                                            .await;
-                                    })
-                                    .detach();
-                                }
-                                cx.notify();
-                            });
-                        },
-                    ),
+                            )
+                    }),
                 )
                 .description(if model_str.is_empty() {
                     scope_for_desc
@@ -268,35 +332,64 @@ pub fn skills_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: &
                                 .items_center()
                                 .gap_2()
                                 .child(Tag::secondary().small().child(SharedString::from(source.clone())))
-                                .child(
-                                    Switch::new(SharedString::from(format!("skill-switch-{}", n)))
-                                        .checked(enabled)
-                                        .on_click(move |checked: &bool, _, cx| {
-                                            let val = *checked;
-                                            let n = n.clone();
-                                            let fp = fp_for_switch.clone();
-                                            app_w.update(cx, |st, cx| {
-                                                if let Some(target) = st.skills.iter_mut().find(|x| x.name == n) {
-                                                    target.enabled = val;
-                                                    target.disable_model_invocation = !val;
-                                                }
-                                                if !fp.is_empty() {
-                                                    let _ = crate::client::local_store::toggle_skill_file_local(
-                                                        std::path::Path::new(&fp),
-                                                        !val,
-                                                    );
-                                                }
-                                                if st.sidecar_connected && !fp.is_empty() {
-                                                    let client = st.client.clone();
-                                                    cx.spawn(async move |_, _| {
-                                                        let _ = client.toggle_skill(&fp, !val).await;
-                                                    })
-                                                    .detach();
-                                                }
-                                                cx.notify();
-                                            });
-                                        }),
-                                ),
+                                .child({
+                                    let skill_op = format!("skill:toggle:{n}");
+                                    let is_pending = app_w.read(cx).is_async_op_pending(&skill_op);
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .when(is_pending, |el| {
+                                            el.child(
+                                                Spinner::new()
+                                                    .xsmall()
+                                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                                            )
+                                        })
+                                        .child(
+                                            Switch::new(SharedString::from(format!("skill-switch-{}", n)))
+                                                .checked(enabled)
+                                                .disabled(is_pending)
+                                                .on_click(move |checked: &bool, _, cx| {
+                                                    let val = *checked;
+                                                    let n = n.clone();
+                                                    let fp = fp_for_switch.clone();
+                                                    let op = skill_op.clone();
+                                                    app_w.update(cx, |st, cx| {
+                                                        if !st.begin_async_op(op.clone(), cx) {
+                                                            return;
+                                                        }
+                                                        if let Some(target) = st.skills.iter_mut().find(|x| x.name == n) {
+                                                            target.enabled = val;
+                                                            target.disable_model_invocation = !val;
+                                                        }
+                                                        if !fp.is_empty() {
+                                                            let _ = crate::client::local_store::toggle_skill_file_local(
+                                                                std::path::Path::new(&fp),
+                                                                !val,
+                                                            );
+                                                        }
+                                                        if st.sidecar_connected && !fp.is_empty() {
+                                                            let client = st.client.clone();
+                                                            let entity = cx.entity().clone();
+                                                            cx.spawn(async move |_, cx| {
+                                                                let _ = client.toggle_skill(&fp, !val).await;
+                                                                let _ = entity.update(cx, |s, cx| {
+                                                                    s.end_async_op(&op, cx);
+                                                                    let msg = tr(s.locale, "toast.extensionUpdated");
+                                                                    s.show_success_toast(msg, cx);
+                                                                });
+                                                            })
+                                                            .detach();
+                                                        } else {
+                                                            st.end_async_op(&op, cx);
+                                                            let msg = tr(st.locale, "toast.extensionUpdated");
+                                                            st.show_success_toast(msg, cx);
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                }),
+                                        )
+                                }),
                         )
                 })
                 .keywords([desc, source_for_search.clone()]),
@@ -535,58 +628,81 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                         )
                                     },
                                 )
-                                .child(
-                                    Switch::new(SharedString::from(format!("plugin-sw-{}", idx)))
-                                        .checked(enabled_now)
-                                        .disabled(
-                                            app_del
-                                                .read(cx)
-                                                .settings_deleting_keys
-                                                .contains(&format!("plugin:{}", src_for_del)),
-                                        )
-                                        .on_click(move |checked: &bool, _, cx| {
-                                            let next = *checked;
-                                            let src = src_w.clone();
-                                            let sc = sc_w.clone();
-                                            app_w.update(cx, |s, cx| {
-                                                if let Some(target) = s
-                                                    .plugins
-                                                    .iter_mut()
-                                                    .find(|x| x.source == src && x.scope == sc)
-                                                {
-                                                    target.enabled = next;
-                                                    target.status = if next {
-                                                        "loaded".to_string()
-                                                    } else {
-                                                        "disabled".to_string()
-                                                    };
-                                                }
-                                                if s.sidecar_connected {
-                                                    let client = s.client.clone();
-                                                    let cwd = s.active_cwd.to_string_lossy().into_owned();
-                                                    let entity = cx.entity().clone();
-                                                    cx.spawn(async move |_, cx| {
-                                                        if let Ok(res) = client
-                                                            .plugin_action(json!({
-                                                                "cwd": cwd,
-                                                                "action": if next { "enable" } else { "disable" },
-                                                                "source": src,
-                                                                "scope": sc,
-                                                            }))
-                                                            .await
-                                                        {
-                                                            let _ = entity.update(cx, |s, cx| {
-                                                                s.apply_plugins_response(&res);
-                                                                cx.notify();
-                                                            });
+                                .child({
+                                    let plug_op = format!("plugin:toggle:{sc_w}:{src_w}");
+                                    let is_plug_toggling = app_del.read(cx).is_async_op_pending(&plug_op);
+                                    let is_plug_deleting = app_del
+                                        .read(cx)
+                                        .settings_deleting_keys
+                                        .contains(&format!("plugin:{}", src_for_del));
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .when(is_plug_toggling, |el| {
+                                            el.child(
+                                                Spinner::new()
+                                                    .xsmall()
+                                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                                            )
+                                        })
+                                        .child(
+                                            Switch::new(SharedString::from(format!("plugin-sw-{}", idx)))
+                                                .checked(enabled_now)
+                                                .disabled(is_plug_deleting || is_plug_toggling)
+                                                .on_click(move |checked: &bool, _, cx| {
+                                                    let next = *checked;
+                                                    let src = src_w.clone();
+                                                    let sc = sc_w.clone();
+                                                    let op = plug_op.clone();
+                                                    app_w.update(cx, |s, cx| {
+                                                        if !s.begin_async_op(op.clone(), cx) {
+                                                            return;
                                                         }
-                                                    })
-                                                    .detach();
-                                                }
-                                                cx.notify();
-                                            });
-                                        }),
-                                )
+                                                        if let Some(target) = s
+                                                            .plugins
+                                                            .iter_mut()
+                                                            .find(|x| x.source == src && x.scope == sc)
+                                                        {
+                                                            target.enabled = next;
+                                                            target.status = if next {
+                                                                "loaded".to_string()
+                                                            } else {
+                                                                "disabled".to_string()
+                                                            };
+                                                        }
+                                                        if s.sidecar_connected {
+                                                            let client = s.client.clone();
+                                                            let cwd = s.active_cwd.to_string_lossy().into_owned();
+                                                            let entity = cx.entity().clone();
+                                                            cx.spawn(async move |_, cx| {
+                                                                let res = client
+                                                                    .plugin_action(json!({
+                                                                        "cwd": cwd,
+                                                                        "action": if next { "enable" } else { "disable" },
+                                                                        "source": src,
+                                                                        "scope": sc,
+                                                                    }))
+                                                                    .await;
+                                                                let _ = entity.update(cx, |s, cx| {
+                                                                    s.end_async_op(&op, cx);
+                                                                    if let Ok(res) = res {
+                                                                        s.apply_plugins_response(&res);
+                                                                    }
+                                                                    let msg = tr(s.locale, "toast.extensionUpdated");
+                                                                    s.show_success_toast(msg, cx);
+                                                                });
+                                                            })
+                                                            .detach();
+                                                        } else {
+                                                            s.end_async_op(&op, cx);
+                                                            let msg = tr(s.locale, "toast.extensionUpdated");
+                                                            s.show_success_toast(msg, cx);
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                }),
+                                        )
+                                })
                                 .child({
                                     let app_del_read = app_del.clone();
                                     let is_row_deleting = app_del_read
@@ -1707,6 +1823,144 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
         (SharedString::from("10"), SharedString::from("10")),
     ];
 
+    let app_s1 = app_state.clone();
+    let app_s2 = app_state.clone();
+    let app_s3 = app_state.clone();
+    let app_s4 = app_state.clone();
+    let app_s5 = app_state.clone();
+    let app_s6 = app_state.clone();
+
+    let agy_tools_group = SettingGroup::new()
+        .title("agy-tools")
+        .item(
+            SettingItem::new(
+                "CodeMode",
+                SettingField::render(move |_, _, cx| {
+                    let st = app_s1.read(cx);
+                    let checked = st
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.agy_plugins_enabled.contains(&"agy-codemode".to_string()))
+                        .unwrap_or(false);
+                    let is_busy = st.agy_link_loading;
+                    let app = app_s2.clone();
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .when(is_busy, |el| {
+                            el.child(
+                                Spinner::new()
+                                    .xsmall()
+                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                            )
+                        })
+                        .child(
+                            Switch::new("agy-plugin-codemode")
+                                .checked(checked)
+                                .disabled(is_busy)
+                                .on_click(move |val: &bool, _, cx| {
+                                    let val = *val;
+                                    app.update(cx, |s, cx| {
+                                        if s.agy_link_loading {
+                                            return;
+                                        }
+                                        s.send_agy_command(
+                                            format!("/agy plugin {} agy-codemode", if val { "enable" } else { "disable" }),
+                                            cx,
+                                        );
+                                    });
+                                }),
+                        )
+                }),
+            )
+            .description("Enable AGY codemode plugin"),
+        )
+        .item(
+            SettingItem::new(
+                "Output Guard",
+                SettingField::render(move |_, _, cx| {
+                    let st = app_s3.read(cx);
+                    let checked = st
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.agy_plugins_enabled.contains(&"agy-output-guard".to_string()))
+                        .unwrap_or(false);
+                    let is_busy = st.agy_link_loading;
+                    let app = app_s4.clone();
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .when(is_busy, |el| {
+                            el.child(
+                                Spinner::new()
+                                    .xsmall()
+                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                            )
+                        })
+                        .child(
+                            Switch::new("agy-plugin-output-guard")
+                                .checked(checked)
+                                .disabled(is_busy)
+                                .on_click(move |val: &bool, _, cx| {
+                                    let val = *val;
+                                    app.update(cx, |s, cx| {
+                                        if s.agy_link_loading {
+                                            return;
+                                        }
+                                        s.send_agy_command(
+                                            format!("/agy plugin {} agy-output-guard", if val { "enable" } else { "disable" }),
+                                            cx,
+                                        );
+                                    });
+                                }),
+                        )
+                }),
+            )
+            .description("Enable AGY output guard plugin"),
+        )
+        .item(
+            SettingItem::new(
+                "Rehydrate",
+                SettingField::render(move |_, _, cx| {
+                    let st = app_s5.read(cx);
+                    let checked = st
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.agy_plugins_enabled.contains(&"agy-rehydrate".to_string()))
+                        .unwrap_or(false);
+                    let is_busy = st.agy_link_loading;
+                    let app = app_s6.clone();
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .when(is_busy, |el| {
+                            el.child(
+                                Spinner::new()
+                                    .xsmall()
+                                    .icon(Icon::new(crate::icons::LoaderCircleIcon)),
+                            )
+                        })
+                        .child(
+                            Switch::new("agy-plugin-rehydrate")
+                                .checked(checked)
+                                .disabled(is_busy)
+                                .on_click(move |val: &bool, _, cx| {
+                                    let val = *val;
+                                    app.update(cx, |s, cx| {
+                                        if s.agy_link_loading {
+                                            return;
+                                        }
+                                        s.send_agy_command(
+                                            format!("/agy plugin {} agy-rehydrate", if val { "enable" } else { "disable" }),
+                                            cx,
+                                        );
+                                    });
+                                }),
+                        )
+                }),
+            )
+            .description("Enable AGY rehydrate plugin"),
+        );
     let agy_cli_group = SettingGroup::new()
         .title("agy-cli settings")
         .item(
@@ -1796,4 +2050,5 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
         .group(image_group)
         .group(exec_group)
         .group(agy_cli_group)
+        .group(agy_tools_group)
 }

@@ -1246,6 +1246,63 @@ impl Render for ChatPanel {
             )
             .child(div().w(px(90.)).flex_shrink_0());
 
+        let is_archived_session = {
+            let s = self.app_state.read(cx);
+            s.active_session_id.as_ref().is_some_and(|sid| {
+                s.archived_session_ids.contains(sid)
+                    || s.sessions.iter().any(|sess| &sess.id == sid && sess.archived)
+            })
+        };
+        let bottom_composer_el = if is_archived_session {
+            let app_unarch = self.app_state.clone();
+            let sid_unarch = self.app_state.read(cx).active_session_id.clone();
+            let locale_arch = self.app_state.read(cx).locale;
+            h_flex()
+                .w_full()
+                .px_4()
+                .py_2p5()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().secondary.opacity(0.45))
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Icon::new(crate::icons::ArchiveIcon)
+                                .xsmall()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(tr(locale_arch, "chat.archivedReadonlyBanner")),
+                        ),
+                )
+                .children(sid_unarch.map(|sid| {
+                    Button::new("unarchive-active-session")
+                        .outline()
+                        .small()
+                        .h(px(26.))
+                        .label(tr(locale_arch, "sidebar.unarchiveSession"))
+                        .on_click(move |_, _, cx| {
+                            app_unarch.update(cx, |s, cx| {
+                                s.toggle_archive_session(sid.clone(), cx);
+                            });
+                        })
+                }))
+                .into_any_element()
+        } else {
+            div()
+                .key_context("Composer")
+                .child(self.composer.clone())
+                .into_any_element()
+        };
+
         v_flex()
             .id("chat-panel-root")
             .relative()
@@ -1259,15 +1316,12 @@ impl Render for ChatPanel {
             .on_action(cx.listener(|this, _: &SendPrompt, window, cx| {
                 this.composer.update(cx, |c, cx| c.submit(window, cx));
             }))
+
             .child(conversation_header)
             .child(render_branch_nav(&self.app_state, window, cx))
             .child(body_area)
             .children(q_overlay)
-            .child(
-                div()
-                    .key_context("Composer")
-                    .child(self.composer.clone()),
-            )
+            .child(bottom_composer_el)
             .child(self.palette.clone())
     }
 }
