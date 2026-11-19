@@ -5,6 +5,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::separator::Separator;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
@@ -381,14 +382,24 @@ pub fn render_status_bar(
                         .ghost()
                         .small()
                         .h(px(26.))
-                        .loading(true)
-                        .label("Loading AGY")
                         .tooltip("Loading Antigravity (agy-link) Pool…")
                         .on_click(move |_, _, cx| {
                             app_agy.update(cx, |s, cx| {
                                 s.open_agy_link_modal(cx);
                             });
                         })
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(
+                                    Spinner::new()
+                                        .icon(Icon::new(crate::icons::LoaderCircleIcon))
+                                        .xsmall()
+                                        .color(cx.theme().muted_foreground),
+                                )
+                                .child("Loading AGY"),
+                        )
                         .into_any_element()
                 }
             })

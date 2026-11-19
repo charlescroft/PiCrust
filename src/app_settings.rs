@@ -44,6 +44,10 @@ fn default_preview_font_size() -> f32 {
 fn default_chat_content_width() -> f32 {
     840.0
 }
+
+fn default_file_link_click_action() -> String {
+    "preview".to_string()
+}
 fn default_locale() -> String {
     "en".to_string()
 }
@@ -135,6 +139,12 @@ pub struct ChatSettings {
     pub archived_section_collapsed: bool,
     #[serde(default)]
     pub collapsed_projects: Vec<String>,
+    #[serde(default = "default_file_link_click_action")]
+    pub file_link_click_action: String,
+    #[serde(default)]
+    pub last_selected_provider: Option<String>,
+    #[serde(default)]
+    pub last_selected_model_id: Option<String>,
 }
 
 impl Default for ChatSettings {
@@ -153,6 +163,9 @@ impl Default for ChatSettings {
             projects_section_collapsed: false,
             archived_section_collapsed: false,
             collapsed_projects: Vec::new(),
+            file_link_click_action: default_file_link_click_action(),
+            last_selected_provider: None,
+            last_selected_model_id: None,
         }
     }
 }

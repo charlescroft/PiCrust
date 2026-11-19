@@ -147,7 +147,19 @@ pub fn render_sidebar(
             let proj_cwd = list
                 .first()
                 .and_then(|s| s.cwd.as_ref())
-                .map(PathBuf::from);
+                .map(PathBuf::from)
+                .or_else(|| {
+                    state
+                        .extra_projects
+                        .iter()
+                        .find(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Workspace")
+                                == proj
+                        })
+                        .cloned()
+                });
             let rows = list
                 .into_iter()
                 .map(|s| {
@@ -558,11 +570,16 @@ pub fn render_sidebar(
             let proj_for_ctx = proj_name.clone();
             let cwd_for_menu = proj_cwd.clone();
             let cwd_for_ctx = proj_cwd.clone();
+            let cwd_for_click = proj_cwd.clone();
+            let is_active_empty_proj = active_sid.is_none()
+                && active_page == WorkspacePage::Chat
+                && state.active_workspace_kind == WorkspaceKind::Project
+                && proj_cwd.as_ref() == Some(&state.active_cwd);
             let proj_group = SharedString::from(format!("proj-row-{p_idx}"));
             let proj_group_hover = proj_group.clone();
             let proj_tip = label.clone();
 
-            let proj_row = h_flex()
+            let mut proj_row = h_flex()
                 .id(("proj-row", p_idx))
                 .w_full()
                 .h(px(30.))
@@ -572,7 +589,11 @@ pub fn render_sidebar(
                 .gap_1p5()
                 .rounded_md()
                 .cursor_pointer()
-                .hover(|s| s.bg(cx.theme().sidebar_accent.opacity(0.6)))
+                .hover(|s| s.bg(cx.theme().sidebar_accent.opacity(0.6)));
+            if is_active_empty_proj {
+                proj_row = proj_row.bg(cx.theme().sidebar_accent.opacity(0.45));
+            }
+            let proj_row = proj_row
                 .group(proj_group.clone())
                 .on_drag(DragProjectGroup { name: proj_for_drag }, |drag, _, _, cx| {
                     let d = drag.clone();
@@ -590,7 +611,14 @@ pub fn render_sidebar(
                 })
                 .on_click(move |_, _, cx| {
                     app_toggle.update(cx, |s, cx| {
-                        if s.collapsed_projects.contains(&proj_key) {
+                        if row_count == 0 {
+                            s.collapsed_projects.remove(&proj_key);
+                            s.save_sidebar_collapse_state();
+                            if let Some(c) = &cwd_for_click {
+                                s.open_project_composer(c.clone(), cx);
+                                return;
+                            }
+                        } else if s.collapsed_projects.contains(&proj_key) {
                             s.collapsed_projects.remove(&proj_key);
                         } else {
                             s.collapsed_projects.insert(proj_key.clone());
@@ -934,9 +962,10 @@ fn populate_project_popup_menu(
             .on_click(move |_, _, cx| {
                 app_new.update(cx, |s, cx| {
                     if let Some(c) = &cwd_new {
-                        s.active_cwd = c.clone();
+                        s.open_project_composer(c.clone(), cx);
+                    } else {
+                        s.start_new_composer(WorkspaceKind::Project, cx);
                     }
-                    s.start_new_composer(WorkspaceKind::Project, cx);
                 });
             }),
     )

@@ -54,6 +54,8 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
     let app_collapse_write = app_state.clone();
     let app_think_def_read = app_state.clone();
     let app_think_def_write = app_state.clone();
+    let app_link_act_read = app_state.clone();
+    let app_link_act_write = app_state.clone();
     let app_art_read = app_state.clone();
     let app_art_write = app_state.clone();
     let app_title_read = app_state.clone();
@@ -402,6 +404,22 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                     app_think_def_write.update(cx, |s, cx| s.set_thinking_expanded_default(val, cx));
                 },
             ),
+        ))
+        .item(SettingItem::new(
+            tr(locale, "settings.fileLinkClickAction"),
+            SettingField::dropdown(
+                vec![
+                    ("preview".into(), tr(locale, "settings.fileLinkPreview").into()),
+                    ("open_default".into(), tr(locale, "settings.fileLinkDefaultApp").into()),
+                ],
+                move |cx: &App| SharedString::from(app_link_act_read.read(cx).file_link_click_action.as_str()),
+                move |val: SharedString, cx: &mut App| {
+                    app_link_act_write.update(cx, |s, cx| {
+                        s.set_file_link_click_action(val.to_string(), cx);
+                    });
+                },
+            )
+            .w(SETTINGS_DROPDOWN_W),
         ))
         .item(SettingItem::new(
             tr(locale, "settings.artifactsInPanel"),

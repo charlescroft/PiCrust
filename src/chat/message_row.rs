@@ -47,6 +47,7 @@ pub struct CachedRowEntities {
     pub error_expanded: Option<bool>,
     pub user_expanded: bool,
     pub subagent_notice_expanded: Option<bool>,
+    pub hovered_file_link: std::sync::Arc<std::sync::Mutex<Option<(PathBuf, std::time::Instant)>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,16 +92,23 @@ pub fn render_message_row(
             error_expanded: None,
             user_expanded: false,
             subagent_notice_expanded: None,
+            hovered_file_link: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     });
-    if newly_created && row_cache.text_state.read(cx).rendered_text().source().is_empty() && !row_cache.last_text_snapshot.trim().is_empty() {
+    if newly_created {
         let tv = row_cache.text_state.clone();
         let app_for_obs = app_state.clone();
         cx.observe(&tv, move |panel, _, cx| {
-            let idx_opt = app_for_obs.read(cx).messages.iter().position(|m| m.id == msg_id);
+            let (idx_opt, total_msgs) = {
+                let msgs = &app_for_obs.read(cx).messages;
+                (msgs.iter().position(|m| m.id == msg_id), msgs.len())
+            };
             if let Some(idx) = idx_opt {
                 panel.scroller.update(cx, |s, cx| {
                     let _ = s.remeasure_items(idx..idx + 1, cx);
+                    if idx + 1 == total_msgs && !s.is_scrolled_up() {
+                        s.scroll_to_end(cx);
+                    }
                 });
             }
             cx.notify();
@@ -911,7 +919,12 @@ fn render_assistant_row(
                             .cursor_pointer()
                             .hover(|s| s.bg(cx.theme().secondary))
                             .on_click(cx.listener(move |panel, _, _, cx| {
-                                panel.toggle_thinking_step(msg_id, step_idx, cx);
+                                panel.toggle_thinking_step(
+                                    msg_id,
+                                    step_idx,
+                                    thinking_expanded_default,
+                                    cx,
+                                );
                                 cx.notify();
                             }))
                             .child(
@@ -980,6 +993,21 @@ fn render_assistant_row(
                                 Some((_, tv)) => tv.clone(),
                                 None => {
                                     let tv = cx.new(|cx| TextViewState::markdown(&md, cx).selectable(true));
+                                    let app_for_think_obs = app_state.clone();
+                                    cx.observe(&tv, move |panel, _, cx| {
+                                        let idx_opt = app_for_think_obs
+                                            .read(cx)
+                                            .messages
+                                            .iter()
+                                            .position(|m| m.id == msg_id);
+                                        if let Some(idx) = idx_opt {
+                                            panel.scroller.update(cx, |s, cx| {
+                                                let _ = s.remeasure_items(idx..idx + 1, cx);
+                                            });
+                                        }
+                                        cx.notify();
+                                    })
+                                    .detach();
                                     row_cache.thinking_states.insert(step_idx, (md.clone(), tv.clone()));
                                     tv
                                 }
@@ -1056,10 +1084,50 @@ fn render_assistant_row(
         tv_style.paragraph_gap = rems(1.05);
         tv_style.highlight_theme = cx.theme().highlight_theme.clone();
 
+        let app_for_link = app_state.clone();
+        let hovered_for_tip = row_cache.hovered_file_link.clone();
+        let hovered_for_ctx = row_cache.hovered_file_link.clone();
         let view = TextView::new(&row_cache.text_state)
             .style(tv_style)
             .stream_fade(msg.is_streaming)
             .selectable(true)
+            .on_link_click(move |url, ev, _, cx| {
+                if matches!(ev, gpui_kit::ClickEvent::Mouse(m) if m.down.button != gpui_kit::MouseButton::Left) {
+                    return;
+                }
+                if let Some(path) = parse_file_uri_to_path(url.as_ref()) {
+                    let action = app_for_link.read(cx).file_link_click_action.clone();
+                    if action == "open_default" {
+                        let _ = open::that(&path);
+                    } else {
+                        app_for_link.update(cx, |s, cx| {
+                            s.preview_file_in_sidebar(path, cx);
+                        });
+                    }
+                } else {
+                    cx.open_url(url.as_ref());
+                }
+            })
+            .link_tooltip(move |url, _, cx| {
+                let hovered_ref = hovered_for_tip.clone();
+                let (tip_text, link_path) = if let Some(path) = parse_file_uri_to_path(url.as_ref()) {
+                    if let Ok(mut slot) = hovered_for_tip.lock() {
+                        *slot = Some((path.clone(), std::time::Instant::now()));
+                    }
+                    (SharedString::from(path.to_string_lossy().into_owned()), Some(path))
+                } else {
+                    if let Ok(mut slot) = hovered_for_tip.lock() {
+                        *slot = None;
+                    }
+                    (url.clone(), None)
+                };
+                cx.new(|_| LinkHoverTooltip {
+                    text: tip_text,
+                    path: link_path,
+                    hovered_slot: hovered_ref,
+                })
+                .into()
+            })
             .code_block_actions(move |code_block, _, cx| {
                 let code_str = code_block.code().to_string();
                 let lang_label = code_block.lang().unwrap_or_else(|| SharedString::from("code"));
@@ -1105,9 +1173,8 @@ fn render_assistant_row(
         } else {
             view.into_any_element()
         };
-        let copy_str = row_cache.last_text_snapshot.clone();
-        let paste_str = row_cache.last_text_snapshot.clone();
         let app_paste = app_state.clone();
+        let text_state_for_ctx = row_cache.text_state.clone();
         stack = stack.child(
             div()
                 .id(("assistant-body-ctx", msg.id))
@@ -1116,19 +1183,73 @@ fn render_assistant_row(
                 .font_family(cx.theme().font_family.clone())
                 .text_size(px(font_px))
                 .line_height(rems(1.65))
-                .context_menu(move |menu, _, _| {
-                    let c_txt = copy_str.clone();
-                    let p_txt = paste_str.clone();
+                .context_menu(move |menu, _, cx| {
                     let app_p = app_paste.clone();
-                    menu.item(
-                        gpui_kit::component::menu::PopupMenuItem::new(tr(locale, "chat.copyContent"))
+                    let selected = text_state_for_ctx.read(cx).selected_text();
+                    let hovered_file = hovered_for_ctx.lock().ok().and_then(|g| {
+                        g.as_ref().and_then(|(p, ts)| {
+                            (ts.elapsed() < std::time::Duration::from_millis(1500))
+                                .then(|| p.clone())
+                        })
+                    });
+
+                    if let Some(file_path) = hovered_file {
+                        let p_open = file_path.clone();
+                        let p_prev = file_path.clone();
+                        let p_rev = file_path;
+                        let app_prev = app_p.clone();
+                        menu.item(
+                            gpui_kit::component::menu::PopupMenuItem::new(tr(
+                                locale,
+                                "chat.fileLinkOpenDefault",
+                            ))
+                            .icon(IconName::ExternalLink)
+                            .on_click(move |_, _, _| {
+                                let _ = open::that(&p_open);
+                            }),
+                        )
+                        .item(
+                            gpui_kit::component::menu::PopupMenuItem::new(tr(
+                                locale,
+                                "chat.fileLinkPreviewSidebar",
+                            ))
+                            .icon(IconName::PanelRightOpen)
+                            .on_click(move |_, _, cx| {
+                                app_prev.update(cx, |s, cx| {
+                                    s.preview_file_in_sidebar(p_prev.clone(), cx);
+                                });
+                            }),
+                        )
+                        .item(
+                            gpui_kit::component::menu::PopupMenuItem::new(tr(
+                                locale,
+                                "chat.fileLinkRevealManager",
+                            ))
+                            .icon(IconName::FolderOpen)
+                            .on_click(move |_, _, _| {
+                                reveal_path_in_finder(&p_rev);
+                            }),
+                        )
+                    } else if !selected.trim().is_empty() {
+                        let c_txt = selected.clone();
+                        let p_txt = selected;
+                        menu.item(
+                            gpui_kit::component::menu::PopupMenuItem::new(tr(
+                                locale,
+                                "chat.copyContent",
+                            ))
                             .icon(IconName::Copy)
                             .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(c_txt.clone()));
+                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                    c_txt.clone(),
+                                ));
                             }),
-                    )
-                    .item(
-                        gpui_kit::component::menu::PopupMenuItem::new(tr(locale, "chat.pasteToInput"))
+                        )
+                        .item(
+                            gpui_kit::component::menu::PopupMenuItem::new(tr(
+                                locale,
+                                "chat.pasteToInput",
+                            ))
                             .icon(IconName::Plus)
                             .on_click(move |_, _, cx| {
                                 app_p.update(cx, |s, cx| {
@@ -1136,7 +1257,10 @@ fn render_assistant_row(
                                     cx.notify();
                                 });
                             }),
-                    )
+                        )
+                    } else {
+                        menu
+                    }
                 })
                 .child(body_content),
         );
@@ -3151,6 +3275,72 @@ fn path_to_file_uri(path: &str) -> String {
     } else {
         format!("file:///{encoded}")
     }
+}
+
+struct LinkHoverTooltip {
+    text: SharedString,
+    path: Option<PathBuf>,
+    hovered_slot: std::sync::Arc<std::sync::Mutex<Option<(PathBuf, std::time::Instant)>>>,
+}
+
+impl gpui_kit::Render for LinkHoverTooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(ref p) = self.path {
+            if let Ok(mut slot) = self.hovered_slot.lock() {
+                *slot = Some((p.clone(), std::time::Instant::now()));
+            }
+        }
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .text_xs()
+            .text_color(cx.theme().popover_foreground)
+            .shadow_md()
+            .child(self.text.clone())
+    }
+}
+
+fn parse_file_uri_to_path(url: &str) -> Option<PathBuf> {
+    let raw = if let Some(rest) = url.strip_prefix("file:///") {
+        // On Windows `file:///C:/foo`, strip leading `/` before drive letter
+        if rest.len() >= 2 && rest.as_bytes()[1] == b':' {
+            rest.to_string()
+        } else {
+            format!("/{rest}")
+        }
+    } else if let Some(rest) = url.strip_prefix("file://") {
+        rest.to_string()
+    } else if is_linkable_abs_file_path(url) {
+        url.to_string()
+    } else {
+        return None;
+    };
+    let decoded = raw.replace("%20", " ");
+    Some(PathBuf::from(decoded))
+}
+
+fn extract_file_links_from_markdown(md: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut rest = md;
+    while let Some(idx) = rest.find("](file://") {
+        let after = &rest[idx + 2..];
+        if let Some(end) = after.find(')') {
+            let uri = &after[..end];
+            if let Some(p) = parse_file_uri_to_path(uri) {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 /// Returns `Some(occurrence_number)` (>= 2) if `msg` is a repeated scheduled/recurring

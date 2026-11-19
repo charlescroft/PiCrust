@@ -146,6 +146,21 @@ fn open_main_window(
                 }
             })
             .detach();
+            let app_state_appearance = state.clone();
+            cx.observe_window_appearance(window, move |_, win, cx| {
+                let is_system_dark = matches!(
+                    win.appearance(),
+                    gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+                );
+                app_state_appearance.update(cx, |s, cx| {
+                    if s.theme_mode == "system" && s.dark_mode != is_system_dark {
+                        s.dark_mode = is_system_dark;
+                        s.persist_and_apply_appearance(cx);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
             WorkspaceView::new(state, window, cx)
         })
     })

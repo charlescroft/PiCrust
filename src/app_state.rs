@@ -122,6 +122,8 @@ pub struct AppState {
     pub notify_sound: bool,
     pub thinking_expanded_default: bool,
     pub diff_view_mode: String,
+    pub file_link_click_action: String,
+    pub has_user_selected_model: bool,
     /// `auto` probes local cores; `manual` pins `core_url`.
     pub core_mode: String,
     pub core_url: String,
@@ -166,6 +168,7 @@ pub struct AppState {
     pub is_agent_running: bool,
     pub is_compacting: bool,
     pub outbox: Vec<QueuedPrompt>,
+    pub session_outboxes: HashMap<String, Vec<QueuedPrompt>>,
     pub pending_ui_request: Option<ExtensionUiRequest>,
     /// Further extension dialogs waiting behind `pending_ui_request` (an extension
     /// walking asks sequentially sends one request per question).
@@ -482,6 +485,8 @@ impl AppState {
             notify_sound: appearance.notify_sound,
             thinking_expanded_default: appearance.thinking_expanded_default,
             diff_view_mode: appearance.diff_view_mode,
+            file_link_click_action: chat_prefs.file_link_click_action.clone(),
+            has_user_selected_model: false,
             core_mode: appearance.core_mode,
             core_url: appearance.core_url,
             core_probe_results: Vec::new(),
@@ -524,6 +529,7 @@ impl AppState {
             is_agent_running: false,
             is_compacting: false,
             outbox: Vec::new(),
+            session_outboxes: HashMap::new(),
             pending_ui_request: None,
             dialog_queue: Vec::new(),
             questionnaire_request_id: None,
@@ -843,20 +849,36 @@ impl AppState {
         self.enrich_thinking_levels_from_config();
 
         if self.selected_model.is_none() && !self.models.is_empty() {
-            let def_prov = global_settings
-                .get("defaultProvider")
-                .and_then(Value::as_str);
-            let def_model = global_settings
-                .get("defaultModel")
-                .and_then(Value::as_str);
-            if let (Some(dp), Some(dm)) = (def_prov, def_model) {
+            let chat_prefs_saved = crate::app_settings::load_app_settings().chat;
+            if let (Some(lp), Some(lm)) = (
+                chat_prefs_saved.last_selected_provider.as_deref(),
+                chat_prefs_saved.last_selected_model_id.as_deref(),
+            ) {
                 if let Some(found) = self
                     .models
                     .iter()
-                    .find(|m| m.provider == dp && m.id == dm)
+                    .find(|m| m.provider == lp && m.id == lm)
                     .cloned()
                 {
                     self.selected_model = Some(found);
+                }
+            }
+            if self.selected_model.is_none() {
+                let def_prov = global_settings
+                    .get("defaultProvider")
+                    .and_then(Value::as_str);
+                let def_model = global_settings
+                    .get("defaultModel")
+                    .and_then(Value::as_str);
+                if let (Some(dp), Some(dm)) = (def_prov, def_model) {
+                    if let Some(found) = self
+                        .models
+                        .iter()
+                        .find(|m| m.provider == dp && m.id == dm)
+                        .cloned()
+                    {
+                        self.selected_model = Some(found);
+                    }
                 }
             }
             if self.selected_model.is_none() {
@@ -1179,14 +1201,17 @@ impl AppState {
         }
     }
 
-    pub fn add_project_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    pub fn open_project_composer(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if !self.extra_projects.contains(&path) {
             self.extra_projects.push(path.clone());
         }
         self.active_cwd = path;
-        self.active_branch = resolve_git_branch(&self.active_cwd);
-        self.projects_section_collapsed = false;
         self.start_new_composer(WorkspaceKind::Project, cx);
+    }
+
+    pub fn add_project_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.projects_section_collapsed = false;
+        self.open_project_composer(path, cx);
     }
 
     pub fn save_sidebar_collapse_state(&self) {
@@ -1376,7 +1401,7 @@ impl AppState {
         cx.notify();
     }
 
-    fn persist_and_apply_appearance(&self, cx: &mut gpui_kit::App) {
+    pub fn persist_and_apply_appearance(&self, cx: &mut gpui_kit::App) {
         self.persist_appearance_only();
         crate::themes::apply_appearance(
             self.dark_mode,
@@ -1489,6 +1514,114 @@ impl AppState {
         self.dark_theme_name = name;
         self.persist_and_apply_appearance(cx);
         cx.notify();
+    }
+
+    pub fn select_model(&mut self, model: ModelInfo, cx: &mut Context<Self>) {
+        self.selected_model = Some(model.clone());
+        self.has_user_selected_model = true;
+        self.clamp_thinking_level_to_model();
+        let clamped_lvl = self.thinking_level;
+        let prov = model.provider.clone();
+        let mid = model.id.clone();
+        crate::app_settings::update_app_settings(|s| {
+            s.chat.last_selected_provider = Some(prov.clone());
+            s.chat.last_selected_model_id = Some(mid.clone());
+        });
+        if let Some(sid) = self.active_session_id.clone() {
+            if self.sidecar_connected {
+                let client = self.client.clone();
+                cx.spawn(async move |_, _| {
+                    let _ = client
+                        .set_session_model(&sid, &model.provider, &model.id)
+                        .await;
+                    let _ = client.set_thinking_level(&sid, clamped_lvl).await;
+                })
+                .detach();
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn set_file_link_click_action(&mut self, action: String, cx: &mut Context<Self>) {
+        let normalized = if action == "open_default" {
+            "open_default".to_string()
+        } else {
+            "preview".to_string()
+        };
+        self.file_link_click_action = normalized.clone();
+        crate::app_settings::update_app_settings(|s| {
+            s.chat.file_link_click_action = normalized;
+        });
+        cx.notify();
+    }
+
+    pub fn preview_file_in_sidebar(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let use_artifact_panel = matches!(
+            ext.as_str(),
+            "html"
+                | "htm"
+                | "pdf"
+                | "svg"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "bmp"
+                | "ico"
+                | "icns"
+                | "avif"
+                | "tiff"
+                | "tif"
+                | "docx"
+                | "xlsx"
+                | "xls"
+                | "ods"
+        );
+        if use_artifact_panel {
+            let path_str = path.to_string_lossy().into_owned();
+            if let Some(existing) = self
+                .artifacts
+                .iter()
+                .find(|a| a.file_path.as_deref() == Some(path_str.as_str()))
+            {
+                self.active_artifact_id = Some(existing.identifier.clone());
+            } else {
+                let title = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("File")
+                    .to_string();
+                let kind = match ext.as_str() {
+                    "html" | "htm" => ArtifactKind::Html,
+                    "svg" => ArtifactKind::Svg,
+                    _ => ArtifactKind::Code,
+                };
+                let id = format!("file-preview-{}", self.artifacts.len() + 1);
+                self.artifacts.push(ArtifactRecord {
+                    identifier: id.clone(),
+                    title,
+                    kind,
+                    language: Some(ext),
+                    content: String::new(),
+                    previous_content: None,
+                    version: 1,
+                    session_id: self.active_session_id.clone(),
+                    file_path: Some(path_str),
+                    favorite: false,
+                    updated_at: None,
+                });
+                self.active_artifact_id = Some(id);
+            }
+            self.open_right_tab(RightPanelTab::Artifact, cx);
+        } else {
+            self.open_file(path, cx);
+        }
     }
 
     pub fn toggle_theme(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -2115,16 +2248,18 @@ impl AppState {
                 if let Some(val) = artifacts_val {
                     this.apply_artifacts_response(&val);
                 }
-                if let Some(val) = worktrees_val {
-                    if let Some(arr) = val.get("worktrees").and_then(Value::as_array) {
-                        this.worktrees = arr
-                            .iter()
-                            .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                            .collect();
+                if this.active_session_id == active_sid {
+                    if let Some(val) = worktrees_val {
+                        if let Some(arr) = val.get("worktrees").and_then(Value::as_array) {
+                            this.worktrees = arr
+                                .iter()
+                                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                                .collect();
+                        }
                     }
-                }
-                if let Some(val) = agent_state_val {
-                    this.apply_agent_state_response(&val);
+                    if let Some(val) = agent_state_val {
+                        this.apply_agent_state_response(&val);
+                    }
                 }
                 this.sync_tool_subagent_runs_from_messages();
                 if let Some(sid) = this.active_session_id.clone() {
@@ -2315,6 +2450,11 @@ impl AppState {
             let mut parsed: Vec<ModelInfo> = items
                 .iter()
                 .filter_map(|v| serde_json::from_value::<ModelInfo>(v.clone()).ok())
+                .filter(|m| {
+                    !self
+                        .deleted_model_refs
+                        .contains(&(m.provider.clone(), m.id.clone()))
+                })
                 .collect();
             for m in &mut parsed {
                 let key = format!("{}:{}", m.provider, m.id);
@@ -2339,6 +2479,11 @@ impl AppState {
             }
             // Trust an empty model list too, so removing the last provider
             // immediately clears the composer's model picker.
+            parsed.retain(|m| {
+                !self
+                    .deleted_model_refs
+                    .contains(&(m.provider.clone(), m.id.clone()))
+            });
             self.models = parsed;
             let selected_missing = self
                 .selected_model
@@ -2352,6 +2497,21 @@ impl AppState {
                 .unwrap_or(false);
             if selected_missing {
                 self.selected_model = None;
+            }
+        }
+        if !self.has_user_selected_model {
+            let chat_prefs = crate::app_settings::load_app_settings().chat;
+            if let (Some(lp), Some(lm)) = (
+                chat_prefs.last_selected_provider.as_deref(),
+                chat_prefs.last_selected_model_id.as_deref(),
+            ) {
+                if let Some(found) = self
+                    .visible_picker_models()
+                    .into_iter()
+                    .find(|m| m.provider == lp && m.id == lm)
+                {
+                    self.selected_model = Some(found);
+                }
             }
         }
         if let Some(def) = val.get("defaultModel") {
@@ -2900,10 +3060,9 @@ impl AppState {
                 )
                 .collect();
             let _ = crate::client::local_store::update_enabled_models_local(&json!({
-                "op": "provider",
-                "provider": provider_id,
+                "action": "set",
+                "models": refs,
                 "enabled": enabled,
-                "providerModels": refs,
             }));
             for prov in &mut self.enabled_models_overview.providers {
                 if prov.id == provider_id {
@@ -2972,8 +3131,8 @@ impl AppState {
         }
         if !self.sidecar_connected {
             let _ = crate::client::local_store::update_enabled_models_local(&json!({
-                "op": "model",
-                "ref": model_ref,
+                "action": "set",
+                "models": [model_ref],
                 "enabled": enabled,
             }));
             for prov in &mut self.enabled_models_overview.providers {
@@ -3186,14 +3345,12 @@ impl AppState {
             let _ = crate::client::local_store::delete_provider_auth_local(&provider_id);
             if !disable_refs.is_empty() {
                 let _ = crate::client::local_store::update_enabled_models_local(&json!({
-                    "op": "provider",
-                    "provider": provider_id,
+                    "action": "set",
+                    "models": disable_refs,
                     "enabled": false,
-                    "providerModels": disable_refs,
                 }));
             }
             if sidecar_connected {
-                let _ = client.put_models_config(config).await;
                 if !disable_refs.is_empty() {
                     let _ = client
                         .set_enabled_model(json!({
@@ -3204,6 +3361,14 @@ impl AppState {
                         }))
                         .await;
                 }
+                let _ = client.put_models_config(config).await;
+                let _ = client
+                    .set_enabled_model(json!({
+                        "op": "prune",
+                        "cwd": cwd_str,
+                    }))
+                    .await;
+                let _ = client.refresh_model_catalog().await;
             }
             let local_cfg = crate::client::local_store::read_models_config_local();
             let _ = entity.update(cx, |s, cx| {
@@ -3268,8 +3433,8 @@ impl AppState {
         let _ = crate::client::local_store::save_models_config_local(&config);
         let model_ref = format!("{provider_id}/{model_id}");
         let _ = crate::client::local_store::update_enabled_models_local(&json!({
-            "op": "toggle",
-            "modelRef": model_ref,
+            "action": "set",
+            "models": [model_ref],
             "enabled": false,
         }));
         if self.discover_error.as_ref().is_some_and(|(pid, _)| pid == &provider_id) {
@@ -3292,12 +3457,18 @@ impl AppState {
             let entity = cx.entity().clone();
             let cwd_str = self.active_cwd.to_string_lossy().into_owned();
             cx.spawn(async move |_, cx| {
+                let _ = client
+                    .set_enabled_model(json!({
+                        "op": "models",
+                        "refs": [model_ref],
+                        "enabled": false,
+                        "cwd": cwd_str,
+                    }))
+                    .await;
                 let _ = client.put_models_config(config).await;
                 let _ = client
                     .set_enabled_model(json!({
-                        "op": "toggle",
-                        "modelRef": model_ref,
-                        "enabled": false,
+                        "op": "prune",
                         "cwd": cwd_str,
                     }))
                     .await;
@@ -4560,9 +4731,26 @@ impl AppState {
         .detach();
     }
 
+    fn swap_outbox_for_session(&mut self, next_session_id: Option<&str>) {
+        if let Some(prev_sid) = self.active_session_id.as_deref() {
+            let prev_outbox = std::mem::take(&mut self.outbox);
+            if prev_outbox.is_empty() {
+                self.session_outboxes.remove(prev_sid);
+            } else {
+                self.session_outboxes.insert(prev_sid.to_string(), prev_outbox);
+            }
+        } else {
+            self.outbox.clear();
+        }
+        if let Some(next_sid) = next_session_id {
+            self.outbox = self.session_outboxes.remove(next_sid).unwrap_or_default();
+        }
+    }
+
     pub fn start_new_composer(&mut self, workspace_kind: WorkspaceKind, cx: &mut Context<Self>) {
         self.controller.next_load_id();
         self.controller.stop_sse();
+        self.swap_outbox_for_session(None);
         self.active_session_id = None;
         self.active_workspace_kind = workspace_kind;
         self.active_is_temp_chat = false;
@@ -4756,6 +4944,7 @@ impl AppState {
 
         let req_id = self.controller.next_load_id();
         self.controller.stop_sse();
+        self.swap_outbox_for_session(Some(&session_id));
         self.active_session_id = Some(session_id.clone());
         self.unread_session_ids.remove(&session_id);
         self.active_page = WorkspacePage::Chat;
@@ -4970,6 +5159,29 @@ impl AppState {
                 }
                 if let Some(st_val) = agent_state {
                     this.apply_agent_state_response(&st_val);
+                    let session_model_stale = st_val
+                        .get("model")
+                        .and_then(|m_obj| {
+                            let p = m_obj.get("provider").and_then(Value::as_str)?;
+                            let id = m_obj.get("id").and_then(Value::as_str)?;
+                            Some(!this.visible_picker_models().iter().any(|m| m.provider == p && m.id == id))
+                        })
+                        .unwrap_or(false);
+                    if session_model_stale {
+                        if let (Some(sid), Some(next_model)) =
+                            (this.active_session_id.clone(), this.selected_model.clone())
+                        {
+                            if this.sidecar_connected {
+                                let client = this.client.clone();
+                                cx.spawn(async move |_, _| {
+                                    let _ = client
+                                        .set_session_model(&sid, &next_model.provider, &next_model.id)
+                                        .await;
+                                })
+                                .detach();
+                            }
+                        }
+                    }
                 }
                 this.ensure_selected_model_visible(cx);
                 cx.notify();

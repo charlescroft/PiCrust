@@ -443,20 +443,7 @@ impl ComposerView {
                         .into_iter()
                         .find(|m| format!("{}:{}", m.provider, m.id) == target_key.as_ref())
                     {
-                        s.selected_model = Some(m.clone());
-                        s.clamp_thinking_level_to_model();
-                        let clamped_lvl = s.thinking_level;
-                        if let Some(sid) = s.active_session_id.clone() {
-                            if s.sidecar_connected {
-                                let client = s.client.clone();
-                                cx.spawn(async move |_, _| {
-                                    let _ = client.set_session_model(&sid, &m.provider, &m.id).await;
-                                    let _ = client.set_thinking_level(&sid, clamped_lvl).await;
-                                })
-                                .detach();
-                            }
-                        }
-                        cx.notify();
+                        s.select_model(m, cx);
                     }
                 });
             },
@@ -539,21 +526,23 @@ impl ComposerView {
                             cx.notify();
                         }
                     }
-                    "right" if is_dir_browser => {
-                        if let Some(entry) = this
-                            .file_picker_entries
-                            .get(this.file_picker_selected_idx)
-                            .cloned()
-                        {
-                            if entry.is_dir {
-                                handled = true;
-                                this.enter_file_picker_dir(entry.relative_path, cx);
+                    "right" => {
+                        handled = true;
+                        if is_dir_browser {
+                            if let Some(entry) = this
+                                .file_picker_entries
+                                .get(this.file_picker_selected_idx)
+                                .cloned()
+                            {
+                                if entry.is_dir {
+                                    this.enter_file_picker_dir(entry.relative_path, cx);
+                                }
                             }
                         }
                     }
-                    "left" if is_dir_browser => {
-                        if !this.file_picker_dir.is_empty() {
-                            handled = true;
+                    "left" => {
+                        handled = true;
+                        if is_dir_browser && !this.file_picker_dir.is_empty() {
                             this.exit_file_picker_dir(cx);
                         }
                     }
@@ -1016,88 +1005,12 @@ impl ComposerView {
         let app_proj = self.app_state.clone();
         let app_ctx = self.app_state.clone();
 
-        let fm_for_wrapper = file_matches.clone();
         let mut wrapper = v_flex()
             .w_full()
             .max_w(px(state.chat_content_width))
             .mx_auto()
             .gap_2()
-            .track_focus(&self.focus_handle)
-            .capture_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                if !this.file_picker_open && this.at_query.is_none() {
-                    return;
-                }
-                let key = event.keystroke.key.as_str();
-                let is_dir_browser = this.is_dir_browser_mode();
-                let len = if is_dir_browser {
-                    this.file_picker_entries.len()
-                } else {
-                    fm_for_wrapper.len().min(40)
-                };
-                match key {
-                    "up" => {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        if len > 0 {
-                            this.file_picker_selected_idx = this.file_picker_selected_idx.saturating_sub(1);
-                            this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
-                            cx.notify();
-                        }
-                    }
-                    "down" => {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        if len > 0 {
-                            this.file_picker_selected_idx = (this.file_picker_selected_idx + 1).min(len - 1);
-                            this.file_picker_scroll.scroll_to_item(this.file_picker_selected_idx);
-                            cx.notify();
-                        }
-                    }
-                    "right" if is_dir_browser => {
-                        if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
-                            if entry.is_dir {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.enter_file_picker_dir(entry.relative_path, cx);
-                            }
-                        }
-                    }
-                    "left" if is_dir_browser => {
-                        if !this.file_picker_dir.is_empty() {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.exit_file_picker_dir(cx);
-                        }
-                    }
-                    "enter" => {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        if is_dir_browser {
-                            if let Some(entry) = this.file_picker_entries.get(this.file_picker_selected_idx).cloned() {
-                                if entry.is_dir {
-                                    this.enter_file_picker_dir(entry.relative_path, cx);
-                                } else {
-                                    this.insert_file_reference(&entry.relative_path, window, cx);
-                                    this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                                }
-                            }
-                        } else if let Some(m) = fm_for_wrapper.get(this.file_picker_selected_idx) {
-                            let rel = m.relative_path.clone();
-                            this.insert_file_reference(&rel, window, cx);
-                            this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                        }
-                    }
-                    "escape" => {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        this.at_query = None;
-                        this.file_picker_open = false;
-                        this.textarea.update(cx, |st, cx| st.focus(window, cx));
-                        cx.notify();
-                    }
-                    _ => {}
-                }
-            }));
+            .track_focus(&self.focus_handle);
 
         // Live activity status hint in the gap above composer/todos, strictly <= half composer width
         if let Some(hint) = activity_hint {

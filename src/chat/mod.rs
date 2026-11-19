@@ -302,24 +302,48 @@ impl ChatPanel {
         }
     }
 
+    fn remeasure_row_by_msg_id(&mut self, msg_id: u64, cx: &mut Context<Self>) {
+        let idx_opt = self
+            .app_state
+            .read(cx)
+            .messages
+            .iter()
+            .position(|m| m.id == msg_id);
+        self.scroller.update(cx, |s, cx| {
+            if let Some(idx) = idx_opt {
+                if !s.remeasure_items(idx..idx + 1, cx) {
+                    s.remeasure(cx);
+                }
+            } else {
+                s.remeasure(cx);
+            }
+        });
+    }
+
     pub fn toggle_process_group(&mut self, msg_id: u64, default_open: bool, cx: &mut Context<Self>) {
         if let Some(entry) = self.row_cache.get_mut(&msg_id) {
             let cur = entry.process_group_open.unwrap_or(default_open);
             entry.process_group_open = Some(!cur);
         }
-        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+        self.remeasure_row_by_msg_id(msg_id, cx);
     }
 
-    pub fn toggle_thinking_step(&mut self, msg_id: u64, step_idx: usize, cx: &mut Context<Self>) {
+    pub fn toggle_thinking_step(
+        &mut self,
+        msg_id: u64,
+        step_idx: usize,
+        default_open: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(entry) = self.row_cache.get_mut(&msg_id) {
             let cur = entry
                 .expanded_thinking_steps
                 .get(&step_idx)
                 .copied()
-                .unwrap_or(false);
+                .unwrap_or(default_open);
             entry.expanded_thinking_steps.insert(step_idx, !cur);
         }
-        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+        self.remeasure_row_by_msg_id(msg_id, cx);
     }
 
     pub fn toggle_compaction_step(
@@ -337,7 +361,7 @@ impl ChatPanel {
                 .unwrap_or(default_open);
             entry.expanded_compactions.insert(step_idx, !cur);
         }
-        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+        self.remeasure_row_by_msg_id(msg_id, cx);
     }
 
     pub fn toggle_compaction_files(
@@ -354,7 +378,7 @@ impl ChatPanel {
                 .unwrap_or(false);
             entry.compaction_files_open.insert(step_idx, !cur);
         }
-        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+        self.remeasure_row_by_msg_id(msg_id, cx);
     }
 
     pub fn toggle_tool(&mut self, msg_id: u64, tool_id: SharedString, cx: &mut Context<Self>) {
@@ -500,9 +524,10 @@ impl ChatPanel {
                             let count = s.list_state.item_count();
                             s.total_items_cell.set(count);
                             s.visible_top_ix = count.saturating_sub(1);
-                            s.is_scrolled_up = false;
-                            s.last_scroll_notify_key = (false, s.visible_top_ix);
-                            s.last_scroll_key_cell.set((false, s.visible_top_ix));
+                            let is_scrolled = !s.list_state.is_following_tail() && count > 1;
+                            s.is_scrolled_up = is_scrolled;
+                            s.last_scroll_notify_key = (is_scrolled, s.visible_top_ix);
+                            s.last_scroll_key_cell.set((is_scrolled, s.visible_top_ix));
                             if cached.font_size != font_sz {
                                 s.remeasure(cx);
                             } else {
@@ -575,6 +600,9 @@ impl ChatPanel {
             let idx = new_count - 1;
             self.scroller.update(cx, |s, cx| {
                 let _ = s.remeasure_items(idx..idx + 1, cx);
+                if !s.is_scrolled_up() {
+                    s.scroll_to_end(cx);
+                }
             });
         }
 
