@@ -886,17 +886,30 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
                 is_running: false,
             };
 
-            // Attach inside the current Assistant turn if compaction happened mid-request
-            // so pre-compaction thinking + compaction + post-compaction thinking remain one request!
-            if let Some(prev) = out.last_mut() {
-                if prev.role == MessageRole::Assistant {
-                    if !prev.content.trim().is_empty() {
-                        let intermediate = std::mem::take(&mut prev.content);
-                        prev.process_steps
-                            .push(ProcessStep::Thinking(SharedString::from(intermediate)));
+            // Attach inside the current Assistant turn ONLY when compaction happened mid-request
+            // (i.e. an assistant continuation or implicit continue follows this compaction),
+            // so post-turn / manual compaction after a finished turn renders as its own standalone row.
+            let next_continues_assistant_turn = items[idx + 1..]
+                .iter()
+                .find(|next| next.get("role").and_then(Value::as_str) != Some("system"))
+                .is_some_and(|next| {
+                    let next_role = next.get("role").and_then(Value::as_str).unwrap_or("");
+                    let next_hidden = next.get("hidden").and_then(Value::as_bool) == Some(true)
+                        || flatten_content_text(next.get("content")).trim()
+                            == IMPLICIT_CONTINUE_PROMPT;
+                    next_role == "assistant" || (next_role == "user" && next_hidden)
+                });
+            if next_continues_assistant_turn {
+                if let Some(prev) = out.last_mut() {
+                    if prev.role == MessageRole::Assistant {
+                        if !prev.content.trim().is_empty() {
+                            let intermediate = std::mem::take(&mut prev.content);
+                            prev.process_steps
+                                .push(ProcessStep::Thinking(SharedString::from(intermediate)));
+                        }
+                        prev.process_steps.push(ProcessStep::Compaction(step));
+                        continue;
                     }
-                    prev.process_steps.push(ProcessStep::Compaction(step));
-                    continue;
                 }
             }
 
@@ -979,6 +992,7 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
             None
         };
         let (text, thinking, tool_calls, mut steps) = parse_message_content(msg.get("content"));
+        let mut msg_attachments = extract_image_attachments_from_content(msg.get("content"));
 
         if role == MessageRole::Assistant {
             // Merge consecutive Assistant entries within the same turn into ONE unified Assistant row,
@@ -989,6 +1003,7 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
                     _ => true,
                 };
                 if prev.role == MessageRole::Assistant && same_model {
+                    prev.attachments.append(&mut msg_attachments);
                     let prev_had_error = prev.error_message.is_some()
                         || prev.stop_reason.as_deref() == Some("error");
                     let keep_prev_prefix = prev_had_error || prev_was_implicit_continue;
@@ -1069,7 +1084,7 @@ pub fn parse_session_messages(payload: &Value, next_id: &mut u64) -> Vec<ChatMes
             thinking_expanded: false,
             content: text,
             tool_calls,
-            attachments: Vec::new(),
+            attachments: msg_attachments,
             is_streaming: false,
             turn_duration_ms: None,
             token_summary: None,
@@ -1122,6 +1137,192 @@ pub fn merge_turn_usage(target: &mut Option<TurnUsage>, add: TurnUsage) {
         }
         None => *target = Some(add),
     }
+}
+
+pub fn image_mime_for_path(path: &Path) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())?;
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+fn extension_for_image_mime(mime: &str) -> &'static str {
+    match mime.to_ascii_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        _ => "png",
+    }
+}
+
+pub fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((triple >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(triple & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    fn val(b: u8) -> Option<u8> {
+        match b {
+            b'A'..=b'Z' => Some(b - b'A'),
+            b'a'..=b'z' => Some(b - b'a' + 26),
+            b'0'..=b'9' => Some(b - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let clean: Vec<u8> = input
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    if clean.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::with_capacity((clean.len() / 4) * 3);
+    for chunk in clean.chunks(4) {
+        if chunk.len() < 2 {
+            return None;
+        }
+        let v0 = val(chunk[0])? as u32;
+        let v1 = val(chunk[1])? as u32;
+        let p2 = chunk.get(2).copied().unwrap_or(b'=');
+        let p3 = chunk.get(3).copied().unwrap_or(b'=');
+        let v2 = if p2 == b'=' { 0 } else { val(p2)? as u32 };
+        let v3 = if p3 == b'=' { 0 } else { val(p3)? as u32 };
+        let triple = (v0 << 18) | (v1 << 12) | (v2 << 6) | v3;
+        out.push(((triple >> 16) & 0xff) as u8);
+        if p2 != b'=' {
+            out.push(((triple >> 8) & 0xff) as u8);
+        }
+        if p3 != b'=' {
+            out.push((triple & 0xff) as u8);
+        }
+    }
+    Some(out)
+}
+
+pub fn materialize_image_to_cache(data_b64: &str, mime: &str) -> Option<std::path::PathBuf> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let bytes = decode_base64(data_b64)?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut hasher = DefaultHasher::new();
+    mime.hash(&mut hasher);
+    bytes.hash(&mut hasher);
+    let hash = hasher.finish();
+    let ext = extension_for_image_mime(mime);
+    let dir = std::env::temp_dir().join("picrust-image-cache");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("img-{hash:016x}.{ext}"));
+    if !path.exists() {
+        let _ = std::fs::write(&path, &bytes);
+    }
+    Some(path)
+}
+
+pub fn extract_image_attachments_from_content(content: Option<&Value>) -> Vec<AttachmentItem> {
+    let Some(arr) = content.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (idx, block) in arr.iter().enumerate() {
+        let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+        if kind == "image" {
+            let data = block
+                .get("data")
+                .and_then(Value::as_str)
+                .or_else(|| block.get("source").and_then(|s| s.get("data")).and_then(Value::as_str));
+            let mime = block
+                .get("mimeType")
+                .or_else(|| block.get("mime_type"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    block
+                        .get("source")
+                        .and_then(|s| s.get("media_type"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("image/png");
+            if let Some(b64) = data {
+                if let Some(path) = materialize_image_to_cache(b64, mime) {
+                    let size_bytes = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| SharedString::from(s.to_string()))
+                        .unwrap_or_else(|| SharedString::from(format!("image-{idx}.png")));
+                    out.push(AttachmentItem {
+                        name,
+                        mime: SharedString::from(mime.to_string()),
+                        size_bytes,
+                        local_path: Some(path),
+                        base64_data: None,
+                    });
+                }
+            }
+        } else if kind == "image_url" {
+            let url = block
+                .get("image_url")
+                .and_then(|u| u.get("url"))
+                .or_else(|| block.get("url"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if let Some(rest) = url.strip_prefix("data:") {
+                if let Some((meta, b64)) = rest.split_once(";base64,") {
+                    let mime = if meta.starts_with("image/") { meta } else { "image/png" };
+                    if let Some(path) = materialize_image_to_cache(b64, mime) {
+                        let size_bytes = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| SharedString::from(s.to_string()))
+                            .unwrap_or_else(|| SharedString::from(format!("image-{idx}.png")));
+                        out.push(AttachmentItem {
+                            name,
+                            mime: SharedString::from(mime.to_string()),
+                            size_bytes,
+                            local_path: Some(path),
+                            base64_data: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn parse_message_content(
@@ -2090,6 +2291,55 @@ mod tests {
         assert!(matches!(parsed[1].process_steps[2], ProcessStep::Thinking(_)));
         assert!(parsed[1].tool_calls.is_empty());
         assert_eq!(parsed[1].content, "Done!");
+    }
+
+    #[test]
+    fn keeps_post_turn_manual_compaction_separate_from_finished_assistant_turn() {
+        let payload = serde_json::json!({
+            "entryIds": ["u1", "a1", "c1", "u2", "a2"],
+            "messages": [
+                { "role": "user", "content": "Explain architecture" },
+                {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "stopReason": "stop",
+                    "content": [
+                        { "type": "text", "text": "Here is the overview." }
+                    ]
+                },
+                {
+                    "role": "custom",
+                    "customType": "compaction",
+                    "content": "Manual compaction summary.",
+                    "details": { "tokensBefore": 45000 }
+                },
+                { "role": "user", "content": "Next question" },
+                {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "stopReason": "stop",
+                    "content": [
+                        { "type": "text", "text": "Follow-up answer." }
+                    ]
+                }
+            ]
+        });
+
+        let mut next_id = 1;
+        let parsed = parse_session_messages(&payload, &mut next_id);
+        assert_eq!(parsed.len(), 5);
+        assert_eq!(parsed[0].role, MessageRole::User);
+        assert_eq!(parsed[1].role, MessageRole::Assistant);
+        assert_eq!(parsed[1].content, "Here is the overview.");
+        assert!(parsed[1].process_steps.is_empty());
+        assert_eq!(parsed[2].role, MessageRole::System);
+        assert!(matches!(
+            parsed[2].process_steps.first(),
+            Some(ProcessStep::Compaction(c)) if c.summary_markdown == "Manual compaction summary."
+        ));
+        assert_eq!(parsed[3].role, MessageRole::User);
+        assert_eq!(parsed[4].role, MessageRole::Assistant);
+        assert_eq!(parsed[4].content, "Follow-up answer.");
     }
 
     #[test]

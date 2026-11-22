@@ -329,10 +329,15 @@ pub fn sanitize_workflow_name(name: &str) -> String {
     let trimmed = name.trim().strip_suffix(".md").unwrap_or(name.trim());
     let mut cleaned = String::with_capacity(trimmed.len());
     for ch in trimmed.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+        if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || ch.is_control() {
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !cleaned.ends_with('-') && !cleaned.is_empty() {
+                cleaned.push('-');
+            }
+        } else {
             cleaned.push(ch);
-        } else if ch.is_whitespace() && !cleaned.ends_with('-') && !cleaned.is_empty() {
-            cleaned.push('-');
         }
     }
     let cleaned = cleaned.trim_matches('-');
@@ -582,6 +587,13 @@ mod tests {
         assert_eq!(sanitize_note_filename("架构 备忘/v1:test"), "架构-备忘v1test.md");
         assert_eq!(sanitize_note_filename("notes.md"), "notes.md");
         assert_eq!(sanitize_note_filename("///"), "untitled.md");
+    }
+
+    #[test]
+    fn sanitizes_workflow_names_preserving_unicode() {
+        assert_eq!(sanitize_workflow_name("每日 构建/check"), "每日-构建check");
+        assert_eq!(sanitize_workflow_name("release-check.md"), "release-check");
+        assert_eq!(sanitize_workflow_name("///"), "workflow");
     }
 
     #[test]

@@ -282,12 +282,22 @@ pub struct ToolCallItem {
     pub expanded: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct AttachmentItem {
     pub name: SharedString,
     pub mime: SharedString,
     pub size_bytes: usize,
+    #[serde(default)]
+    pub local_path: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub base64_data: Option<String>,
+}
+
+impl AttachmentItem {
+    pub fn is_image(&self) -> bool {
+        self.mime.starts_with("image/")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -394,7 +404,7 @@ pub struct BranchSibling {
 pub struct QueuedPrompt {
     pub id: u64,
     pub text: String,
-    pub attachments: Vec<String>,
+    pub attachments: Vec<AttachmentItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -945,6 +955,8 @@ pub struct AgyLinkSettings {
     #[serde(default)]
     pub hidden_models: Vec<String>,
     #[serde(default)]
+    pub selected_models: Vec<String>,
+    #[serde(default)]
     pub auto_warmup: bool,
     #[serde(default)]
     pub image_model: String,
@@ -957,6 +969,8 @@ pub struct AgyLinkSettings {
     #[serde(default)]
     pub image_output_dir: String,
     #[serde(default)]
+    pub image_tool: bool,
+    #[serde(default)]
     pub auto_compact_override: u64,
     #[serde(default = "default_agy_effective_compact_limit")]
     pub effective_compact_limit: u64,
@@ -964,6 +978,20 @@ pub struct AgyLinkSettings {
     pub model_api_max_retries: u32,
     #[serde(default = "default_agy_slim_prompt_rules")]
     pub slim_prompt_rules: bool,
+    #[serde(default = "default_agy_transport")]
+    pub transport: String,
+    #[serde(default)]
+    pub acp_active_processes: u32,
+    #[serde(default)]
+    pub acp_sessions: u32,
+    #[serde(default)]
+    pub sandbox: bool,
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub agy_settings: String,
+    #[serde(default)]
+    pub sync_account_customizations: bool,
 }
 
 fn default_agy_mode() -> String {
@@ -998,6 +1026,10 @@ fn default_agy_slim_prompt_rules() -> bool {
     true
 }
 
+fn default_agy_transport() -> String {
+    "cli".to_string()
+}
+
 impl Default for AgyLinkSettings {
     fn default() -> Self {
         Self {
@@ -1014,16 +1046,25 @@ impl Default for AgyLinkSettings {
             pool_wide_catalog: false,
             auto_fallback_model: false,
             hidden_models: Vec::new(),
+            selected_models: Vec::new(),
             auto_warmup: false,
             image_model: String::new(),
             image_effort: default_agy_image_effort(),
             image_timeout_ms: default_agy_image_timeout_ms(),
             image_retries: default_agy_image_retries(),
             image_output_dir: String::new(),
+            image_tool: false,
             auto_compact_override: 0,
             effective_compact_limit: default_agy_effective_compact_limit(),
             model_api_max_retries: default_agy_model_api_max_retries(),
             slim_prompt_rules: default_agy_slim_prompt_rules(),
+            transport: default_agy_transport(),
+            acp_active_processes: 0,
+            acp_sessions: 0,
+            sandbox: false,
+            agent: String::new(),
+            agy_settings: String::new(),
+            sync_account_customizations: false,
         }
     }
 }

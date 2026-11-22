@@ -1233,11 +1233,14 @@ impl Render for ChatPanel {
                 div()
                     .flex_1()
                     .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(
                         h_flex()
+                            .max_w_full()
+                            .min_w_0()
                             .items_center()
                             .gap_1p5()
                             .children(is_temp_chat.then(|| {
@@ -1258,6 +1261,8 @@ impl Render for ChatPanel {
                             .child(
                                 div()
                                     .id("conv-header-title")
+                                    .flex_1()
+                                    .min_w_0()
                                     .max_w(px(580.))
                                     .truncate()
                                     .text_xs()
@@ -1272,7 +1277,7 @@ impl Render for ChatPanel {
                             ),
                     ),
             )
-            .child(div().w(px(90.)).flex_shrink_0());
+            .child(div().w(px(32.)).flex_shrink_0());
 
         let is_archived_session = {
             let s = self.app_state.read(cx);
@@ -1338,6 +1343,11 @@ impl Render for ChatPanel {
             .track_focus(&self.focus_handle)
             .size_full()
             .font_family(cx.theme().font_family.clone())
+            .on_drop(cx.listener(|this, paths: &gpui_kit::ExternalPaths, _, cx| {
+                this.app_state.update(cx, |s, cx| {
+                    s.handle_dropped_paths(paths.paths(), cx);
+                });
+            }))
             .on_action(cx.listener(|this, _: &StopAgent, _, cx| {
                 this.app_state.update(cx, |s, cx| s.stop_running_agent(cx));
             }))

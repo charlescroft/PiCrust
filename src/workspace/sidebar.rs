@@ -185,6 +185,9 @@ pub fn render_sidebar(
     let app_tasks = app_state.clone();
     let app_sched = app_state.clone();
     let app_arts = app_state.clone();
+    let app_wf = app_state.clone();
+    let workflows_active =
+        state.right_panel_open && state.right_panel_tab == RightPanelTab::Workflows;
 
     let tasks_count = state
         .tasks
@@ -245,6 +248,19 @@ pub fn render_sidebar(
                     s.active_page = WorkspacePage::Artifacts;
                     s.refresh_artifacts_from_sidecar(cx);
                     cx.notify();
+                });
+            },
+        ))
+        .child(build_nav_row(
+            "nav-workflows",
+            Icon::new(crate::icons::PlayIcon).small(),
+            tr(locale, "sidebar.workflows").to_string(),
+            workflows_active,
+            cx,
+            false,
+            move |_, _, cx| {
+                app_wf.update(cx, |s, cx| {
+                    s.toggle_right_tab(RightPanelTab::Workflows, cx);
                 });
             },
         ));
@@ -833,59 +849,38 @@ pub fn render_sidebar(
         .child({
             let app_notes = app_state.clone();
             let app_creds = app_state.clone();
-            let app_wf = app_state.clone();
-            v_flex()
+            h_flex()
                 .w_full()
                 .px_2()
                 .py_1p5()
                 .gap_1()
+                .items_center()
                 .border_t_1()
                 .border_color(cx.theme().sidebar_border)
                 .child(
-                    h_flex()
-                        .w_full()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            Button::new("sidebar-notes-btn")
-                                .ghost()
-                                .small()
-                                .flex_1()
-                                .h(px(28.))
-                                .icon(IconName::FileText)
-                                .label(tr(locale, "sidebar.notes"))
-                                .tooltip(tr(locale, "sidebar.notesTooltip"))
-                                .on_click(move |_, _, cx| {
-                                    app_notes.update(cx, |s, cx| s.open_notes_modal(cx));
-                                }),
-                        )
-                        .child(
-                            Button::new("sidebar-credentials-btn")
-                                .ghost()
-                                .small()
-                                .flex_1()
-                                .h(px(28.))
-                                .icon(Icon::new(crate::icons::KeyRoundIcon))
-                                .label(tr(locale, "sidebar.credentials"))
-                                .tooltip(tr(locale, "sidebar.credentialsTooltip"))
-                                .on_click(move |_, _, cx| {
-                                    app_creds.update(cx, |s, cx| s.open_credentials_modal(cx));
-                                }),
-                        ),
-                )
-                .child(
-                    Button::new("sidebar-workflows-btn")
+                    Button::new("sidebar-notes-btn")
                         .ghost()
                         .small()
-                        .w_full()
+                        .flex_1()
                         .h(px(28.))
-                        .icon(Icon::new(crate::icons::PlayIcon))
-                        .label(tr(locale, "sidebar.workflows"))
-                        .tooltip(tr(locale, "sidebar.workflowsTooltip"))
+                        .icon(IconName::FileText)
+                        .label(tr(locale, "sidebar.notes"))
+                        .tooltip(tr(locale, "sidebar.notesTooltip"))
                         .on_click(move |_, _, cx| {
-                            app_wf.update(cx, |s, cx| {
-                                s.toggle_right_tab(RightPanelTab::Workflows, cx);
-                            });
+                            app_notes.update(cx, |s, cx| s.open_notes_modal(cx));
+                        }),
+                )
+                .child(
+                    Button::new("sidebar-credentials-btn")
+                        .ghost()
+                        .small()
+                        .flex_1()
+                        .h(px(28.))
+                        .icon(Icon::new(crate::icons::KeyRoundIcon))
+                        .label(tr(locale, "sidebar.credentials"))
+                        .tooltip(tr(locale, "sidebar.credentialsTooltip"))
+                        .on_click(move |_, _, cx| {
+                            app_creds.update(cx, |s, cx| s.open_credentials_modal(cx));
                         }),
                 )
         })

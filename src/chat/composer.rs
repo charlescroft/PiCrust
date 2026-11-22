@@ -20,7 +20,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, Font,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, TextRun, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Task, TextRun, Window, div, px,
 };
 use gpui_kit::component::scroll::ScrollableElement as _;
 use std::collections::{BTreeMap, HashMap};
@@ -302,6 +302,8 @@ pub struct ComposerView {
     file_picker_selected_idx: usize,
     file_picker_scroll: ScrollHandle,
     slash_query: Option<String>,
+    slash_selected_idx: usize,
+    slash_scroll: ScrollHandle,
     session_drafts: HashMap<Option<String>, String>,
     last_rendered_session_id: Option<String>,
 }
@@ -367,14 +369,17 @@ impl ComposerView {
                 let text = state.read(cx).value().to_string();
 
                 let trimmed = text.trim_start();
-                if let Some(after_slash) = trimmed.strip_prefix('/') {
+                let next_slash = trimmed.strip_prefix('/').and_then(|after_slash| {
                     if !after_slash.contains(char::is_whitespace) {
-                        this.slash_query = Some(after_slash.to_lowercase());
+                        Some(after_slash.to_lowercase())
                     } else {
-                        this.slash_query = None;
+                        None
                     }
-                } else {
-                    this.slash_query = None;
+                });
+                if this.slash_query != next_slash {
+                    this.slash_selected_idx = 0;
+                    this.slash_scroll.scroll_to_item(0);
+                    this.slash_query = next_slash;
                 }
 
                 this.ignored_at_positions
@@ -485,9 +490,6 @@ impl ComposerView {
             };
             let mut handled = false;
             entity.update(cx, |this, cx| {
-                if !this.file_picker_open && this.at_query.is_none() {
-                    return;
-                }
                 let (modal_open, is_chat_page, file_matches) = {
                     let s = this.app_state.read(cx);
                     (
@@ -497,6 +499,73 @@ impl ComposerView {
                     )
                 };
                 if modal_open || !is_chat_page {
+                    return;
+                }
+                if !this.file_picker_open && this.at_query.is_none() {
+                    if this.slash_query.is_some()
+                        && matches!(key, "up" | "down" | "enter" | "tab" | "escape")
+                    {
+                        let slash_items = this.filtered_slash_items(cx);
+                        let slen = slash_items.len();
+                        match key {
+                            "up" => {
+                                handled = true;
+                                if slen > 0 {
+                                    this.slash_selected_idx =
+                                        this.slash_selected_idx.saturating_sub(1);
+                                    this.slash_scroll.scroll_to_item(this.slash_selected_idx);
+                                    cx.notify();
+                                }
+                            }
+                            "down" => {
+                                handled = true;
+                                if slen > 0 {
+                                    this.slash_selected_idx =
+                                        (this.slash_selected_idx + 1).min(slen - 1);
+                                    this.slash_scroll.scroll_to_item(this.slash_selected_idx);
+                                    cx.notify();
+                                }
+                            }
+                            "enter" | "tab" => {
+                                if let Some((cmd_name, _, exec_now)) =
+                                    slash_items.get(this.slash_selected_idx).cloned()
+                                {
+                                    handled = true;
+                                    if exec_now && key == "enter" {
+                                        this.textarea.update(cx, |st, cx| {
+                                            st.set_value("", window, cx);
+                                        });
+                                        this.slash_query = None;
+                                        this.slash_selected_idx = 0;
+                                        this.app_state.update(cx, |s, cx| {
+                                            s.submit_prompt(cmd_name, cx);
+                                        });
+                                    } else {
+                                        let val = format!("{cmd_name} ");
+                                        this.textarea.update(cx, |st, cx| {
+                                            st.set_value(&val, window, cx);
+                                        });
+                                        this.slash_query = None;
+                                        this.slash_selected_idx = 0;
+                                        this.textarea.update(cx, |st, cx| st.focus(window, cx));
+                                    }
+                                    cx.notify();
+                                } else if key == "enter" {
+                                    handled = true;
+                                    this.slash_query = None;
+                                    this.submit(window, cx);
+                                }
+                            }
+                            "escape" => {
+                                handled = true;
+                                this.slash_query = None;
+                                this.slash_selected_idx = 0;
+                                this.textarea.update(cx, |st, cx| st.focus(window, cx));
+                                cx.notify();
+                            }
+                            _ => {}
+                        }
+                    }
                     return;
                 }
                 let is_dir_browser = this.is_dir_browser_mode();
@@ -619,14 +688,49 @@ impl ComposerView {
             file_picker_selected_idx: 0,
             file_picker_scroll: ScrollHandle::new(),
             slash_query: None,
+            slash_selected_idx: 0,
+            slash_scroll: ScrollHandle::new(),
             session_drafts: HashMap::new(),
             last_rendered_session_id: None,
         }
     }
 
+    fn filtered_slash_items(&self, cx: &App) -> Vec<(String, String, bool)> {
+        let Some(ref sq) = self.slash_query else {
+            return Vec::new();
+        };
+        let (locale, skills) = {
+            let s = self.app_state.read(cx);
+            (s.locale, s.skills.clone())
+        };
+        let mut items: Vec<(String, String, bool)> = BUILTIN_SLASH_COMMANDS
+            .iter()
+            .filter(|c| sq.is_empty() || c.name.contains(sq.as_str()))
+            .map(|c| {
+                (
+                    format!("/{}", c.name),
+                    tr(locale, c.desc_key).to_string(),
+                    c.execute_immediately,
+                )
+            })
+            .collect();
+
+        for sk in &skills {
+            if sk.enabled && (sq.is_empty() || sk.name.to_lowercase().contains(sq.as_str())) {
+                items.push((
+                    format!("/skill:{}", sk.name),
+                    sk.description.clone(),
+                    false,
+                ));
+            }
+        }
+        items
+    }
+
     pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.textarea.read(cx).value().to_string();
-        if text.trim().is_empty() {
+        let has_images = !self.app_state.read(cx).pending_image_attachments.is_empty();
+        if text.trim().is_empty() && !has_images {
             return;
         }
         self.textarea.update(cx, |state, cx| {
@@ -972,8 +1076,9 @@ impl ComposerView {
         let steering_mode = state.steering_mode;
         let follow_up_mode = state.follow_up_mode;
         let outbox = state.outbox.clone();
+        let pending_images = state.pending_image_attachments.clone();
+        let has_sendable = has_text || !pending_images.is_empty();
         let file_matches = state.file_search_results.clone();
-        let skills = state.skills.clone();
         let todos = state.todos.clone();
         let todos_expanded = state.todos_expanded;
         let todos_hidden = state.todos_hidden;
@@ -1278,32 +1383,16 @@ impl ComposerView {
         }
 
         // 2. Slash command (`/`) autocomplete popup
-        if let Some(ref sq) = self.slash_query {
-            let mut items: Vec<(String, String, bool)> = BUILTIN_SLASH_COMMANDS
-                .iter()
-                .filter(|c| sq.is_empty() || c.name.contains(sq.as_str()))
-                .map(|c| {
-                    (
-                        format!("/{}", c.name),
-                        tr(locale, c.desc_key).to_string(),
-                        c.execute_immediately,
-                    )
-                })
-                .collect();
-
-            for sk in &skills {
-                if sk.enabled && (sq.is_empty() || sk.name.to_lowercase().contains(sq.as_str())) {
-                    items.push((
-                        format!("/skill:{}", sk.name),
-                        sk.description.clone(),
-                        false,
-                    ));
-                }
+        if self.slash_query.is_some() {
+            let items = self.filtered_slash_items(cx);
+            if !items.is_empty() && self.slash_selected_idx >= items.len() {
+                self.slash_selected_idx = items.len() - 1;
             }
+            let selected_idx = self.slash_selected_idx;
 
             let mut popup = v_flex()
                 .w_full()
-                .max_h(px(220.))
+                .max_h(px(260.))
                 .overflow_hidden()
                 .p_1p5()
                 .gap_0p5()
@@ -1344,13 +1433,25 @@ impl ComposerView {
                         .child(tr(locale, "chat.noCommands")),
                 );
             } else {
-                for (idx, (cmd_name, desc, exec_now)) in items.into_iter().take(10).enumerate() {
+                let mut scroll_list = v_flex()
+                    .id("slash-cmd-scroll")
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .max_h(px(210.))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.slash_scroll)
+                    .gap_0p5();
+
+                for (idx, (cmd_name, desc, exec_now)) in items.into_iter().enumerate() {
                     let cmd_fill = cmd_name.clone();
-                    popup = popup.child(
+                    let is_sel = idx == selected_idx;
+                    scroll_list = scroll_list.child(
                         h_flex()
                             .id(("slash-cmd-row", idx))
                             .w_full()
                             .min_w_0()
+                            .flex_shrink_0()
                             .px_2p5()
                             .py_1p5()
                             .gap_3()
@@ -1358,6 +1459,11 @@ impl ComposerView {
                             .justify_start()
                             .rounded_md()
                             .cursor_pointer()
+                            .bg(if is_sel {
+                                cx.theme().accent.opacity(0.18)
+                            } else {
+                                cx.theme().transparent
+                            })
                             .hover(|s| s.bg(cx.theme().secondary))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if exec_now {
@@ -1365,6 +1471,7 @@ impl ComposerView {
                                         st.set_value("", window, cx);
                                     });
                                     this.slash_query = None;
+                                    this.slash_selected_idx = 0;
                                     this.app_state.update(cx, |s, cx| {
                                         s.submit_prompt(cmd_fill.clone(), cx);
                                     });
@@ -1374,6 +1481,7 @@ impl ComposerView {
                                         st.set_value(&val, window, cx);
                                     });
                                     this.slash_query = None;
+                                    this.slash_selected_idx = 0;
                                 }
                                 cx.notify();
                             }))
@@ -1398,6 +1506,7 @@ impl ComposerView {
                             ),
                     );
                 }
+                popup = popup.child(scroll_list);
             }
 
             wrapper = wrapper.child(popup);
@@ -1686,7 +1795,7 @@ impl ComposerView {
 
         // 4. Unified composer card matching original ChatInput.tsx + native-theme.css:
         //    36px circular buttons, 10px inset, 29px outer corner radius, single-row auto-grow
-        let send_action_btn = if is_running && !has_text {
+        let send_action_btn = if is_running && !has_sendable {
             Button::new("composer-stop-btn")
                 .danger()
                 .w(px(36.))
@@ -1740,13 +1849,20 @@ impl ComposerView {
                 .capture_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     let key = event.keystroke.key.as_str();
 
-                    // File picker navigation is handled once by cx.intercept_keystrokes;
-                    // only block Enter submission while the popup is open.
+                    // File picker / slash popup navigation is handled once by cx.intercept_keystrokes;
+                    // block Textarea cursor/Enter handling while the popup is open.
                     if this.file_picker_open || this.at_query.is_some() {
                         if matches!(key, "up" | "down" | "left" | "right" | "enter" | "tab" | "escape") {
                             window.prevent_default();
                             cx.stop_propagation();
                         }
+                        return;
+                    }
+                    if this.slash_query.is_some()
+                        && matches!(key, "up" | "down" | "enter" | "tab" | "escape")
+                    {
+                        window.prevent_default();
+                        cx.stop_propagation();
                         return;
                     }
 
@@ -1854,12 +1970,85 @@ impl ComposerView {
             .when_running_stop(is_running && has_text, locale, self.app_state.clone())
             .child(send_action_btn);
 
+        let pending_images_strip = (!pending_images.is_empty()).then(|| {
+            let app_rm = self.app_state.clone();
+            h_flex()
+                .id("composer-pending-images")
+                .w_full()
+                .overflow_x_scroll()
+                .px_3()
+                .pt_2p5()
+                .pb_1()
+                .gap_2()
+                .items_center()
+                .children(pending_images.iter().enumerate().map(|(idx, att)| {
+                    let app_del = app_rm.clone();
+                    let thumb_el = if let Some(ref path) = att.local_path {
+                        gpui_kit::img(path.clone())
+                            .size_full()
+                            .object_fit(gpui_kit::ObjectFit::Cover)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(att.name.clone())
+                            .into_any_element()
+                    };
+                    div()
+                        .id(("composer-img-thumb", idx))
+                        .relative()
+                        .flex_shrink_0()
+                        .w(px(64.))
+                        .h(px(64.))
+                        .rounded_md()
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted)
+                        .child(thumb_el)
+                        .child(
+                            div()
+                                .id(("composer-img-remove", idx))
+                                .absolute()
+                                .top(px(2.))
+                                .right(px(2.))
+                                .w(px(18.))
+                                .h(px(18.))
+                                .rounded_full()
+                                .bg(cx.theme().background.opacity(0.85))
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
+                                .on_click(move |_, _, cx| {
+                                    app_del.update(cx, |s, cx| {
+                                        s.remove_pending_image_attachment(idx, cx);
+                                    });
+                                })
+                                .child(Icon::new(IconName::Close).size(px(10.))),
+                        )
+                }))
+        });
+
         let composer_card = v_flex()
             .w_full()
-            .rounded(if self.is_promoted { px(22.) } else { px(28.) })
+            .rounded(if self.is_promoted || !pending_images.is_empty() {
+                px(22.)
+            } else {
+                px(28.)
+            })
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().secondary)
+            .children(pending_images_strip)
             .children(promoted_top)
             .child(bottom_row);
 

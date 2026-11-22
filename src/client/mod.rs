@@ -235,6 +235,7 @@ impl PiDaemonClient {
         provider: Option<&str>,
         model_id: Option<&str>,
         thinking_level: Option<&str>,
+        images: &[Value],
     ) -> Result<Value> {
         let mut body = json!({
             "cwd": cwd,
@@ -247,6 +248,11 @@ impl PiDaemonClient {
         if let Some(tl) = thinking_level {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("thinkingLevel".to_string(), json!(tl));
+            }
+        }
+        if !images.is_empty() {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("images".to_string(), json!(images));
             }
         }
         self.post_json("/api/agent/new", &body).await

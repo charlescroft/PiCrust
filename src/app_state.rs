@@ -245,6 +245,7 @@ pub struct AppState {
     pub retry_status: Option<SharedString>,
     pub draft_restore_text: Option<String>,
     pub pending_composer_mention: Option<String>,
+    pub pending_image_attachments: Vec<AttachmentItem>,
     pub pending_composer_paste: Option<String>,
     #[allow(dead_code)]
     pub status_banner: Option<SharedString>,
@@ -586,6 +587,7 @@ impl AppState {
             retry_status: None,
             draft_restore_text: None,
             pending_composer_mention: None,
+            pending_image_attachments: Vec::new(),
             pending_composer_paste: None,
             status_banner: None,
             agy_link_state: None,
@@ -1718,6 +1720,18 @@ impl AppState {
             .entry_id
             .as_deref()
             .map(str::to_string);
+        let mut user_attachments = self.messages[user_idx].attachments.clone();
+        for att in &mut user_attachments {
+            if att.is_image() && att.base64_data.is_none() {
+                if let Some(ref path) = att.local_path {
+                    if let Ok(bytes) = std::fs::read(path) {
+                        att.base64_data =
+                            Some(crate::client::session_controller::encode_base64(&bytes));
+                        att.size_bytes = bytes.len();
+                    }
+                }
+            }
+        }
         let assistant_entry_id = self.messages[assistant_idx]
             .entry_id
             .as_deref()
@@ -1750,7 +1764,11 @@ impl AppState {
                 cx.spawn(async move |_, cx| {
                     let _ = client.navigate_tree(&sid, &pid).await;
                     let _ = entity.update(cx, |this, cx| {
-                        this.dispatch_single_prompt(user_text, cx);
+                        this.dispatch_single_prompt_with_attachments(
+                            user_text,
+                            user_attachments,
+                            cx,
+                        );
                     });
                 })
                 .detach();
@@ -1759,7 +1777,7 @@ impl AppState {
             }
         }
 
-        self.dispatch_single_prompt(user_text, cx);
+        self.dispatch_single_prompt_with_attachments(user_text, user_attachments, cx);
     }
 
     /// Sends an implicit continuation prompt for an assistant turn that was interrupted
@@ -2365,6 +2383,18 @@ impl AppState {
             .as_ref()
             .map(|s| s.settings.hidden_models.iter().map(|id| id.trim()).collect())
             .unwrap_or_default();
+        let selected: Vec<&str> = self
+            .agy_link_state
+            .as_ref()
+            .map(|s| {
+                s.settings
+                    .selected_models
+                    .iter()
+                    .map(|id| id.trim())
+                    .filter(|id| !id.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         self.models
             .iter()
             .filter(|m| {
@@ -2377,8 +2407,13 @@ impl AppState {
                 if m.enabled == Some(false) {
                     return false;
                 }
-                if m.provider == "agy-link" && hidden.contains(m.id.as_str()) {
-                    return false;
+                if m.provider == "agy-link" {
+                    if hidden.contains(m.id.as_str()) {
+                        return false;
+                    }
+                    if !selected.is_empty() && !selected.iter().any(|s| *s == m.id.as_str()) {
+                        return false;
+                    }
                 }
                 if !self.enabled_models_overview.all_enabled {
                     if let Some(ep) = self
@@ -2606,15 +2641,17 @@ impl AppState {
     }
 
     pub fn clamp_thinking_level_to_model(&mut self) {
-        let supported: Vec<String> = self
-            .selected_model
-            .as_ref()
-            .map(|m| m.thinking_levels.clone())
-            .unwrap_or_default();
-        if supported.is_empty() {
+        let Some(model) = self.selected_model.as_ref() else {
+            self.thinking_level = ThinkingLevel::Off;
+            return;
+        };
+        if (!model.reasoning && model.thinking_level_map.is_empty())
+            || model.thinking_levels.is_empty()
+        {
             self.thinking_level = ThinkingLevel::Off;
             return;
         }
+        let supported = model.thinking_levels.clone();
         let cur = self.thinking_level;
         // Check if current level is supported (accounting for "max" == "xhigh")
         let is_supported = supported
@@ -4477,6 +4514,7 @@ impl AppState {
                 }
             }
         }
+        self.clamp_thinking_level_to_model();
         if running {
             if let Some(streaming_msg) = st.get("streamingMessage") {
                 if !streaming_msg.is_null() {
@@ -5954,6 +5992,21 @@ impl AppState {
                             if let Some(turn_u) = extract_turn_usage(msg_val) {
                                 merge_turn_usage(&mut last.turn_usage, turn_u);
                             }
+                            let mut imgs =
+                                crate::client::session_controller::extract_image_attachments_from_content(
+                                    msg_val.get("content"),
+                                );
+                            if !imgs.is_empty() {
+                                for img_att in imgs.drain(..) {
+                                    let dup = last.attachments.iter().any(|existing| {
+                                        existing.local_path.is_some()
+                                            && existing.local_path == img_att.local_path
+                                    });
+                                    if !dup {
+                                        last.attachments.push(img_att);
+                                    }
+                                }
+                            }
                             if let Some(usage) = msg_val.get("usage") {
                                 let inp = usage.get("input").and_then(Value::as_u64).unwrap_or(0);
                                 let out = usage.get("output").and_then(Value::as_u64).unwrap_or(0);
@@ -6316,6 +6369,7 @@ impl AppState {
                                 prev.active_account_id != parsed.active_account_id
                                     || prev.available_models != parsed.available_models
                                     || prev.settings.hidden_models != parsed.settings.hidden_models
+                                    || prev.settings.selected_models != parsed.settings.selected_models
                             }).unwrap_or(true);
                             self.agy_link_state = Some(parsed);
                             self.sync_agy_selected_model_visibility(cx);
@@ -6367,6 +6421,11 @@ impl AppState {
                 }
             }
             AgentSseEvent::CompactionStart => {
+                let active_assistant_turn = self.is_agent_running
+                    && self
+                        .messages
+                        .last()
+                        .is_some_and(|last| last.role == MessageRole::Assistant && last.is_streaming);
                 self.is_compacting = true;
                 self.is_agent_running = true;
                 let step = CompactionStep {
@@ -6376,14 +6435,13 @@ impl AppState {
                     modified_files: Vec::new(),
                     is_running: true,
                 };
-                if let Some(last) = self.messages.last_mut() {
-                    if last.role == MessageRole::Assistant {
+                if active_assistant_turn {
+                    if let Some(last) = self.messages.last_mut() {
                         if !last.content.trim().is_empty() {
                             let intermediate = std::mem::take(&mut last.content);
                             last.process_steps
                                 .push(ProcessStep::Thinking(SharedString::from(intermediate)));
                         }
-                        last.is_streaming = true;
                         last.process_steps.push(ProcessStep::Compaction(step));
                         cx.notify();
                         return;
@@ -6464,9 +6522,19 @@ impl AppState {
                     if updated {
                         if msg.role == MessageRole::System {
                             msg.is_streaming = false;
+                            if !self
+                                .messages
+                                .iter()
+                                .any(|m| m.role == MessageRole::Assistant && m.is_streaming)
+                            {
+                                self.is_agent_running = false;
+                            }
                         }
                         break;
                     }
+                }
+                if self.status_banner.as_deref() == Some("Compacting session context...") {
+                    self.status_banner = None;
                 }
                 if !was_aborted {
                     self.stats.context_tokens = None;
@@ -6639,6 +6707,43 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn take_note_from_message(&mut self, content: String, cx: &mut Context<Self>) {
+        use crate::client::workspace_extras::{
+            NoteScope, notes_dir, project_notes_available, sanitize_note_filename, save_note,
+        };
+        let scope = if project_notes_available(self.active_workspace_kind, &self.active_cwd) {
+            NoteScope::Project
+        } else {
+            NoteScope::Global
+        };
+        let Some(dir) = notes_dir(scope, &self.active_cwd, self.active_workspace_kind) else {
+            return;
+        };
+        let first_line = content
+            .lines()
+            .map(|l| l.trim().trim_start_matches(['#', '*', '-', '>', '`', ' ']))
+            .find(|l| !l.is_empty())
+            .unwrap_or("note");
+        let base_title: String = first_line.chars().take(36).collect();
+        let mut filename = sanitize_note_filename(&base_title);
+        let mut target_path = dir.join(&filename);
+        if target_path.exists() {
+            let stem = filename.strip_suffix(".md").unwrap_or(&filename);
+            let ts = chrono::Local::now().format("%H%M%S");
+            filename = format!("{stem}-{ts}.md");
+            target_path = dir.join(&filename);
+        }
+        match save_note(&target_path, &content) {
+            Ok(()) => {
+                let msg = crate::i18n::tr(self.locale, "notes.saved");
+                self.show_success_toast(msg, cx);
+            }
+            Err(err) => {
+                self.show_error_toast(err, cx);
+            }
+        }
+    }
+
     pub fn open_credentials_modal(&mut self, cx: &mut Context<Self>) {
         self.agy_link_modal_open = false;
         self.notes_modal_open = false;
@@ -6696,7 +6801,11 @@ impl AppState {
         let is_hidden = self
             .agy_link_state
             .as_ref()
-            .map(|st| st.settings.hidden_models.iter().any(|h| h == &sel.id))
+            .map(|st| {
+                st.settings.hidden_models.iter().any(|h| h == &sel.id)
+                    || (!st.settings.selected_models.is_empty()
+                        && !st.settings.selected_models.iter().any(|s| s == &sel.id))
+            })
             .unwrap_or(false);
         if !is_hidden {
             return;
@@ -7140,31 +7249,108 @@ impl AppState {
         }
     }
 
+    pub fn handle_dropped_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+        const MAX_PENDING_IMAGES: usize = 10;
+        let mut changed = false;
+        for path in paths {
+            if let Some(mime) = crate::client::session_controller::image_mime_for_path(path) {
+                if self.pending_image_attachments.len() >= MAX_PENDING_IMAGES {
+                    self.show_error_toast("Maximum 10 images per message", cx);
+                    break;
+                }
+                match std::fs::read(path) {
+                    Ok(bytes) => {
+                        if bytes.len() > MAX_IMAGE_BYTES {
+                            self.show_error_toast(
+                                format!(
+                                    "Image too large (max 10 MB): {}",
+                                    path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("image")
+                                ),
+                                cx,
+                            );
+                            continue;
+                        }
+                        let b64 = crate::client::session_controller::encode_base64(&bytes);
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("image")
+                            .to_string();
+                        self.pending_image_attachments.push(AttachmentItem {
+                            name: SharedString::from(name),
+                            mime: SharedString::from(mime),
+                            size_bytes: bytes.len(),
+                            local_path: Some(path.clone()),
+                            base64_data: Some(b64),
+                        });
+                        changed = true;
+                    }
+                    Err(err) => {
+                        self.show_error_toast(format!("Failed to read image: {err}"), cx);
+                    }
+                }
+            } else {
+                let display_ref = path
+                    .strip_prefix(&self.active_cwd)
+                    .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+                self.insert_composer_mention(&display_ref, cx);
+                changed = true;
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    pub fn remove_pending_image_attachment(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx < self.pending_image_attachments.len() {
+            self.pending_image_attachments.remove(idx);
+            cx.notify();
+        }
+    }
+
     pub fn submit_prompt(&mut self, raw_text: String, cx: &mut Context<Self>) {
         let text = raw_text.trim().to_string();
-        if text.is_empty() || self.controller.send_in_flight {
+        if (text.is_empty() && self.pending_image_attachments.is_empty())
+            || self.controller.send_in_flight
+        {
             return;
         }
 
-        if self.try_handle_slash_command(&text, cx) {
+        if self.pending_image_attachments.is_empty() && self.try_handle_slash_command(&text, cx) {
             return;
         }
+
+        let images = std::mem::take(&mut self.pending_image_attachments);
 
         if self.is_agent_running {
             let qid = self.controller.alloc_queue_id();
             self.outbox.push(QueuedPrompt {
                 id: qid,
                 text,
-                attachments: Vec::new(),
+                attachments: images,
             });
             cx.notify();
             return;
         }
 
-        self.dispatch_single_prompt(text, cx);
+        self.dispatch_single_prompt_with_attachments(text, images, cx);
     }
 
     fn dispatch_single_prompt(&mut self, text: String, cx: &mut Context<Self>) {
+        self.dispatch_single_prompt_with_attachments(text, Vec::new(), cx);
+    }
+
+    fn dispatch_single_prompt_with_attachments(
+        &mut self,
+        text: String,
+        attachments: Vec<AttachmentItem>,
+        cx: &mut Context<Self>,
+    ) {
         if self.selected_model.is_none() {
             self.controller.send_in_flight = false;
             self.is_agent_running = false;
@@ -7191,7 +7377,7 @@ impl AppState {
             thinking_expanded: false,
             content: text.clone(),
             tool_calls: Vec::new(),
-            attachments: Vec::new(),
+            attachments: attachments.clone(),
             is_streaming: false,
             turn_duration_ms: None,
             token_summary: None,
@@ -7578,12 +7764,31 @@ impl AppState {
         let thinking_lvl = Some(self.thinking_level.as_str().to_string());
         let entity = cx.entity().clone();
 
+        let images_payload: Vec<Value> = attachments
+            .iter()
+            .filter_map(|att| {
+                let data = att.base64_data.as_ref()?;
+                if !att.is_image() {
+                    return None;
+                }
+                Some(json!({
+                    "type": "image",
+                    "data": data,
+                    "mimeType": att.mime.as_ref(),
+                }))
+            })
+            .collect();
+
         cx.spawn(async move |_, cx| {
             let result = match active_session {
                 Some(ref sid) => {
-                    client
-                        .send_agent_command(sid, json!({ "type": "prompt", "message": text }))
-                        .await
+                    let mut cmd = json!({ "type": "prompt", "message": text });
+                    if !images_payload.is_empty() {
+                        if let Some(obj) = cmd.as_object_mut() {
+                            obj.insert("images".to_string(), json!(images_payload));
+                        }
+                    }
+                    client.send_agent_command(sid, cmd).await
                 }
                 None => {
                     let effective_cwd = if is_temp_chat {
@@ -7603,6 +7808,7 @@ impl AppState {
                             provider.as_deref(),
                             model_id.as_deref(),
                             thinking_lvl.as_deref(),
+                            &images_payload,
                         )
                         .await
                 }
@@ -7668,7 +7874,7 @@ impl AppState {
                 }
             }
         }
-        self.dispatch_single_prompt(item.text, cx);
+        self.dispatch_single_prompt_with_attachments(item.text, item.attachments, cx);
         cx.notify();
     }
 
@@ -7689,7 +7895,7 @@ impl AppState {
     fn flush_next_outbox(&mut self, cx: &mut Context<Self>) {
         if !self.is_agent_running && !self.outbox.is_empty() {
             let next = self.outbox.remove(0);
-            self.dispatch_single_prompt(next.text, cx);
+            self.dispatch_single_prompt_with_attachments(next.text, next.attachments, cx);
         }
     }
 

@@ -57,7 +57,10 @@ It delivers **fluid GPU-accelerated rendering**, hardware-accelerated typography
 - **High-Performance Message Scroller**: Bounded virtualized list with `ConversationScrollerState` supporting hundreds of turns without frame drops.
 - **Rich Content Rendering**: Hardware-accelerated typography, LaTeX math formulas via KaTeX, Mermaid diagrams (Flowcharts, Sequence, Class, State, Gantt), syntax-highlighted code blocks with copy actions, and unified/split diff cards.
 - **Collapsible Thinking Steps**: Dynamic reasoning inspection with automatic folding for settled historical turns.
-- **Smart Composer**: Auto-expanding textarea, Outbox queuing, single-send debouncing, and `@file` fuzzy search powered by `nucleo-matcher` + git-aware directory traversal.
+- **Smart Composer**: Auto-expanding textarea, Outbox queuing, single-send debouncing, keyboard-navigable `/` slash commands, `@file` fuzzy search powered by `nucleo-matcher`, and OS drag-and-drop (files insert paths; images render as fixed-height cropped thumbnails with instant removal).
+- **Multimodal Image Gallery**: Displays user-attached and model-returned images with aspect-ratio-preserving max height, a bottom horizontal scrollbar for multi-image sets, and click-to-preview in the Artifact sidebar.
+- **Notes, Credentials & Workflows**: Built-in workspace Notes (with one-click **Take Note** from any assistant reply), Credentials vault, and multi-step Workflows directly accessible from the sidebar.
+- **Antigravity (`pi-agy-link`) Integration**: Multi-account pool management, ACP persistent transport (`cli` / `acp`), terminal sandbox (`--sandbox`), custom `--agent` / `--settings`, account ecosystem sync, and in-session `agy_image` tool support.
 - **Interactive Questionnaire UI**: Native UI for `ask_user_question` with single-select, multi-select, custom text entries, and real-time preview Monospace boxes.
 - **Session Branching**: 0ms in-session branch switching (`navigate_tree`) and instant session forking from any message.
 

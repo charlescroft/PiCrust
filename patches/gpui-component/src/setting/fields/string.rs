@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Entity, IntoElement, SharedString, StyleRefinement, Styled,
-    Window, prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Entity, Focusable as _, IntoElement, SharedString,
+    StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
 };
 
 use crate::{
@@ -81,8 +81,10 @@ where
         );
 
         // Sync the displayed value when the underlying setting changed externally
+        // (skip while focused so we never reset the user's cursor or mid-edit text).
         state_entity.update(cx, |state, cx| {
-            if state.input.read(cx).value() != value {
+            let is_focused = state.input.read(cx).focus_handle(cx).is_focused(window);
+            if !is_focused && state.input.read(cx).value() != value {
                 state.input.update(cx, |input, cx| {
                     input.set_value(value.clone(), window, cx);
                 });

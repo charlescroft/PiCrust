@@ -6,6 +6,7 @@ use crate::icons::LoaderCircleIcon;
 use crate::settings::{SETTINGS_BTN_W, SETTINGS_DROPDOWN_W, config_path_field};
 use crate::themes::{dark_theme_names, light_theme_names};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::spinner::Spinner;
@@ -16,7 +17,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Axis, Entity, ParentElement as _, SharedString, Styled as _, div, px,
+    App, AppContext as _, Axis, Entity, Focusable as _, ParentElement as _, SharedString, Styled as _, div, px,
 };
 use serde_json::json;
 
@@ -848,11 +849,17 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
                                                 .await;
                                             let _ = entity.update(cx, |s, cx| {
                                                 s.end_async_op("settings:proxy_enabled", cx);
-                                                if let Ok(res) = res {
-                                                    s.apply_network_proxy_response(&res);
+                                                match res {
+                                                    Ok(res) => {
+                                                        s.apply_network_proxy_response(&res);
+                                                        let msg = tr(s.locale, "toast.settingsSaved");
+                                                        s.show_success_toast(msg, cx);
+                                                    }
+                                                    Err(err) => {
+                                                        s.network_proxy.enabled = !val;
+                                                        s.show_error_toast(format!("{err}"), cx);
+                                                    }
                                                 }
-                                                let msg = tr(s.locale, "toast.settingsSaved");
-                                                s.show_success_toast(msg, cx);
                                             });
                                         })
                                         .detach();
@@ -869,52 +876,125 @@ pub fn general_setting_page(app_state: Entity<AppState>, locale: AppLocale, _cx:
         ))
         .item(SettingItem::new(
             tr(locale, "settings.proxyUrl"),
-            SettingField::input(
-                move |cx: &App| {
-                    let p = &app_proxy_url_read.read(cx).network_proxy;
-                    let shown = if p.url.is_empty() {
-                        p.effective_url.as_deref().unwrap_or("")
-                    } else {
-                        p.url.as_str()
-                    };
-                    SharedString::from(shown.to_string())
-                },
-                move |val: SharedString, cx: &mut App| {
-                    app_proxy_url_write.update(cx, |s, cx| {
-                        s.network_proxy.url = val.to_string();
-                        let _ = crate::client::local_store::save_network_proxy_local(
-                            s.network_proxy.enabled,
-                            &s.network_proxy.url,
-                            &s.network_proxy.no_proxy,
-                        );
-                        if s.sidecar_connected {
-                            let client = s.client.clone();
-                            let enabled = s.network_proxy.enabled;
-                            let no_proxy = s.network_proxy.no_proxy.clone();
-                            let url = val.to_string();
-                            let entity = cx.entity().clone();
-                            cx.spawn(async move |_, cx| {
-                                if let Ok(res) = client
-                                    .set_network_proxy(json!({
-                                        "enabled": enabled,
-                                        "url": url,
-                                        "noProxy": no_proxy,
-                                    }))
-                                    .await
-                                {
+            SettingField::render(move |_, window, cx| {
+                struct ProxyUrlFieldState {
+                    input: Entity<InputState>,
+                    last_synced: String,
+                    _sub: gpui_kit::Subscription,
+                }
+                let current_url = app_proxy_url_read.read(cx).network_proxy.url.clone();
+                let placeholder = app_proxy_url_read
+                    .read(cx)
+                    .network_proxy
+                    .effective_url
+                    .clone()
+                    .unwrap_or_else(|| "http://127.0.0.1:7890".to_string());
+
+                let commit_fn = {
+                    let app_write = app_proxy_url_write.clone();
+                    move |raw_val: String, cx: &mut App| {
+                        let trimmed = raw_val.trim().to_string();
+                        app_write.update(cx, |s, cx| {
+                            s.network_proxy.url = trimmed.clone();
+                            let _ = crate::client::local_store::save_network_proxy_local(
+                                s.network_proxy.enabled,
+                                &s.network_proxy.url,
+                                &s.network_proxy.no_proxy,
+                            );
+                            if s.sidecar_connected {
+                                let client = s.client.clone();
+                                let enabled = s.network_proxy.enabled;
+                                let no_proxy = s.network_proxy.no_proxy.clone();
+                                let entity = cx.entity().clone();
+                                cx.spawn(async move |_, cx| {
+                                    let res = client
+                                        .set_network_proxy(json!({
+                                            "enabled": enabled,
+                                            "url": trimmed,
+                                            "noProxy": no_proxy,
+                                        }))
+                                        .await;
                                     let _ = entity.update(cx, |s, cx| {
-                                        s.apply_network_proxy_response(&res);
+                                        match res {
+                                            Ok(res) => {
+                                                s.apply_network_proxy_response(&res);
+                                                let msg = tr(s.locale, "toast.settingsSaved");
+                                                s.show_success_toast(msg, cx);
+                                            }
+                                            Err(err) => {
+                                                s.show_error_toast(format!("{err}"), cx);
+                                            }
+                                        }
                                         cx.notify();
                                     });
+                                })
+                                .detach();
+                            } else {
+                                let msg = tr(s.locale, "toast.settingsSaved");
+                                s.show_success_toast(msg, cx);
+                            }
+                            cx.notify();
+                        });
+                    }
+                };
+
+                let state_entity = window.use_keyed_state(
+                    SharedString::from("general-proxy-url-input"),
+                    cx,
+                    {
+                        let initial = current_url.clone();
+                        let ph = placeholder.clone();
+                        let commit_on_ev = commit_fn.clone();
+                        |window, cx| {
+                            let input = cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .default_value(initial.clone())
+                                    .placeholder(ph)
+                            });
+                            let _sub = cx.subscribe(&input, move |_, inp, ev: &InputEvent, cx| {
+                                if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                                    let val = inp.read(cx).value().to_string();
+                                    commit_on_ev(val, cx);
                                 }
-                            })
-                            .detach();
+                            });
+                            ProxyUrlFieldState {
+                                input,
+                                last_synced: initial,
+                                _sub,
+                            }
                         }
-                        cx.notify();
-                    });
-                },
-            )
-            .w(SETTINGS_DROPDOWN_W),
+                    },
+                );
+
+                state_entity.update(cx, |st, cx| {
+                    let is_focused = st.input.read(cx).focus_handle(cx).is_focused(window);
+                    if !is_focused && st.last_synced != current_url {
+                        st.last_synced = current_url.clone();
+                        st.input.update(cx, |inp, cx| {
+                            inp.set_value(current_url.clone(), window, cx);
+                        });
+                    }
+                });
+
+                let inp_entity = state_entity.read(cx).input.clone();
+                let inp_for_save = inp_entity.clone();
+                let commit_on_btn = commit_fn.clone();
+
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(Input::new(&inp_entity).small().w(px(210.)))
+                    .child(
+                        Button::new("general-proxy-url-save-btn")
+                            .outline()
+                            .small()
+                            .label(tr(locale, "common.save"))
+                            .on_click(move |_, _, cx| {
+                                let val = inp_for_save.read(cx).value().to_string();
+                                commit_on_btn(val, cx);
+                            }),
+                    )
+            }),
         ));
 
     SettingPage::new(tr(locale, "settings.general"))

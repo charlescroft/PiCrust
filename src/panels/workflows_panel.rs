@@ -60,6 +60,7 @@ pub struct WorkflowsPanelView {
     edit_steps: Vec<StepEditorRow>,
     editing_existing_path: Option<PathBuf>,
     last_cwd: PathBuf,
+    last_locale: crate::i18n::AppLocale,
 }
 
 impl WorkflowsPanelView {
@@ -95,6 +96,7 @@ impl WorkflowsPanelView {
             edit_steps: Vec::new(),
             editing_existing_path: None,
             last_cwd,
+            last_locale: locale,
         };
         this.reload(window, cx);
         this
@@ -176,9 +178,16 @@ impl WorkflowsPanelView {
             .update(cx, |s, cx| s.set_value(&wf.description, window, cx));
         self.edit_source_input
             .update(cx, |s, cx| s.set_value(&wf.raw_content, window, cx));
+        let locale = self.app_state.read(cx).locale;
+        let title_ph = tr(locale, "workflows.stepTitle");
+        let inst_ph = tr(locale, "workflows.stepInstruction");
         self.edit_steps = if wf.steps.is_empty() {
-            let title = cx.new(|cx| InputState::new(window, cx).placeholder("Step title"));
-            let instruction = cx.new(|cx| TextareaState::new(window, cx).rows(3));
+            let title = cx.new(|cx| InputState::new(window, cx).placeholder(title_ph));
+            let instruction = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .rows(3)
+                    .placeholder(inst_ph)
+            });
             vec![StepEditorRow { title, instruction }]
         } else {
             wf.steps
@@ -187,12 +196,14 @@ impl WorkflowsPanelView {
                     let t_val = st.title.clone();
                     let i_val = st.instruction.clone();
                     let title = cx.new(|cx| {
-                        let mut s = InputState::new(window, cx);
+                        let mut s = InputState::new(window, cx).placeholder(title_ph);
                         s.set_value(&t_val, window, cx);
                         s
                     });
                     let instruction = cx.new(|cx| {
-                        let mut s = TextareaState::new(window, cx).rows(3);
+                        let mut s = TextareaState::new(window, cx)
+                            .rows(3)
+                            .placeholder(inst_ph);
                         s.set_value(&i_val, window, cx);
                         s
                     });
@@ -203,6 +214,7 @@ impl WorkflowsPanelView {
     }
 
     fn collect_steps(&self, cx: &gpui_kit::App) -> Vec<WorkflowStep> {
+        let fallback_title = tr(self.last_locale, "workflows.stepLabel");
         self.edit_steps
             .iter()
             .filter_map(|row| {
@@ -212,7 +224,11 @@ impl WorkflowsPanelView {
                     None
                 } else {
                     Some(WorkflowStep {
-                        title: if t.is_empty() { "Step".to_string() } else { t },
+                        title: if t.is_empty() {
+                            fallback_title.to_string()
+                        } else {
+                            t
+                        },
                         instruction: inst,
                     })
                 }
@@ -307,6 +323,23 @@ impl Render for WorkflowsPanelView {
         if st.active_cwd != self.last_cwd {
             self.reload(window, cx);
         }
+        if locale != self.last_locale {
+            self.last_locale = locale;
+            let args_ph = tr(locale, "workflows.argsPlaceholder");
+            let name_ph = tr(locale, "workflows.namePlaceholder");
+            let desc_ph = tr(locale, "workflows.descPlaceholder");
+            let src_ph = tr(locale, "workflows.sourcePlaceholder");
+            let title_ph = tr(locale, "workflows.stepTitle");
+            let inst_ph = tr(locale, "workflows.stepInstruction");
+            self.args_input.update(cx, |s, cx| s.set_placeholder(args_ph, window, cx));
+            self.edit_name_input.update(cx, |s, cx| s.set_placeholder(name_ph, window, cx));
+            self.edit_desc_input.update(cx, |s, cx| s.set_placeholder(desc_ph, window, cx));
+            self.edit_source_input.update(cx, |s, cx| s.set_placeholder(src_ph, window, cx));
+            for row in &self.edit_steps {
+                row.title.update(cx, |s, cx| s.set_placeholder(title_ph, window, cx));
+                row.instruction.update(cx, |s, cx| s.set_placeholder(inst_ph, window, cx));
+            }
+        }
         if self.scope == WorkflowScope::Project && !proj_ok {
             self.scope = WorkflowScope::Global;
             self.reload(window, cx);
@@ -336,7 +369,14 @@ impl Render for WorkflowsPanelView {
                                 .text_sm()
                                 .font_semibold()
                                 .text_color(cx.theme().foreground)
-                                .child(tr(locale, "workflows.edit")),
+                                .child(tr(
+                                    locale,
+                                    if self.editing_existing_path.is_some() {
+                                        "workflows.edit"
+                                    } else {
+                                        "workflows.new"
+                                    },
+                                )),
                         )
                         .child(
                             TabBar::new("wf-edit-mode-tabs")
@@ -609,13 +649,18 @@ impl Render for WorkflowsPanelView {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(Select::new(&self.select_state).small()),
+                            .child(
+                                Select::new(&self.select_state)
+                                    .small()
+                                    .placeholder(tr(locale, "workflows.selectPlaceholder")),
+                            ),
                     )
                     .child(
                         Button::new("wf-new-btn")
                             .outline()
                             .small()
                             .icon(IconName::Plus)
+                            .tooltip(tr(locale, "workflows.new"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.enter_new_mode(window, cx);
                                 cx.notify();
@@ -626,6 +671,7 @@ impl Render for WorkflowsPanelView {
                             .outline()
                             .small()
                             .icon(Icon::new(PencilIcon))
+                            .tooltip(tr(locale, "workflows.edit"))
                             .disabled(!has_current)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.enter_edit_mode(window, cx);
@@ -637,6 +683,7 @@ impl Render for WorkflowsPanelView {
                             .danger()
                             .small()
                             .icon(Icon::new(TrashIcon))
+                            .tooltip(tr(locale, "workflows.delete"))
                             .disabled(!has_current)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.delete_current(window, cx);

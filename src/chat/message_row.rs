@@ -11,6 +11,7 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message::{Message, MessageAlignment, MessageContent, MessageFooter};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
@@ -20,8 +21,8 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _,
-    IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, px, rems,
+    IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, Window, div, px, rems,
 };
 use gpui_kit_markdown_extras::prelude::*;
 use std::collections::HashMap;
@@ -257,15 +258,32 @@ fn render_user_row(
     let mut stack = v_flex().gap_2().min_w_0();
 
     if !msg.attachments.is_empty() {
-        let mut att_row = h_flex().gap_2().flex_wrap();
-        for (i, att) in msg.attachments.iter().enumerate() {
-            att_row = att_row.child(
-                Attachment::new()
-                    .id(("att", msg.id * 100 + i as u64))
-                    .content(AttachmentContent::new().title(AttachmentTitle::new(att.name.clone()))),
-            );
+        let img_paths: Vec<PathBuf> = msg
+            .attachments
+            .iter()
+            .filter(|a| a.is_image())
+            .filter_map(|a| a.local_path.clone())
+            .collect();
+        if !img_paths.is_empty() {
+            stack = stack.child(render_image_gallery(msg.id, &img_paths, 200.0, app_state, cx));
         }
-        stack = stack.child(att_row);
+        let non_images: Vec<_> = msg
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.is_image() || a.local_path.is_none())
+            .collect();
+        if !non_images.is_empty() {
+            let mut att_row = h_flex().gap_2().flex_wrap();
+            for (i, att) in non_images {
+                att_row = att_row.child(
+                    Attachment::new()
+                        .id(("att", msg.id * 100 + i as u64))
+                        .content(AttachmentContent::new().title(AttachmentTitle::new(att.name.clone()))),
+                );
+            }
+            stack = stack.child(att_row);
+        }
     }
 
     let total_chars = msg.content.chars().count();
@@ -376,6 +394,87 @@ fn render_user_row(
                 .bubble(Bubble::new().with_variant(BubbleVariant::Secondary).child(stack)),
         )
         .footer(footer)
+        .into_any_element()
+}
+
+fn extract_markdown_local_images(md: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let bytes = md.as_bytes();
+    let mut i = 0;
+    while i + 4 < bytes.len() {
+        if bytes[i] == b'!' && bytes[i + 1] == b'[' {
+            if let Some(close_br) = md[i + 2..].find("](") {
+                let url_start = i + 2 + close_br + 2;
+                if let Some(close_p) = md[url_start..].find(')') {
+                    let raw_url = md[url_start..url_start + close_p].trim();
+                    let candidate = if let Some(rest) = raw_url.strip_prefix("file://") {
+                        let decoded = rest.replace("%20", " ");
+                        PathBuf::from(decoded)
+                    } else if raw_url.starts_with('/') {
+                        PathBuf::from(raw_url)
+                    } else {
+                        PathBuf::new()
+                    };
+                    if !candidate.as_os_str().is_empty()
+                        && crate::client::session_controller::image_mime_for_path(&candidate)
+                            .is_some()
+                        && candidate.exists()
+                        && !out.iter().any(|p| p == &candidate)
+                    {
+                        out.push(candidate);
+                    }
+                    i = url_start + close_p + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn render_image_gallery(
+    msg_id: u64,
+    image_paths: &[PathBuf],
+    max_height_px: f32,
+    app_state: &Entity<AppState>,
+    cx: &gpui_kit::App,
+) -> AnyElement {
+    let mut row = h_flex().gap_2p5().items_end();
+    for (idx, path) in image_paths.iter().enumerate() {
+        let p_click = path.clone();
+        let app_click = app_state.clone();
+        row = row.child(
+            div()
+                .id(("msg-img-card", msg_id * 100 + idx as u64))
+                .flex_shrink_0()
+                .rounded_lg()
+                .overflow_hidden()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted.opacity(0.4))
+                .cursor_pointer()
+                .hover(|s| s.border_color(cx.theme().primary))
+                .on_click(move |_, _, cx| {
+                    app_click.update(cx, |s, cx| {
+                        s.preview_file_in_sidebar(p_click.clone(), cx);
+                    });
+                })
+                .child(
+                    gpui_kit::img(path.clone())
+                        .max_h(px(max_height_px))
+                        .max_w(px(520.))
+                        .object_fit(gpui_kit::ObjectFit::Contain),
+                ),
+        );
+    }
+
+    div()
+        .id(("msg-img-gallery", msg_id))
+        .w_full()
+        .overflow_x_scrollbar()
+        .pb_2()
+        .child(row)
         .into_any_element()
 }
 
@@ -1266,6 +1365,30 @@ fn render_assistant_row(
         );
     }
 
+    // 2a. Multimodal image gallery (response image blocks + local markdown images)
+    {
+        let mut gallery_paths: Vec<PathBuf> = msg
+            .attachments
+            .iter()
+            .filter(|a| a.is_image())
+            .filter_map(|a| a.local_path.clone())
+            .collect();
+        for p in extract_markdown_local_images(&msg.content) {
+            if !gallery_paths.iter().any(|existing| existing == &p) {
+                gallery_paths.push(p);
+            }
+        }
+        if !gallery_paths.is_empty() {
+            stack = stack.child(render_image_gallery(
+                msg.id,
+                &gallery_paths,
+                320.0,
+                app_state,
+                cx,
+            ));
+        }
+    }
+
     // 2b. Error card & Token limit truncation alerts:
     //     ALWAYS rendered visibly in the assistant turn card right below the process / text blocks!
     //     Never hidden inside collapsible process steps, and never suppressed by has_process.
@@ -1836,18 +1959,35 @@ fn render_assistant_row(
         let mut left_actions = h_flex().items_center().gap_2p5();
         if has_answer_text {
             let copy_md = msg.content.clone();
-            left_actions = left_actions.child(
-                Button::new(("copy-assistant", msg.id))
-                    .ghost()
-                    .small()
-                    .h(px(28.))
-                    .icon(IconName::Copy)
-                    .label(tr(locale, "chat.copy"))
-                    .on_click(move |_, window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_md.clone()));
-                        window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
-                    }),
-            );
+            let note_md = msg.content.clone();
+            let app_note = app_state.clone();
+            left_actions = left_actions
+                .child(
+                    Button::new(("copy-assistant", msg.id))
+                        .ghost()
+                        .small()
+                        .h(px(28.))
+                        .icon(IconName::Copy)
+                        .label(tr(locale, "chat.copy"))
+                        .on_click(move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_md.clone()));
+                            window.push_notification(Notification::success(tr(locale, "common.copied")), cx);
+                        }),
+                )
+                .child(
+                    Button::new(("take-note-assistant", msg.id))
+                        .ghost()
+                        .small()
+                        .h(px(28.))
+                        .icon(IconName::FileText)
+                        .label(tr(locale, "chat.takeNote"))
+                        .tooltip(tr(locale, "chat.takeNoteTooltip"))
+                        .on_click(move |_, _, cx| {
+                            app_note.update(cx, |s, cx| {
+                                s.take_note_from_message(note_md.clone(), cx);
+                            });
+                        }),
+                );
         }
         {
             let app_fork = app_state.clone();
@@ -3360,12 +3500,10 @@ fn repeated_scheduled_prompt_occurrence(
     let matches_scheduled_task = scheduled_tasks
         .iter()
         .any(|t| t.prompt.trim() == normalized);
-    let looks_substantial_or_scheduled = matches_scheduled_task
-        || normalized.chars().count() >= 20
-        || normalized.contains('\n')
+    let is_scheduled_prompt = matches_scheduled_task
         || normalized.starts_with("[Scheduled")
         || normalized.starts_with("/schedule");
-    if !looks_substantial_or_scheduled {
+    if !is_scheduled_prompt {
         return None;
     }
     let mut count = 0usize;
@@ -3540,7 +3678,7 @@ mod tests {
 
     #[test]
     fn repeated_scheduled_prompt_collapses_after_first() {
-        let prompt = "Check the build status and summarize any new errors.";
+        let prompt = "[Scheduled] Check the build status and summarize any new errors.";
         let m1 = user_msg(1, prompt);
         let m2 = user_msg(2, prompt);
         let m3 = user_msg(3, prompt);
@@ -3552,8 +3690,8 @@ mod tests {
 
     #[test]
     fn short_non_scheduled_reply_is_not_collapsed() {
-        let m1 = user_msg(1, "continue");
-        let m2 = user_msg(2, "continue");
+        let m1 = user_msg(1, "帮我把这张图的 fuchun 改为中文的富春小笼包");
+        let m2 = user_msg(2, "帮我把这张图的 fuchun 改为中文的富春小笼包");
         let msgs = vec![m1.clone(), m2.clone()];
         assert_eq!(repeated_scheduled_prompt_occurrence(&m2, &msgs, &[]), None);
     }

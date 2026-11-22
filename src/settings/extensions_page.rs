@@ -2,13 +2,14 @@ use crate::app_state::{AppState, SettingsAddKind};
 use crate::i18n::{AppLocale, format_commas, tr};
 use crate::settings::{SETTINGS_BTN_W, SETTINGS_DROPDOWN_W};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, ColorName, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
-use gpui_kit::{App, Entity, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px};
+use gpui_kit::{App, AppContext as _, Entity, Focusable as _, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px};
 use gpui_kit::prelude::FluentBuilder as _;
 use serde_json::json;
 
@@ -1554,6 +1555,8 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
     let app_it_w = app_state.clone();
     let app_ir_r = app_state.clone();
     let app_ir_w = app_state.clone();
+    let app_img_tool_r = app_state.clone();
+    let app_img_tool_w = app_state.clone();
 
     let image_group = SettingGroup::new()
         .title("Image Generation")
@@ -1652,9 +1655,33 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
                 .w(SETTINGS_DROPDOWN_W),
             )
             .description("Extra retry attempts after a retryable image generation failure."),
+        )
+        .item(
+            SettingItem::new(
+                "In-Session agy_image Tool",
+                SettingField::switch(
+                    move |cx: &App| {
+                        app_img_tool_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.image_tool)
+                            .unwrap_or(false)
+                    },
+                    move |val: bool, cx: &mut App| {
+                        let cmd = if val { "/agy image-tool on" } else { "/agy image-tool off" };
+                        app_img_tool_w.update(cx, |s, cx| s.send_agy_command(cmd.to_string(), cx));
+                    },
+                ),
+            )
+            .description("Expose the agy_image tool to Pi models so they can generate or edit images mid-conversation."),
         );
 
     // 5. Proxy & Execution
+    let transport_options = vec![
+        (SharedString::from("cli"), SharedString::from("CLI (Per-Turn Spawn)")),
+        (SharedString::from("acp"), SharedString::from("ACP (Persistent Pool)")),
+    ];
     let perm_options = vec![
         (SharedString::from("skip"), SharedString::from("skip (Full Auto)")),
         (SharedString::from("accept-edits"), SharedString::from("accept-edits")),
@@ -1666,13 +1693,14 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
         (SharedString::from("4"), SharedString::from("4 streams")),
         (SharedString::from("8"), SharedString::from("8 streams")),
     ];
-    let proxy_options = vec![
-        (SharedString::from("clear"), SharedString::from("System / Direct")),
-        (SharedString::from("http://127.0.0.1:7890"), SharedString::from("http://127.0.0.1:7890")),
-        (SharedString::from("socks5://127.0.0.1:7890"), SharedString::from("socks5://127.0.0.1:7890")),
-        (SharedString::from("http://127.0.0.1:7897"), SharedString::from("http://127.0.0.1:7897")),
-    ];
 
+    let app_tr_r = app_state.clone();
+    let app_tr_w = app_state.clone();
+    let app_sb_r = app_state.clone();
+    let app_sb_w = app_state.clone();
+    let app_eco_r = app_state.clone();
+    let app_eco_w = app_state.clone();
+    let app_eco_now = app_state.clone();
     let app_px_r = app_state.clone();
     let app_px_w = app_state.clone();
     let app_pm_r = app_state.clone();
@@ -1684,31 +1712,212 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
     let app_sup_r = app_state.clone();
     let app_sup_w = app_state.clone();
 
+    let acp_desc = if let Some(ref st) = agy_state {
+        if st.settings.transport == "acp" {
+            format!(
+                "Choose between per-turn CLI spawns and persistent ACP sessions (active processes: {}, sessions: {}).",
+                st.settings.acp_active_processes, st.settings.acp_sessions
+            )
+        } else {
+            "Choose between per-turn CLI spawns and persistent ACP sessions (reduces turn startup latency).".to_string()
+        }
+    } else {
+        "Choose between per-turn CLI spawns and persistent ACP sessions (reduces turn startup latency).".to_string()
+    };
+
     let exec_group = SettingGroup::new()
         .title("Proxy & Execution")
         .item(
             SettingItem::new(
-                "Global Upstream Proxy",
+                "Transport Mode",
                 SettingField::dropdown(
-                    proxy_options,
+                    transport_options,
                     move |cx: &App| {
-                        let p = app_px_r
+                        let t = app_tr_r
                             .read(cx)
                             .agy_link_state
                             .as_ref()
-                            .map(|s| s.settings.proxy_url.as_str())
-                            .unwrap_or("");
-                        SharedString::from(if p.is_empty() { "clear" } else { p }.to_string())
+                            .map(|s| s.settings.transport.as_str())
+                            .unwrap_or("cli");
+                        SharedString::from(t.to_string())
                     },
                     move |val: SharedString, cx: &mut App| {
-                        app_px_w.update(cx, |s, cx| {
-                            s.send_agy_command(format!("/agy proxy-global {val}"), cx);
+                        app_tr_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy transport {val}"), cx);
                         });
                     },
                 )
                 .w(SETTINGS_DROPDOWN_W),
             )
-            .description("Global HTTP/SOCKS5 proxy for agy spawns and Google quota API calls (or use /agy proxy-global <url>)."),
+            .description(SharedString::from(acp_desc)),
+        )
+        .item(
+            SettingItem::new(
+                "Terminal Sandbox",
+                SettingField::switch(
+                    move |cx: &App| {
+                        app_sb_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.sandbox)
+                            .unwrap_or(false)
+                    },
+                    move |val: bool, cx: &mut App| {
+                        let cmd = if val { "/agy sandbox on" } else { "/agy sandbox off" };
+                        app_sb_w.update(cx, |s, cx| s.send_agy_command(cmd.to_string(), cx));
+                    },
+                ),
+            )
+            .description("Pass --sandbox to agy CLI turns to isolate shell tool execution."),
+        )
+        .item(
+            SettingItem::new(
+                "Sync Account Customizations",
+                SettingField::render(move |_, _, cx| {
+                    let on = app_eco_r
+                        .read(cx)
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.sync_account_customizations)
+                        .unwrap_or(false);
+                    let app_sw = app_eco_w.clone();
+                    let app_btn = app_eco_now.clone();
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("agy-sync-eco-now-btn")
+                                .outline()
+                                .small()
+                                .label("Sync Now")
+                                .on_click(move |_, _, cx| {
+                                    app_btn.update(cx, |s, cx| {
+                                        s.send_agy_command("/agy sync-ecosystem run".to_string(), cx);
+                                    });
+                                }),
+                        )
+                        .child(
+                            Switch::new("agy-sync-eco-sw")
+                                .checked(on)
+                                .on_click(move |checked, _, cx| {
+                                    let cmd = if *checked {
+                                        "/agy sync-ecosystem on"
+                                    } else {
+                                        "/agy sync-ecosystem off"
+                                    };
+                                    app_sw.update(cx, |s, cx| s.send_agy_command(cmd.to_string(), cx));
+                                }),
+                        )
+                }),
+            )
+            .description("Mirror primary home plugins, skills, and agents into isolated pool accounts."),
+        )
+        .item(
+            SettingItem::new(
+                "Global Upstream Proxy",
+                SettingField::render(move |_, window, cx| {
+                    struct AgyProxyFieldState {
+                        input: Entity<InputState>,
+                        last_synced: String,
+                        _sub: gpui_kit::Subscription,
+                    }
+                    let current_proxy = app_px_r
+                        .read(cx)
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.proxy_url.clone())
+                        .unwrap_or_default();
+
+                    let apply_proxy = {
+                        let app_w = app_px_w.clone();
+                        move |raw: String, cx: &mut App| {
+                            let trimmed = raw.trim();
+                            let cmd = if trimmed.is_empty() {
+                                "/agy proxy-global clear".to_string()
+                            } else {
+                                format!("/agy proxy-global {trimmed}")
+                            };
+                            app_w.update(cx, |s, cx| {
+                                s.send_agy_command(cmd, cx);
+                            });
+                        }
+                    };
+
+                    let state_entity = window.use_keyed_state(
+                        SharedString::from("agy-global-proxy-input"),
+                        cx,
+                        {
+                            let initial = current_proxy.clone();
+                            let on_ev = apply_proxy.clone();
+                            |window, cx| {
+                                let input = cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .default_value(initial.clone())
+                                        .placeholder("http://127.0.0.1:7890")
+                                });
+                                let _sub = cx.subscribe(&input, move |_, inp, ev: &InputEvent, cx| {
+                                    if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                                        let val = inp.read(cx).value().to_string();
+                                        on_ev(val, cx);
+                                    }
+                                });
+                                AgyProxyFieldState {
+                                    input,
+                                    last_synced: initial,
+                                    _sub,
+                                }
+                            }
+                        },
+                    );
+
+                    state_entity.update(cx, |st, cx| {
+                        let is_focused = st.input.read(cx).focus_handle(cx).is_focused(window);
+                        if !is_focused && st.last_synced != current_proxy {
+                            st.last_synced = current_proxy.clone();
+                            st.input.update(cx, |inp, cx| {
+                                inp.set_value(current_proxy.clone(), window, cx);
+                            });
+                        }
+                    });
+
+                    let inp_entity = state_entity.read(cx).input.clone();
+                    let inp_save = inp_entity.clone();
+                    let inp_clear = inp_entity.clone();
+                    let on_save = apply_proxy.clone();
+                    let on_clear = apply_proxy.clone();
+
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(Input::new(&inp_entity).small().w(px(210.)))
+                        .child(
+                            Button::new("agy-proxy-save-btn")
+                                .outline()
+                                .small()
+                                .label("Save")
+                                .on_click(move |_, _, cx| {
+                                    let val = inp_save.read(cx).value().to_string();
+                                    on_save(val, cx);
+                                }),
+                        )
+                        .when(!current_proxy.is_empty(), |el| {
+                            el.child(
+                                Button::new("agy-proxy-clear-btn")
+                                    .ghost()
+                                    .small()
+                                    .label("Clear")
+                                    .on_click(move |_, window, cx| {
+                                        inp_clear.update(cx, |inp, cx| {
+                                            inp.set_value(SharedString::default(), window, cx);
+                                        });
+                                        on_clear(String::new(), cx);
+                                    }),
+                            )
+                        })
+                }),
+            )
+            .description("Global HTTP/SOCKS5 proxy URL or IP:port for agy spawns and Google quota API calls (leave empty for direct)."),
         )
         .item(
             SettingItem::new(
@@ -1805,6 +2014,10 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
     let app_retry_w = app_state.clone();
     let app_slim_r = app_state.clone();
     let app_slim_w = app_state.clone();
+    let app_agent_r = app_state.clone();
+    let app_agent_w = app_state.clone();
+    let app_agy_set_r = app_state.clone();
+    let app_agy_set_w = app_state.clone();
 
     let compact_options = vec![
         (SharedString::from("default"), SharedString::from("Default (256K)")),
@@ -2038,6 +2251,150 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
                 ),
             )
             .description("Pass --disable-slash-commands in print mode and prepend concise execution guardrails."),
+        )
+        .item(
+            SettingItem::new(
+                "Custom Agent (--agent)",
+                SettingField::render(move |_, window, cx| {
+                    struct AgyAgentFieldState {
+                        input: Entity<InputState>,
+                        last_synced: String,
+                        _sub: gpui_kit::Subscription,
+                    }
+                    let current_agent = app_agent_r
+                        .read(cx)
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.agent.clone())
+                        .unwrap_or_default();
+
+                    let apply_agent = {
+                        let app_w = app_agent_w.clone();
+                        move |raw: String, cx: &mut App| {
+                            let trimmed = raw.trim();
+                            let cmd = if trimmed.is_empty() {
+                                "/agy agent clear".to_string()
+                            } else {
+                                format!("/agy agent {trimmed}")
+                            };
+                            app_w.update(cx, |s, cx| s.send_agy_command(cmd, cx));
+                        }
+                    };
+
+                    let state_entity = window.use_keyed_state(
+                        SharedString::from("agy-custom-agent-input"),
+                        cx,
+                        {
+                            let initial = current_agent.clone();
+                            let on_ev = apply_agent.clone();
+                            |window, cx| {
+                                let input = cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .default_value(initial.clone())
+                                        .placeholder("default")
+                                });
+                                let _sub = cx.subscribe(&input, move |_, inp, ev: &InputEvent, cx| {
+                                    if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                                        let val = inp.read(cx).value().to_string();
+                                        on_ev(val, cx);
+                                    }
+                                });
+                                AgyAgentFieldState {
+                                    input,
+                                    last_synced: initial,
+                                    _sub,
+                                }
+                            }
+                        },
+                    );
+
+                    state_entity.update(cx, |st, cx| {
+                        let is_focused = st.input.read(cx).focus_handle(cx).is_focused(window);
+                        if !is_focused && st.last_synced != current_agent {
+                            st.last_synced = current_agent.clone();
+                            st.input.update(cx, |inp, cx| {
+                                inp.set_value(current_agent.clone(), window, cx);
+                            });
+                        }
+                    });
+
+                    let inp_entity = state_entity.read(cx).input.clone();
+                    Input::new(&inp_entity).small().w(SETTINGS_DROPDOWN_W)
+                }),
+            )
+            .description("Optional custom agy agent profile name passed via --agent (leave blank for default)."),
+        )
+        .item(
+            SettingItem::new(
+                "CLI Settings Override (--settings)",
+                SettingField::render(move |_, window, cx| {
+                    struct AgyCliSettingsFieldState {
+                        input: Entity<InputState>,
+                        last_synced: String,
+                        _sub: gpui_kit::Subscription,
+                    }
+                    let current_val = app_agy_set_r
+                        .read(cx)
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.agy_settings.clone())
+                        .unwrap_or_default();
+
+                    let apply_val = {
+                        let app_w = app_agy_set_w.clone();
+                        move |raw: String, cx: &mut App| {
+                            let trimmed = raw.trim();
+                            let cmd = if trimmed.is_empty() {
+                                "/agy settings clear".to_string()
+                            } else {
+                                format!("/agy settings {trimmed}")
+                            };
+                            app_w.update(cx, |s, cx| s.send_agy_command(cmd, cx));
+                        }
+                    };
+
+                    let state_entity = window.use_keyed_state(
+                        SharedString::from("agy-cli-settings-input"),
+                        cx,
+                        {
+                            let initial = current_val.clone();
+                            let on_ev = apply_val.clone();
+                            |window, cx| {
+                                let input = cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .default_value(initial.clone())
+                                        .placeholder("path or JSON")
+                                });
+                                let _sub = cx.subscribe(&input, move |_, inp, ev: &InputEvent, cx| {
+                                    if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                                        let val = inp.read(cx).value().to_string();
+                                        on_ev(val, cx);
+                                    }
+                                });
+                                AgyCliSettingsFieldState {
+                                    input,
+                                    last_synced: initial,
+                                    _sub,
+                                }
+                            }
+                        },
+                    );
+
+                    state_entity.update(cx, |st, cx| {
+                        let is_focused = st.input.read(cx).focus_handle(cx).is_focused(window);
+                        if !is_focused && st.last_synced != current_val {
+                            st.last_synced = current_val.clone();
+                            st.input.update(cx, |inp, cx| {
+                                inp.set_value(current_val.clone(), window, cx);
+                            });
+                        }
+                    });
+
+                    let inp_entity = state_entity.read(cx).input.clone();
+                    Input::new(&inp_entity).small().w(SETTINGS_DROPDOWN_W)
+                }),
+            )
+            .description("Optional path or inline JSON object forwarded via --settings."),
         );
 
     SettingPage::new("Antigravity")

@@ -62,8 +62,23 @@ impl ArtifactPanelView {
         let code_editor = cx.new(|cx| EditorState::new(window, cx));
         cx.observe(&app_state, |this, app, cx| {
             let s = app.read(cx);
+            let modal_open = s.settings_open
+                || s.notes_modal_open
+                || s.credentials_modal_open
+                || s.show_new_session_questionnaire
+                || s.find_open
+                || s.agy_link_modal_open
+                || s.pending_ui_request.is_some();
             if !s.right_panel_open || s.right_panel_tab != RightPanelTab::Artifact {
                 this.release_webview();
+            } else if let Some(ref wv) = this.webview {
+                wv.update(cx, |w, _| {
+                    if modal_open {
+                        w.hide();
+                    } else {
+                        w.show();
+                    }
+                });
             }
             cx.notify();
         })
@@ -282,7 +297,7 @@ impl ArtifactPanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (locale, active_art, preview_font_sz, cwd_root) = {
+        let (locale, active_art, preview_font_sz, cwd_root, modal_overlay_open) = {
             let state = self.app_state.read(cx);
             let active_art = state
                 .active_artifact_id
@@ -290,11 +305,19 @@ impl ArtifactPanelView {
                 .and_then(|id| state.artifacts.iter().find(|a| &a.identifier == id))
                 .or_else(|| state.artifacts.first())
                 .cloned();
+            let modal_open = state.settings_open
+                || state.notes_modal_open
+                || state.credentials_modal_open
+                || state.show_new_session_questionnaire
+                || state.find_open
+                || state.agy_link_modal_open
+                || state.pending_ui_request.is_some();
             (
                 state.locale,
                 active_art,
                 state.preview_font_size,
                 state.active_cwd.clone(),
+                modal_open,
             )
         };
 
@@ -319,6 +342,15 @@ impl ArtifactPanelView {
         };
 
         self.sync_artifact(&art, window, cx);
+        if let Some(ref wv) = self.webview {
+            wv.update(cx, |w, _| {
+                if modal_overlay_open {
+                    w.hide();
+                } else {
+                    w.show();
+                }
+            });
+        }
 
         let mention_target = art
             .file_path
@@ -401,7 +433,7 @@ impl ArtifactPanelView {
                     ),
             );
 
-        let content = self.render_preview_body(&art, locale, preview_font_sz, cx);
+        let content = self.render_preview_body(&art, locale, preview_font_sz, modal_overlay_open, cx);
 
         v_flex()
             .size_full()
@@ -422,11 +454,14 @@ impl ArtifactPanelView {
         art: &ArtifactRecord,
         locale: AppLocale,
         preview_font_sz: f32,
+        modal_overlay_open: bool,
         cx: &Context<Self>,
     ) -> gpui_kit::AnyElement {
         match self.active_kind {
             PreviewKind::Html | PreviewKind::WebUrl | PreviewKind::Svg => {
-                if let Some(ref wv) = self.webview {
+                if modal_overlay_open {
+                    div().size_full().into_any_element()
+                } else if let Some(ref wv) = self.webview {
                     div().size_full().child(wv.clone()).into_any_element()
                 } else {
                     render_unsupported_card(
@@ -451,7 +486,9 @@ impl ArtifactPanelView {
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
-                    if let Some(ref wv) = self.webview {
+                    if modal_overlay_open {
+                        div().size_full().into_any_element()
+                    } else if let Some(ref wv) = self.webview {
                         div().size_full().child(wv.clone()).into_any_element()
                     } else {
                         render_unsupported_card(
@@ -499,7 +536,9 @@ impl ArtifactPanelView {
                 }
             }
             PreviewKind::Office => {
-                if let Some(ref wv) = self.webview {
+                if modal_overlay_open {
+                    div().size_full().into_any_element()
+                } else if let Some(ref wv) = self.webview {
                     div().size_full().child(wv.clone()).into_any_element()
                 } else {
                     render_unsupported_card(
