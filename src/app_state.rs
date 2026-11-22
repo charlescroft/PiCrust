@@ -1207,7 +1207,8 @@ impl AppState {
         if !self.extra_projects.contains(&path) {
             self.extra_projects.push(path.clone());
         }
-        self.active_cwd = path;
+        self.active_cwd = path.clone();
+        self.restore_model_for_workspace(&path, cx);
         self.start_new_composer(WorkspaceKind::Project, cx);
     }
 
@@ -1518,6 +1519,38 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn restore_model_for_workspace(&mut self, cwd: &Path, cx: &mut Context<Self>) -> bool {
+        let cwd_key = cwd.to_string_lossy().into_owned();
+        let saved = crate::app_settings::load_app_settings()
+            .chat
+            .workspace_models
+            .get(&cwd_key)
+            .cloned();
+        let target = saved.or_else(|| {
+            self.sessions
+                .iter()
+                .find(|s| s.cwd.as_deref() == Some(cwd_key.as_str()))
+                .and_then(|s| s.path.as_deref())
+                .and_then(|p| {
+                    let (m, _) = extract_model_and_thinking_from_jsonl(Path::new(p));
+                    m
+                })
+        });
+        if let Some((prov, mid)) = target {
+            if let Some(found) = self
+                .visible_picker_models()
+                .into_iter()
+                .find(|m| m.provider == prov && m.id == mid)
+            {
+                self.selected_model = Some(found);
+                self.clamp_thinking_level_to_model();
+                self.ensure_selected_model_visible(cx);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn select_model(&mut self, model: ModelInfo, cx: &mut Context<Self>) {
         self.selected_model = Some(model.clone());
         self.has_user_selected_model = true;
@@ -1525,9 +1558,13 @@ impl AppState {
         let clamped_lvl = self.thinking_level;
         let prov = model.provider.clone();
         let mid = model.id.clone();
+        let cwd_key = self.active_cwd.to_string_lossy().into_owned();
         crate::app_settings::update_app_settings(|s| {
             s.chat.last_selected_provider = Some(prov.clone());
             s.chat.last_selected_model_id = Some(mid.clone());
+            s.chat
+                .workspace_models
+                .insert(cwd_key.clone(), (prov.clone(), mid.clone()));
         });
         if let Some(sid) = self.active_session_id.clone() {
             if self.sidecar_connected {
@@ -4809,6 +4846,8 @@ impl AppState {
         } else {
             resolve_git_branch(&self.active_cwd)
         };
+        let cwd = self.active_cwd.clone();
+        self.restore_model_for_workspace(&cwd, cx);
         if self.active_branch.is_none() && self.right_panel_tab == RightPanelTab::GitGraph {
             self.close_right_tab(RightPanelTab::GitGraph, cx);
         }
@@ -5056,6 +5095,7 @@ impl AppState {
             self.sync_tool_subagent_runs_from_messages();
 
             let (extracted_model, extracted_thinking) = extract_model_and_thinking_from_jsonl(p);
+            let mut restored = false;
             if let Some((prov, mid)) = extracted_model {
                 if let Some(found) = self
                     .visible_picker_models()
@@ -5063,7 +5103,12 @@ impl AppState {
                     .find(|m| m.provider == prov && m.id == mid)
                 {
                     self.selected_model = Some(found);
+                    restored = true;
                 }
+            }
+            if !restored {
+                let cwd = self.active_cwd.clone();
+                self.restore_model_for_workspace(&cwd, cx);
             }
             if let Some(tl) = extracted_thinking {
                 self.thinking_level = tl;

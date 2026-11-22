@@ -145,6 +145,8 @@ pub struct ChatSettings {
     pub last_selected_provider: Option<String>,
     #[serde(default)]
     pub last_selected_model_id: Option<String>,
+    #[serde(default)]
+    pub workspace_models: std::collections::HashMap<String, (String, String)>,
 }
 
 impl Default for ChatSettings {
@@ -166,6 +168,7 @@ impl Default for ChatSettings {
             file_link_click_action: default_file_link_click_action(),
             last_selected_provider: None,
             last_selected_model_id: None,
+            workspace_models: std::collections::HashMap::new(),
         }
     }
 }
