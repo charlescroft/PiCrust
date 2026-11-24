@@ -5078,6 +5078,7 @@ impl AppState {
 
         self.messages.clear();
         self.branch_siblings.clear();
+        let mut restored_local_model = false;
         // Fast local JSONL load so switching sessions is instant and works offline
         if let Some(ref p) = local_jsonl_path {
             let (parsed, siblings) =
@@ -5095,7 +5096,6 @@ impl AppState {
             self.sync_tool_subagent_runs_from_messages();
 
             let (extracted_model, extracted_thinking) = extract_model_and_thinking_from_jsonl(p);
-            let mut restored = false;
             if let Some((prov, mid)) = extracted_model {
                 if let Some(found) = self
                     .visible_picker_models()
@@ -5103,12 +5103,12 @@ impl AppState {
                     .find(|m| m.provider == prov && m.id == mid)
                 {
                     self.selected_model = Some(found);
-                    restored = true;
+                    restored_local_model = true;
                 }
             }
-            if !restored {
+            if !restored_local_model {
                 let cwd = self.active_cwd.clone();
-                self.restore_model_for_workspace(&cwd, cx);
+                restored_local_model = self.restore_model_for_workspace(&cwd, cx);
             }
             if let Some(tl) = extracted_thinking {
                 self.thinking_level = tl;
@@ -5128,6 +5128,11 @@ impl AppState {
                     }
                 }
             }
+        } else {
+            let cwd = self.active_cwd.clone();
+            restored_local_model = self.restore_model_for_workspace(&cwd, cx);
+            self.clamp_thinking_level_to_model();
+            self.ensure_selected_model_visible(cx);
         }
         cx.notify();
 
@@ -5241,16 +5246,37 @@ impl AppState {
                     }
                 }
                 if let Some(st_val) = agent_state {
+                    let prev_selected = this.selected_model.clone();
                     this.apply_agent_state_response(&st_val);
-                    let session_model_stale = st_val
-                        .get("model")
+                    let sidecar_model = st_val
+                        .get("state")
+                        .and_then(|s| s.get("model"))
+                        .or_else(|| st_val.get("model"))
                         .and_then(|m_obj| {
                             let p = m_obj.get("provider").and_then(Value::as_str)?;
                             let id = m_obj.get("id").and_then(Value::as_str)?;
-                            Some(!this.visible_picker_models().iter().any(|m| m.provider == p && m.id == id))
+                            Some((p.to_string(), id.to_string()))
+                        });
+                    let session_model_stale = sidecar_model
+                        .as_ref()
+                        .map(|(p, id)| {
+                            !this
+                                .visible_picker_models()
+                                .iter()
+                                .any(|m| m.provider == *p && m.id == *id)
                         })
-                        .unwrap_or(false);
-                    if session_model_stale {
+                        .unwrap_or(true);
+                    if restored_local_model {
+                        if let Some(ref local_m) = prev_selected {
+                            this.selected_model = Some(local_m.clone());
+                        }
+                    }
+                    let sidecar_differs = match (&sidecar_model, &this.selected_model) {
+                        (Some((sp, sid_m)), Some(sel)) => sp != &sel.provider || sid_m != &sel.id,
+                        (None, Some(_)) => true,
+                        _ => false,
+                    };
+                    if session_model_stale || sidecar_differs {
                         if let (Some(sid), Some(next_model)) =
                             (this.active_session_id.clone(), this.selected_model.clone())
                         {
@@ -6727,7 +6753,30 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn has_agy_link_installed(&self) -> bool {
+        if self.agy_link_state.is_some()
+            || self.models.iter().any(|m| m.provider == "agy-link")
+            || self.plugins.iter().any(|p| {
+                p.enabled
+                    && (p.name.to_ascii_lowercase().contains("pi-agy-link")
+                        || p.source.to_ascii_lowercase().contains("pi-agy-link"))
+            })
+        {
+            return true;
+        }
+        let has_ext_entry = |dir: std::path::PathBuf| {
+            ["pi-agy-link", "pi-agy-link.ts", "pi-agy-link.js"]
+                .iter()
+                .any(|name| dir.join(name).exists())
+        };
+        has_ext_entry(crate::client::local_store::pi_agent_dir().join("extensions"))
+            || has_ext_entry(self.active_cwd.join(".pi").join("extensions"))
+    }
+
     pub fn open_agy_link_modal(&mut self, cx: &mut Context<Self>) {
+        if !self.has_agy_link_installed() {
+            return;
+        }
         self.agy_link_modal_open = false;
         self.notes_modal_open = false;
         self.credentials_modal_open = false;
@@ -7831,6 +7880,9 @@ impl AppState {
         cx.spawn(async move |_, cx| {
             let result = match active_session {
                 Some(ref sid) => {
+                    if let (Some(p), Some(m)) = (provider.as_deref(), model_id.as_deref()) {
+                        let _ = client.set_session_model(sid, p, m).await;
+                    }
                     let mut cmd = json!({ "type": "prompt", "message": text });
                     if !images_payload.is_empty() {
                         if let Some(obj) = cmd.as_object_mut() {

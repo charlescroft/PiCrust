@@ -149,6 +149,9 @@ impl Render for WorkspaceView {
             window,
             cx,
         );
+        if !right_open && self.resizing_right {
+            self.resizing_right = false;
+        }
         let right_anim_w = if self.resizing_right && right_open {
             right_target_w
         } else {
@@ -215,8 +218,9 @@ impl Render for WorkspaceView {
                 h_flex()
                     .h_full()
                     .flex_shrink_0()
-                    .when_resize_handle(show_handle, cx.listener(|this, _, _, _| {
+                    .when_resize_handle(show_handle, cx.listener(|this, _, _, cx| {
                         this.resizing_right = true;
+                        cx.stop_propagation();
                     }))
                     .child(
                         div()
@@ -248,6 +252,11 @@ impl Render for WorkspaceView {
             .font_family(cx.theme().font_family.clone())
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
                 if this.resizing_right {
+                    if ev.pressed_button != Some(MouseButton::Left) {
+                        this.resizing_right = false;
+                        cx.notify();
+                        return;
+                    }
                     let next_w = (win_w - ev.position.x).clamp(px(280.), px(760.));
                     this.app_state.update(cx, |s, cx| {
                         s.right_panel_width = next_w;
@@ -257,8 +266,20 @@ impl Render for WorkspaceView {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, _| {
-                    this.resizing_right = false;
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.resizing_right {
+                        this.resizing_right = false;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.resizing_right {
+                        this.resizing_right = false;
+                        cx.notify();
+                    }
                 }),
             )
             .on_action(cx.listener(|this, _: &NewSession, _, cx| {

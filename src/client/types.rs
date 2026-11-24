@@ -892,6 +892,8 @@ pub struct AgyLinkAccount {
     #[serde(default)]
     pub tier: String,
     #[serde(default)]
+    pub plan_tier_override: Option<String>,
+    #[serde(default)]
     pub priority: usize,
     #[serde(default)]
     pub disabled: bool,
@@ -925,7 +927,56 @@ pub struct AgyLinkAccount {
     pub models: Vec<AgyLinkModelQuota>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLinkCacheBucket {
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub turns: u64,
+    #[serde(default)]
+    pub cold_turns: u64,
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub hit_percent: Option<f64>,
+    #[serde(default)]
+    pub reasons: std::collections::HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLinkCacheLastSample {
+    #[serde(default)]
+    pub at: u64,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub hit_percent: Option<f64>,
+    #[serde(default)]
+    pub context_tokens: u64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyLinkCacheStats {
+    #[serde(default)]
+    pub today: AgyLinkCacheBucket,
+    #[serde(default)]
+    pub last: Option<AgyLinkCacheLastSample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgyLinkSettings {
     #[serde(default)]
@@ -938,6 +989,14 @@ pub struct AgyLinkSettings {
     pub permission_mode: String,
     #[serde(default)]
     pub default_effort: String,
+    #[serde(default)]
+    pub orchestrator_planner_model: String,
+    #[serde(default)]
+    pub orchestrator_planner_effort: String,
+    #[serde(default)]
+    pub orchestrator_executor_model: String,
+    #[serde(default)]
+    pub orchestrator_executor_effort: String,
     #[serde(default)]
     pub parallel_same_account: bool,
     #[serde(default)]
@@ -958,6 +1017,16 @@ pub struct AgyLinkSettings {
     pub selected_models: Vec<String>,
     #[serde(default)]
     pub auto_warmup: bool,
+    #[serde(default = "default_agy_warmup_windows")]
+    pub warmup_windows: String,
+    #[serde(default)]
+    pub warmup_daily_time: String,
+    #[serde(default)]
+    pub warmup_timezone: String,
+    #[serde(default)]
+    pub warmup_interval_hours: u32,
+    #[serde(default = "default_agy_warmup_max_probes")]
+    pub warmup_max_probes_per_run: u32,
     #[serde(default)]
     pub image_model: String,
     #[serde(default = "default_agy_image_effort")]
@@ -985,6 +1054,14 @@ pub struct AgyLinkSettings {
     #[serde(default)]
     pub acp_sessions: u32,
     #[serde(default)]
+    pub acp_draining_processes: u32,
+    #[serde(default)]
+    pub acp_stray_processes: u32,
+    #[serde(default)]
+    pub acp_slot_overwrite_detected_count: u32,
+    #[serde(default)]
+    pub cache_stats: Option<AgyLinkCacheStats>,
+    #[serde(default)]
     pub sandbox: bool,
     #[serde(default)]
     pub agent: String,
@@ -1000,6 +1077,14 @@ fn default_agy_mode() -> String {
 
 fn default_agy_permission() -> String {
     "skip".to_string()
+}
+
+fn default_agy_warmup_windows() -> String {
+    "weekly".to_string()
+}
+
+fn default_agy_warmup_max_probes() -> u32 {
+    12
 }
 
 fn default_agy_image_effort() -> String {
@@ -1027,7 +1112,7 @@ fn default_agy_slim_prompt_rules() -> bool {
 }
 
 fn default_agy_transport() -> String {
-    "cli".to_string()
+    "acp".to_string()
 }
 
 impl Default for AgyLinkSettings {
@@ -1038,6 +1123,10 @@ impl Default for AgyLinkSettings {
             proxy_url: String::new(),
             permission_mode: default_agy_permission(),
             default_effort: String::new(),
+            orchestrator_planner_model: String::new(),
+            orchestrator_planner_effort: String::new(),
+            orchestrator_executor_model: String::new(),
+            orchestrator_executor_effort: String::new(),
             parallel_same_account: false,
             max_concurrent: 0,
             dispatch_timeout_minutes: 0,
@@ -1048,6 +1137,11 @@ impl Default for AgyLinkSettings {
             hidden_models: Vec::new(),
             selected_models: Vec::new(),
             auto_warmup: false,
+            warmup_windows: default_agy_warmup_windows(),
+            warmup_daily_time: String::new(),
+            warmup_timezone: String::new(),
+            warmup_interval_hours: 0,
+            warmup_max_probes_per_run: default_agy_warmup_max_probes(),
             image_model: String::new(),
             image_effort: default_agy_image_effort(),
             image_timeout_ms: default_agy_image_timeout_ms(),
@@ -1061,6 +1155,10 @@ impl Default for AgyLinkSettings {
             transport: default_agy_transport(),
             acp_active_processes: 0,
             acp_sessions: 0,
+            acp_draining_processes: 0,
+            acp_stray_processes: 0,
+            acp_slot_overwrite_detected_count: 0,
+            cache_stats: None,
             sandbox: false,
             agent: String::new(),
             agy_settings: String::new(),
@@ -1069,7 +1167,7 @@ impl Default for AgyLinkSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgyLinkState {
     #[serde(default)]

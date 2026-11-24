@@ -61,15 +61,20 @@ pub fn render_status_bar(
     let app_for_term = app_state.clone();
     let app_for_settings = app_state.clone();
     let app_for_agy = app_state.clone();
-    let agy_quota_badge: Option<(Option<i32>, String)> = state.agy_link_state.as_ref().map(|agy| {
-        if let Some(active) = agy.accounts.iter().find(|a| a.active).or_else(|| agy.accounts.first()) {
-            let name = active.email.as_deref().unwrap_or(&active.alias).to_string();
-            let pct = active.five_hour_pct.or(active.weekly_pct);
-            (pct, name)
-        } else {
-            (None, "AGY".to_string())
-        }
-    });
+    let has_agy_link = state.has_agy_link_installed();
+    let agy_quota_badge: Option<(Option<i32>, String)> = if has_agy_link {
+        state.agy_link_state.as_ref().map(|agy| {
+            if let Some(active) = agy.accounts.iter().find(|a| a.active).or_else(|| agy.accounts.first()) {
+                let name = active.email.as_deref().unwrap_or(&active.alias).to_string();
+                let pct = active.five_hour_pct.or(active.weekly_pct);
+                (pct, name)
+            } else {
+                (None, "AGY".to_string())
+            }
+        })
+    } else {
+        None
+    };
 
     let mut bar = StatusBar::new()
         .py_1()
@@ -321,9 +326,9 @@ pub fn render_status_bar(
         h_flex()
             .items_center()
             .gap_2()
-            .child({
+            .when(has_agy_link, |el| {
                 let app_agy = app_for_agy.clone();
-                if let Some((pct_opt, account_name)) = agy_quota_badge {
+                let badge = if let Some((pct_opt, account_name)) = agy_quota_badge {
                     let tip = match pct_opt {
                         Some(p) => format!("Antigravity: {account_name} ({p}%) — Click to manage"),
                         None => format!("Antigravity: {account_name} — Click to manage"),
@@ -401,9 +406,10 @@ pub fn render_status_bar(
                                 .child("Loading AGY"),
                         )
                         .into_any_element()
-                }
+                };
+                el.child(badge)
+                    .child(div().w(px(1.)).h(px(14.)).bg(cx.theme().border))
             })
-            .child(div().w(px(1.)).h(px(14.)).bg(cx.theme().border))
             .child(
                 Button::new("sb-terminal")
                     .ghost()

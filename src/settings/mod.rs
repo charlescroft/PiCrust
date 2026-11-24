@@ -152,20 +152,27 @@ pub fn render_settings_overlay(
     let app_footer_save = app_state.clone();
     let app_backdrop_close = app_state.clone();
 
-    let (initial_page, open_nonce) = {
+    let (initial_page, open_nonce, has_agy) = {
         let s = app_state.read(cx);
-        (s.settings_initial_page.min(6), s.settings_open_nonce)
+        (
+            s.settings_initial_page,
+            s.settings_open_nonce,
+            s.has_agy_link_installed(),
+        )
     };
 
-    let pages = vec![
+    let mut pages = vec![
         general_setting_page(app_state.clone(), locale, cx),
         models_setting_page(app_state.clone(), locale, cx),
         mcp_setting_page(app_state.clone(), locale, cx),
         subagents_setting_page(app_state.clone(), locale, cx),
         skills_setting_page(app_state.clone(), locale, cx),
         plugins_setting_page(app_state.clone(), locale, cx),
-        antigravity_setting_page(app_state.clone(), locale, cx),
     ];
+    if has_agy {
+        pages.push(antigravity_setting_page(app_state.clone(), locale, cx));
+    }
+    let initial_page = initial_page.min(pages.len().saturating_sub(1));
 
     div()
         .id("settings-backdrop")

@@ -937,12 +937,15 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
                 let acc_id_use = acc.id.clone();
                 let acc_id_reauth = acc.id.clone();
                 let acc_id_reauth_copy = acc.id.clone();
+                let acc_id_plan = acc.id.clone();
+                let acc_plan_override = acc.plan_tier_override.clone();
                 let acc_id_toggle = acc.id.clone();
                 let acc_id_det = acc.id.clone();
                 let acc_id_rm = acc.id.clone();
                 let app_use = app_state.clone();
                 let app_reauth = app_state.clone();
                 let app_reauth_copy = app_state.clone();
+                let app_plan = app_state.clone();
                 let app_toggle = app_state.clone();
                 let app_det = app_state.clone();
                 let app_rm = app_state.clone();
@@ -959,12 +962,15 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
                         let acc_id_use = acc_id_use.clone();
                         let acc_id_reauth = acc_id_reauth.clone();
                         let acc_id_reauth_copy = acc_id_reauth_copy.clone();
+                        let acc_id_plan = acc_id_plan.clone();
+                        let acc_plan_override = acc_plan_override.clone();
                         let acc_id_toggle = acc_id_toggle.clone();
                         let acc_id_det = acc_id_det.clone();
                         let acc_id_rm = acc_id_rm.clone();
                         let app_use = app_use.clone();
                         let app_reauth = app_reauth.clone();
                         let app_reauth_copy = app_reauth_copy.clone();
+                        let app_plan = app_plan.clone();
                         let app_toggle = app_toggle.clone();
                         let app_det = app_det.clone();
                         let app_rm = app_rm.clone();
@@ -1112,6 +1118,32 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
                                                             });
                                                         }),
                                                 )
+                                            })
+                                            .child({
+                                                let cur_plan = acc_plan_override
+                                                    .as_deref()
+                                                    .unwrap_or("auto")
+                                                    .to_ascii_lowercase();
+                                                let (plan_label, next_plan) = match cur_plan.as_str() {
+                                                    "pro" => ("Plan: PRO", "ultra"),
+                                                    "ultra" => ("Plan: ULTRA", "free"),
+                                                    "free" => ("Plan: FREE", "enterprise"),
+                                                    "enterprise" => ("Plan: ENT", "auto"),
+                                                    _ => ("Plan: Auto", "pro"),
+                                                };
+                                                Button::new(("settings-agy-plan", idx))
+                                                    .outline()
+                                                    .small()
+                                                    .disabled(is_acc_deleting)
+                                                    .label(plan_label)
+                                                    .tooltip("Click to cycle plan tier override (Auto → Pro → Ultra → Free → Enterprise)")
+                                                    .on_click(move |_, _, cx| {
+                                                        let id = acc_id_plan.clone();
+                                                        let next = next_plan.to_string();
+                                                        app_plan.update(cx, |s, cx| {
+                                                            s.send_agy_command(format!("/agy plan {id} {next}"), cx);
+                                                        });
+                                                    })
                                             })
                                             .child({
                                                 let btn = Button::new(("settings-agy-details", idx))
@@ -1328,23 +1360,275 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
         .item(
             SettingItem::new(
                 "Auto 7-Day Quota Warmup",
-                SettingField::switch(
+                SettingField::render(move |_, _, cx| {
+                    let on = app_wu_r
+                        .read(cx)
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.auto_warmup)
+                        .unwrap_or(false);
+                    let app_sw = app_wu_w.clone();
+                    let app_run = app_wu_w.clone();
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("agy-warmup-run-now")
+                                .outline()
+                                .small()
+                                .label("Run Now")
+                                .tooltip("Trigger a manual warmup probe across accounts (/agy warmup run)")
+                                .on_click(move |_, _, cx| {
+                                    app_run.update(cx, |s, cx| {
+                                        s.send_agy_command("/agy warmup run".to_string(), cx);
+                                    });
+                                }),
+                        )
+                        .child(
+                            Switch::new("agy-warmup-switch")
+                                .checked(on)
+                                .on_click(move |val, _, cx| {
+                                    let cmd = if *val { "/agy warmup on" } else { "/agy warmup off" };
+                                    app_sw.update(cx, |s, cx| s.send_agy_command(cmd.to_string(), cx));
+                                }),
+                        )
+                }),
+            )
+            .description("Send a minimal probe on cold start or reset window to activate the upstream quota timer."),
+        )
+        .item({
+            let app_ww_r = app_state.clone();
+            let app_ww_w = app_state.clone();
+            let ww_options = vec![
+                (SharedString::from("weekly"), SharedString::from("Weekly (7d)")),
+                (SharedString::from("5h"), SharedString::from("5-Hour Window")),
+                (SharedString::from("both"), SharedString::from("Both (Weekly + 5h)")),
+            ];
+            SettingItem::new(
+                "Warmup Windows",
+                SettingField::dropdown(
+                    ww_options,
                     move |cx: &App| {
-                        app_wu_r
+                        let w = app_ww_r
                             .read(cx)
                             .agy_link_state
                             .as_ref()
-                            .map(|s| s.settings.auto_warmup)
-                            .unwrap_or(false)
+                            .map(|s| s.settings.warmup_windows.as_str())
+                            .unwrap_or("weekly");
+                        SharedString::from(if w.is_empty() { "weekly" } else { w }.to_string())
                     },
-                    move |val: bool, cx: &mut App| {
-                        let cmd = if val { "/agy warmup on" } else { "/agy warmup off" };
-                        app_wu_w.update(cx, |s, cx| s.send_agy_command(cmd.to_string(), cx));
+                    move |val: SharedString, cx: &mut App| {
+                        app_ww_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy warmup windows {val}"), cx);
+                        });
                     },
-                ),
+                )
+                .w(SETTINGS_DROPDOWN_W),
             )
-            .description("Send a minimal probe on cold start or reset window to activate the 7-day upstream timer."),
-        );
+            .description("Which quota windows automatic warmup probes should target.")
+        })
+        .item({
+            let app_wi_r = app_state.clone();
+            let app_wi_w = app_state.clone();
+            let wi_options = vec![
+                (SharedString::from("off"), SharedString::from("Off")),
+                (SharedString::from("4"), SharedString::from("Every 4h")),
+                (SharedString::from("6"), SharedString::from("Every 6h")),
+                (SharedString::from("8"), SharedString::from("Every 8h")),
+                (SharedString::from("12"), SharedString::from("Every 12h")),
+                (SharedString::from("24"), SharedString::from("Every 24h")),
+            ];
+            SettingItem::new(
+                "Warmup Fixed Interval",
+                SettingField::dropdown(
+                    wi_options,
+                    move |cx: &App| {
+                        let hrs = app_wi_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.warmup_interval_hours)
+                            .unwrap_or(0);
+                        SharedString::from(if hrs == 0 { "off".to_string() } else { hrs.to_string() })
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_wi_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy warmup interval {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Optional periodic warmup interval in hours (4–168h, or Off).")
+        })
+        .item({
+            let app_wp_r = app_state.clone();
+            let app_wp_w = app_state.clone();
+            let wp_options = vec![
+                (SharedString::from("0"), SharedString::from("Unlimited")),
+                (SharedString::from("4"), SharedString::from("4 probes")),
+                (SharedString::from("8"), SharedString::from("8 probes")),
+                (SharedString::from("12"), SharedString::from("12 probes")),
+                (SharedString::from("24"), SharedString::from("24 probes")),
+                (SharedString::from("50"), SharedString::from("50 probes")),
+            ];
+            SettingItem::new(
+                "Warmup Max Probes / Run",
+                SettingField::dropdown(
+                    wp_options,
+                    move |cx: &App| {
+                        let n = app_wp_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.warmup_max_probes_per_run)
+                            .unwrap_or(12);
+                        SharedString::from(n.to_string())
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_wp_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy warmup max-probes {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Maximum number of warmup probes sent in a single sweep (0 = unlimited).")
+        })
+        .item({
+            let app_wd_r = app_state.clone();
+            let app_wd_w = app_state.clone();
+            SettingItem::new(
+                "Warmup Daily Time (HH:MM)",
+                SettingField::render(move |_, window, cx| {
+                    let current_val = app_wd_r
+                        .read(cx)
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.warmup_daily_time.clone())
+                        .unwrap_or_default();
+
+                    struct AgyWarmupDailyState {
+                        input: Entity<InputState>,
+                        last_synced: String,
+                        _sub: gpui_kit::Subscription,
+                    }
+
+                    let state_entity = window.use_keyed_state(
+                        SharedString::from("agy-warmup-daily-input"),
+                        cx,
+                        {
+                            let initial = current_val.clone();
+                            let app_w = app_wd_w.clone();
+                            move |window, cx| {
+                                let input = cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .default_value(initial.clone())
+                                        .placeholder("08:30 (leave empty for off)")
+                                });
+                                let _sub = cx.subscribe(&input, move |_st, inp, ev: &InputEvent, cx| {
+                                    if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                                        let val = inp.read(cx).value().trim().to_string();
+                                        let cmd = if val.is_empty() {
+                                            "/agy warmup daily off".to_string()
+                                        } else {
+                                            format!("/agy warmup daily {val}")
+                                        };
+                                        app_w.update(cx, |s, cx| s.send_agy_command(cmd, cx));
+                                    }
+                                });
+                                AgyWarmupDailyState {
+                                    input,
+                                    last_synced: initial,
+                                    _sub,
+                                }
+                            }
+                        },
+                    );
+
+                    state_entity.update(cx, |st, cx| {
+                        let is_focused = st.input.read(cx).focus_handle(cx).is_focused(window);
+                        if !is_focused && st.last_synced != current_val {
+                            st.last_synced = current_val.clone();
+                            st.input.update(cx, |inp, cx| {
+                                inp.set_value(current_val.clone(), window, cx);
+                            });
+                        }
+                    });
+
+                    let inp_entity = state_entity.read(cx).input.clone();
+                    Input::new(&inp_entity).small().w(SETTINGS_DROPDOWN_W)
+                }),
+            )
+            .description("Optional 24-hour daily warmup schedule (e.g. 08:30). Clear to disable.")
+        })
+        .item({
+            let app_wt_r = app_state.clone();
+            let app_wt_w = app_state.clone();
+            SettingItem::new(
+                "Warmup Timezone (IANA)",
+                SettingField::render(move |_, window, cx| {
+                    let current_val = app_wt_r
+                        .read(cx)
+                        .agy_link_state
+                        .as_ref()
+                        .map(|s| s.settings.warmup_timezone.clone())
+                        .unwrap_or_default();
+
+                    struct AgyWarmupTzState {
+                        input: Entity<InputState>,
+                        last_synced: String,
+                        _sub: gpui_kit::Subscription,
+                    }
+
+                    let state_entity = window.use_keyed_state(
+                        SharedString::from("agy-warmup-tz-input"),
+                        cx,
+                        {
+                            let initial = current_val.clone();
+                            let app_w = app_wt_w.clone();
+                            move |window, cx| {
+                                let input = cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .default_value(initial.clone())
+                                        .placeholder("Asia/Shanghai (empty = local)")
+                                });
+                                let _sub = cx.subscribe(&input, move |_st, inp, ev: &InputEvent, cx| {
+                                    if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                                        let val = inp.read(cx).value().trim().to_string();
+                                        let cmd = if val.is_empty() {
+                                            "/agy warmup timezone local".to_string()
+                                        } else {
+                                            format!("/agy warmup timezone {val}")
+                                        };
+                                        app_w.update(cx, |s, cx| s.send_agy_command(cmd, cx));
+                                    }
+                                });
+                                AgyWarmupTzState {
+                                    input,
+                                    last_synced: initial,
+                                    _sub,
+                                }
+                            }
+                        },
+                    );
+
+                    state_entity.update(cx, |st, cx| {
+                        let is_focused = st.input.read(cx).focus_handle(cx).is_focused(window);
+                        if !is_focused && st.last_synced != current_val {
+                            st.last_synced = current_val.clone();
+                            st.input.update(cx, |inp, cx| {
+                                inp.set_value(current_val.clone(), window, cx);
+                            });
+                        }
+                    });
+
+                    let inp_entity = state_entity.read(cx).input.clone();
+                    Input::new(&inp_entity).small().w(SETTINGS_DROPDOWN_W)
+                }),
+            )
+            .description("Optional IANA timezone for daily warmup (e.g. Asia/Shanghai, UTC). Empty uses local timezone.")
+        });
 
     // 3. Model Display & Thinking
     let app_pw_r = app_state.clone();
@@ -1714,8 +1998,23 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
 
     let acp_desc = if let Some(ref st) = agy_state {
         if st.settings.transport == "acp" {
+            let mut extra = Vec::new();
+            if st.settings.acp_draining_processes > 0 {
+                extra.push(format!("draining: {}", st.settings.acp_draining_processes));
+            }
+            if st.settings.acp_stray_processes > 0 {
+                extra.push(format!("stray: {}", st.settings.acp_stray_processes));
+            }
+            if st.settings.acp_slot_overwrite_detected_count > 0 {
+                extra.push(format!("slot overwrites: {}", st.settings.acp_slot_overwrite_detected_count));
+            }
+            let suffix = if extra.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", extra.join(", "))
+            };
             format!(
-                "Choose between per-turn CLI spawns and persistent ACP sessions (active processes: {}, sessions: {}).",
+                "Choose between per-turn CLI spawns and persistent ACP sessions (active processes: {}, sessions: {}{suffix}).",
                 st.settings.acp_active_processes, st.settings.acp_sessions
             )
         } else {
@@ -1724,6 +2023,30 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
     } else {
         "Choose between per-turn CLI spawns and persistent ACP sessions (reduces turn startup latency).".to_string()
     };
+
+    let cache_desc = if let Some(cs) = agy_state.as_ref().and_then(|s| s.settings.cache_stats.as_ref()) {
+        let turns = cs.today.turns;
+        if turns > 0 {
+            let rate = cs
+                .today
+                .hit_percent
+                .map(|r| format!("{:.1}%", r))
+                .unwrap_or_else(|| "—".to_string());
+            let last_str = cs
+                .last
+                .as_ref()
+                .and_then(|l| l.hit_percent)
+                .map(|r| format!(", last turn: {:.1}%", r))
+                .unwrap_or_default();
+            format!("Prompt cache telemetry today across {turns} ACP turn(s) — hit rate: {rate}{last_str}.")
+        } else {
+            "Prompt cache telemetry for persistent ACP turns (no turns recorded today).".to_string()
+        }
+    } else {
+        "Prompt cache telemetry for persistent ACP turns.".to_string()
+    };
+    let app_cache_show = app_state.clone();
+    let app_cache_reset = app_state.clone();
 
     let exec_group = SettingGroup::new()
         .title("Proxy & Execution")
@@ -1750,6 +2073,43 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
                 .w(SETTINGS_DROPDOWN_W),
             )
             .description(SharedString::from(acp_desc)),
+        )
+        .item(
+            SettingItem::new(
+                "ACP Cache Metrics",
+                SettingField::render(move |_, _, _| {
+                    let app_show = app_cache_show.clone();
+                    let app_rst = app_cache_reset.clone();
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("agy-cache-status-btn")
+                                .outline()
+                                .small()
+                                .label("Report")
+                                .tooltip("Print detailed ACP cache metrics (/agy cache-status)")
+                                .on_click(move |_, _, cx| {
+                                    app_show.update(cx, |s, cx| {
+                                        s.send_agy_command("/agy cache-status".to_string(), cx);
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("agy-cache-reset-btn")
+                                .outline()
+                                .small()
+                                .label("Reset")
+                                .tooltip("Reset ACP cache metrics (/agy cache reset)")
+                                .on_click(move |_, _, cx| {
+                                    app_rst.update(cx, |s, cx| {
+                                        s.send_agy_command("/agy cache reset".to_string(), cx);
+                                    });
+                                }),
+                        )
+                }),
+            )
+            .description(SharedString::from(cache_desc)),
         )
         .item(
             SettingItem::new(
@@ -2397,12 +2757,158 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
             .description("Optional path or inline JSON object forwarded via --settings."),
         );
 
+    // Orchestrator Overrides
+    let mut orch_model_options: Vec<(SharedString, SharedString)> = vec![
+        (SharedString::from("auto"), SharedString::from("Auto (agy default)")),
+    ];
+    if let Some(ref st) = agy_state {
+        for m in &st.available_models {
+            orch_model_options.push((SharedString::from(m.clone()), SharedString::from(m.clone())));
+        }
+    }
+    let orch_effort_options = vec![
+        (SharedString::from("default"), SharedString::from("Default")),
+        (SharedString::from("minimal"), SharedString::from("Minimal")),
+        (SharedString::from("low"), SharedString::from("Low")),
+        (SharedString::from("medium"), SharedString::from("Medium")),
+        (SharedString::from("high"), SharedString::from("High")),
+        (SharedString::from("max"), SharedString::from("Max")),
+    ];
+    let app_opm_r = app_state.clone();
+    let app_opm_w = app_state.clone();
+    let app_ope_r = app_state.clone();
+    let app_ope_w = app_state.clone();
+    let app_oem_r = app_state.clone();
+    let app_oem_w = app_state.clone();
+    let app_oee_r = app_state.clone();
+    let app_oee_w = app_state.clone();
+    let app_orch_clear = app_state.clone();
+
+    let orchestrator_group = SettingGroup::new()
+        .title("Orchestrator Overrides")
+        .item(
+            SettingItem::new(
+                "Planner Model",
+                SettingField::dropdown(
+                    orch_model_options.clone(),
+                    move |cx: &App| {
+                        let m = app_opm_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.orchestrator_planner_model.as_str())
+                            .unwrap_or("");
+                        SharedString::from(if m.is_empty() { "auto" } else { m }.to_string())
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_opm_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy orchestrator planner {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Override the planner model used by Antigravity orchestrator models."),
+        )
+        .item(
+            SettingItem::new(
+                "Planner Thinking Effort",
+                SettingField::dropdown(
+                    orch_effort_options.clone(),
+                    move |cx: &App| {
+                        let e = app_ope_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.orchestrator_planner_effort.as_str())
+                            .unwrap_or("");
+                        SharedString::from(if e.is_empty() { "default" } else { e }.to_string())
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_ope_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy orchestrator planner-effort {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Thinking effort for the orchestrator planner stage."),
+        )
+        .item(
+            SettingItem::new(
+                "Executor Model",
+                SettingField::dropdown(
+                    orch_model_options,
+                    move |cx: &App| {
+                        let m = app_oem_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.orchestrator_executor_model.as_str())
+                            .unwrap_or("");
+                        SharedString::from(if m.is_empty() { "auto" } else { m }.to_string())
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_oem_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy orchestrator executor {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Override the executor model used by Antigravity orchestrator models."),
+        )
+        .item(
+            SettingItem::new(
+                "Executor Thinking Effort",
+                SettingField::dropdown(
+                    orch_effort_options,
+                    move |cx: &App| {
+                        let e = app_oee_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.orchestrator_executor_effort.as_str())
+                            .unwrap_or("");
+                        SharedString::from(if e.is_empty() { "default" } else { e }.to_string())
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_oee_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy orchestrator executor-effort {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Thinking effort for the orchestrator executor stage."),
+        )
+        .item(
+            SettingItem::new(
+                "Reset Orchestrator Overrides",
+                SettingField::render(move |_, _, _| {
+                    let app_clr = app_orch_clear.clone();
+                    Button::new("agy-orch-clear-btn")
+                        .outline()
+                        .small()
+                        .label("Reset to Default")
+                        .tooltip("Clear planner/executor model and effort overrides (/agy orchestrator clear)")
+                        .on_click(move |_, _, cx| {
+                            app_clr.update(cx, |s, cx| {
+                                s.send_agy_command("/agy orchestrator clear".to_string(), cx);
+                            });
+                        })
+                }),
+            )
+            .description("Restore Antigravity's built-in orchestrator planner and executor defaults."),
+        );
+
     SettingPage::new("Antigravity")
         .icon(IconName::Bot)
         .default_open(true)
         .group(pool_group)
         .group(rotation_group)
         .group(model_group)
+        .group(orchestrator_group)
         .group(visibility_group)
         .group(image_group)
         .group(exec_group)
