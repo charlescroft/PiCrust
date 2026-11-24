@@ -254,13 +254,12 @@ impl QuestionnaireView {
     }
 
     pub fn has_same_content(&self, req: &ExtensionUiRequest) -> bool {
-        if self.request.method != req.method {
-            return false;
-        }
-        if self.request.message != req.message {
-            return false;
-        }
-        if self.request.questions.len() != req.questions.len() {
+        if self.request.method != req.method
+            || self.request.title != req.title
+            || self.request.message != req.message
+            || self.request.options != req.options
+            || self.request.questions.len() != req.questions.len()
+        {
             return false;
         }
         self.request

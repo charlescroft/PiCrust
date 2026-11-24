@@ -51759,7 +51759,10 @@ function findNodeCliScript(name, options2 = {}) {
     // Windows MSI installer layout: node.exe and node_modules share a dir
     join30(nodeDir, "node_modules", "npm", "bin", `${name}-cli.js`),
     // Unix layout: .../bin/node + .../lib/node_modules/npm/bin/<name>-cli.js
-    join30(nodeDir, "..", "lib", "node_modules", "npm", "bin", `${name}-cli.js`)
+    join30(nodeDir, "..", "lib", "node_modules", "npm", "bin", `${name}-cli.js`),
+    // Homebrew Apple Silicon & Intel global npm layout
+    join30("/opt/homebrew/lib/node_modules/npm/bin", `${name}-cli.js`),
+    join30("/usr/local/lib/node_modules/npm/bin", `${name}-cli.js`)
   ];
   for (const candidate of candidates) {
     try {
@@ -51778,10 +51781,18 @@ function nodeCliInvocation(name, args, options2 = {}) {
 var execFileAsync2 = promisify2(execFile2);
 async function runNpx(args, opts = {}) {
   const { command, args: commandArgs } = nodeCliInvocation("npx", args);
+  const baseEnv = opts.env ?? process.env;
+  const curPath = baseEnv.PATH || "";
+  const extraPaths = [dirname15(execPath), "/opt/homebrew/bin", "/usr/local/bin"].filter(
+    (p) => p && !curPath.split(":").includes(p)
+  );
+  const env = extraPaths.length > 0
+    ? { ...baseEnv, PATH: [...extraPaths, curPath].filter(Boolean).join(":") }
+    : baseEnv;
   return execFileAsync2(command, commandArgs, {
     timeout: opts.timeout,
     cwd: opts.cwd,
-    env: opts.env
+    env
   });
 }
 
@@ -52250,16 +52261,16 @@ async function POST9(req) {
         );
       }
     }
-    const args = ["skills", "add", pkg, "-y", "--agent", "pi"];
+    const args = ["-y", "skills", "add", pkg, "-y", "--agent", "pi"];
     if (isGlobal) args.push("-g");
-    if ((0, import_pi_web_options2.isVerboseLogging)()) console.log("[skills/install] running npx skills add");
+    if ((0, import_pi_web_options2.isVerboseLogging)()) console.log("[skills/install] running npx -y skills add");
     const { stdout, stderr } = await runNpx(args, {
-      timeout: 6e4,
+      timeout: 12e4,
       cwd: !isGlobal && cwd ? cwd : void 0,
       env: { ...process.env, FORCE_COLOR: "0" }
     });
     const output = (stdout + stderr).replace(ANSI_RE2, "");
-    const success = /Installation complete|Installed \d+ skill/.test(output);
+    const success = /Installation complete|Installed \d+ skill|Done!?/i.test(output) || (output.trim().length > 0 && !/\b(ENOENT|EACCES|not found|failed to install)\b/i.test(output));
     if (!success) {
       return NextResponse.json({ error: output.slice(-300) || "Install failed" }, { status: 500 });
     }

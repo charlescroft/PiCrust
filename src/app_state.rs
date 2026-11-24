@@ -6673,7 +6673,9 @@ impl AppState {
 
         let is_duplicate_content = self.pending_ui_request.as_ref().is_some_and(|p| {
             p.method == req.method
+                && p.title == req.title
                 && p.message == req.message
+                && p.options == req.options
                 && p.questions.len() == req.questions.len()
                 && p.questions
                     .iter()
@@ -6681,7 +6683,9 @@ impl AppState {
                     .all(|(a, b)| a.question.trim().eq_ignore_ascii_case(b.question.trim()))
         }) || self.dialog_queue.iter().any(|p| {
             p.method == req.method
+                && p.title == req.title
                 && p.message == req.message
+                && p.options == req.options
                 && p.questions.len() == req.questions.len()
                 && p.questions
                     .iter()

@@ -750,10 +750,10 @@ pub fn plugins_setting_page(app_state: Entity<AppState>, locale: AppLocale, cx: 
                                                             match res {
                                                                 Ok(val) => {
                                                                     s.apply_plugins_response(&val);
-                                                                    s.status_banner = Some(SharedString::from(format!("Removed plugin: {pname}")));
+                                                                    s.show_success_toast(format!("Removed plugin: {pname}"), cx);
                                                                 }
                                                                 Err(err) => {
-                                                                    s.status_banner = Some(SharedString::from(format!("Failed to remove {pname}: {err}")));
+                                                                    s.show_error_toast(format!("Failed to remove {pname}: {err}"), cx);
                                                                 }
                                                             }
                                                             cx.notify();

@@ -304,6 +304,7 @@ pub struct ComposerView {
     slash_query: Option<String>,
     slash_selected_idx: usize,
     slash_scroll: ScrollHandle,
+    suppress_enter_until: Option<std::time::Instant>,
     session_drafts: HashMap<Option<String>, String>,
     last_rendered_session_id: Option<String>,
 }
@@ -547,6 +548,10 @@ impl ComposerView {
                                         });
                                         this.slash_query = None;
                                         this.slash_selected_idx = 0;
+                                        this.suppress_enter_until = Some(
+                                            std::time::Instant::now()
+                                                + std::time::Duration::from_millis(120),
+                                        );
                                         this.textarea.update(cx, |st, cx| st.focus(window, cx));
                                     }
                                     cx.notify();
@@ -580,8 +585,9 @@ impl ComposerView {
                         if len > 0 {
                             this.file_picker_selected_idx =
                                 this.file_picker_selected_idx.saturating_sub(1);
+                            let offset = usize::from(is_dir_browser && !this.file_picker_dir.is_empty());
                             this.file_picker_scroll
-                                .scroll_to_item(this.file_picker_selected_idx);
+                                .scroll_to_item(this.file_picker_selected_idx + offset);
                             cx.notify();
                         }
                     }
@@ -590,8 +596,13 @@ impl ComposerView {
                         if len > 0 {
                             this.file_picker_selected_idx =
                                 (this.file_picker_selected_idx + 1).min(len - 1);
-                            this.file_picker_scroll
-                                .scroll_to_item(this.file_picker_selected_idx);
+                            if this.file_picker_selected_idx + 1 == len {
+                                this.file_picker_scroll.scroll_to_bottom();
+                            } else {
+                                let offset = usize::from(is_dir_browser && !this.file_picker_dir.is_empty());
+                                this.file_picker_scroll
+                                    .scroll_to_item(this.file_picker_selected_idx + offset);
+                            }
                             cx.notify();
                         }
                     }
@@ -617,6 +628,9 @@ impl ComposerView {
                     }
                     "enter" => {
                         handled = true;
+                        this.suppress_enter_until = Some(
+                            std::time::Instant::now() + std::time::Duration::from_millis(120),
+                        );
                         if is_dir_browser {
                             if let Some(entry) = this
                                 .file_picker_entries
@@ -690,6 +704,7 @@ impl ComposerView {
             slash_query: None,
             slash_selected_idx: 0,
             slash_scroll: ScrollHandle::new(),
+            suppress_enter_until: None,
             session_drafts: HashMap::new(),
             last_rendered_session_id: None,
         }
@@ -1529,6 +1544,7 @@ impl ComposerView {
                 .track_scroll(&self.file_picker_scroll)
                 .w_full()
                 .max_h(px(210.))
+                .pb_1()
                 .overflow_y_scroll()
                 .cursor_pointer();
 
@@ -1867,6 +1883,14 @@ impl ComposerView {
                     }
 
                     if key == "enter" {
+                        if this
+                            .suppress_enter_until
+                            .is_some_and(|until| std::time::Instant::now() < until)
+                        {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            return;
+                        }
                         let sc = this.app_state.read(cx).send_shortcut;
                         let sec = event.keystroke.modifiers.secondary(cx);
                         let shift = event.keystroke.modifiers.shift;

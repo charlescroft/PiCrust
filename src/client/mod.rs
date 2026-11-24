@@ -125,15 +125,31 @@ impl PiDaemonClient {
         let req1 = self.request(Method::POST, path).json(body);
         let req2 = self.request(Method::POST, path).json(body);
         run_on_tokio(async move {
-            match req1.send().await {
-                Ok(resp) => Ok(resp.error_for_status()?.json::<T>().await?),
+            let resp = match req1.send().await {
+                Ok(r) => r,
                 Err(e) if e.is_connect() => {
                     tokio::time::sleep(Duration::from_millis(350)).await;
-                    let resp = req2.send().await?.error_for_status()?;
-                    Ok(resp.json::<T>().await?)
+                    req2.send().await?
                 }
-                Err(e) => Err(e.into()),
+                Err(e) => return Err(e.into()),
+            };
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                let detail = serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(Value::as_str).map(String::from))
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        if text.trim().is_empty() {
+                            status.to_string()
+                        } else {
+                            text.chars().take(300).collect()
+                        }
+                    });
+                return Err(anyhow::anyhow!("{detail}"));
             }
+            Ok(resp.json::<T>().await?)
         })
         .await
     }
@@ -565,14 +581,34 @@ impl PiDaemonClient {
     }
 
     pub async fn install_skill(&self, package: &str, scope: &str, cwd: Option<&str>) -> Result<Value> {
-        self.post_json(
-            "/api/skills/install",
-            &json!({
+        let req = self
+            .request(Method::POST, "/api/skills/install")
+            .timeout(Duration::from_secs(125))
+            .json(&json!({
                 "package": package,
                 "scope": scope,
                 "cwd": cwd,
-            }),
-        )
+            }));
+        run_on_tokio(async move {
+            let resp = req.send().await?;
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                let detail = serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(Value::as_str).map(String::from))
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        if text.trim().is_empty() {
+                            status.to_string()
+                        } else {
+                            text.chars().take(300).collect()
+                        }
+                    });
+                return Err(anyhow::anyhow!("{detail}"));
+            }
+            Ok(resp.json::<Value>().await?)
+        })
         .await
     }
 

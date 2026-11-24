@@ -47,15 +47,24 @@ pub fn fuzzy_search_files(root: &Path, query: &str, limit: usize) -> Vec<FileMat
     let mut paths = Vec::new();
     let walker = WalkBuilder::new(root)
         .hidden(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
         .max_depth(Some(8))
         .filter_entry(|entry| {
             let name = entry.file_name().to_string_lossy();
             !matches!(
                 name.as_ref(),
-                ".git" | "node_modules" | "target" | ".next" | ".next-desktop" | "dist"
+                ".git"
+                    | "node_modules"
+                    | "target"
+                    | ".next"
+                    | ".next-desktop"
+                    | "dist"
+                    | ".venv"
+                    | "__pycache__"
+                    | ".DS_Store"
             )
         })
         .build();

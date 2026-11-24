@@ -1157,7 +1157,6 @@ impl RenderOnce for QuestionnaireInput {
             .disabled(item_state.is_disabled() || input_definition.is_disabled())
             .with_size(size)
             .w_full()
-            .max_w(px(560.))
             // The freeform answer is one of the answers, so its text starts on
             // the same edge a choice's indicator does — the card padding.
             .pl(metrics.choice_padding_x)

@@ -14,6 +14,7 @@ pub struct FileExplorerPanel {
     app_state: Entity<AppState>,
     tree_state: Entity<TreeState>,
     loaded_cwd: Option<PathBuf>,
+    last_reload_at: Option<std::time::Instant>,
 }
 
 enum FileNode {
@@ -60,15 +61,20 @@ impl FileExplorerPanel {
             app_state,
             tree_state,
             loaded_cwd: None,
+            last_reload_at: None,
         }
     }
 
     pub fn reload(&mut self, force: bool, cx: &mut Context<Self>) {
         let cwd = self.app_state.read(cx).active_cwd.clone();
-        if !force && self.loaded_cwd.as_ref() == Some(&cwd) {
+        let fresh_enough = self
+            .last_reload_at
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3));
+        if !force && self.loaded_cwd.as_ref() == Some(&cwd) && fresh_enough {
             return;
         }
         self.loaded_cwd = Some(cwd.clone());
+        self.last_reload_at = Some(std::time::Instant::now());
         let tree_state = self.tree_state.clone();
         cx.spawn(async move |_, cx| {
             let nodes = smol::unblock(move || {

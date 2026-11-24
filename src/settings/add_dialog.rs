@@ -466,7 +466,9 @@ impl SettingsAddDialogView {
         } = kind
         {
             if a.is_empty() {
-                self.error = Some("Model ID is required".to_string());
+                self.app_state.update(cx, |s, cx| {
+                    s.show_error_toast("Model ID is required", cx);
+                });
                 cx.notify();
                 return;
             }
@@ -521,7 +523,9 @@ impl SettingsAddDialogView {
 
         if let SettingsAddKind::AddModelToProvider { provider_id } = kind {
             if a.is_empty() {
-                self.error = Some("Model ID is required".to_string());
+                self.app_state.update(cx, |s, cx| {
+                    s.show_error_toast("Model ID is required", cx);
+                });
                 cx.notify();
                 return;
             }
@@ -564,7 +568,9 @@ impl SettingsAddDialogView {
                 | SettingsAddKind::Plugin
         );
         if !connected && requires_sidecar {
-            self.error = Some("Sidecar disconnected".to_string());
+            self.app_state.update(cx, |s, cx| {
+                s.show_error_toast("Sidecar disconnected", cx);
+            });
             cx.notify();
             return;
         }
@@ -809,13 +815,12 @@ impl SettingsAddDialogView {
                         if let Some(pid) = discover_after_save.take() {
                             s.discover_models_for_provider(pid, cx);
                         }
-                    } else {
-                        cx.notify();
+                        let msg = tr(s.locale, "toast.settingsSaved");
+                        s.show_success_toast(msg, cx);
+                    } else if let Err(ref err) = res {
+                        s.show_error_toast(err.to_string(), cx);
                     }
                 });
-                if let Err(err) = res {
-                    view.error = Some(err.to_string());
-                }
                 cx.notify();
             });
         })
@@ -857,7 +862,9 @@ impl SettingsAddDialogView {
                             .unwrap_or_default();
                     }
                     Err(e) => {
-                        view.error = Some(e.to_string());
+                        view.app_state.update(cx, |s, cx| {
+                            s.show_error_toast(e.to_string(), cx);
+                        });
                     }
                 }
                 cx.notify();
@@ -889,16 +896,19 @@ impl SettingsAddDialogView {
                 view.busy = false;
                 app_state.update(cx, |s, cx| {
                     s.settings_busy = false;
-                    if res.is_ok() {
-                        s.settings_add_kind = None;
-                        s.refresh_settings_data(cx);
-                    } else {
-                        cx.notify();
+                    match &res {
+                        Ok(_) => {
+                            s.settings_add_kind = None;
+                            s.refresh_settings_data(cx);
+                            let msg = tr(s.locale, "toast.extensionUpdated");
+                            s.show_success_toast(msg, cx);
+                        }
+                        Err(e) => {
+                            s.show_error_toast(format!("{e}"), cx);
+                            cx.notify();
+                        }
                     }
                 });
-                if let Err(e) = res {
-                    view.error = Some(e.to_string());
-                }
                 cx.notify();
             });
         })
@@ -1898,12 +1908,6 @@ impl SettingsAddDialogView {
                             ),
                     )
                     .child(body)
-                    .children(self.error.as_ref().map(|err| {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(SharedString::from(err.clone()))
-                    }))
                     .children((!is_provider_picker && !is_info_card).then(|| {
                             h_flex()
                                 .justify_end()
