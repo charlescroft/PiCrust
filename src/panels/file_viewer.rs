@@ -92,15 +92,19 @@ impl FileViewerView {
                     })
                 });
 
-            if self.diff_state.is_some() {
-                self.mode = FilePreviewMode::Diff;
-            } else if path.as_deref().is_some_and(is_markdown_path) {
+            if path.as_deref().is_some_and(is_markdown_path) {
                 let text = content.as_ref();
                 self.markdown_state =
                     Some(cx.new(|cx| TextViewState::markdown(text, cx).selectable(true)));
-                self.mode = FilePreviewMode::Rendered;
             } else {
                 self.markdown_state = None;
+            }
+
+            if self.diff_state.is_some() {
+                self.mode = FilePreviewMode::Diff;
+            } else if self.markdown_state.is_some() {
+                self.mode = FilePreviewMode::Rendered;
+            } else {
                 self.mode = FilePreviewMode::Source;
             }
         }
@@ -128,24 +132,29 @@ impl FileViewerView {
             .strip_prefix(&cwd_root)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| file_path.to_string_lossy().into_owned());
-        let file_name = file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("File")
-            .to_string();
 
         let is_md = is_markdown_path(file_path);
         let is_img = is_image_path(file_path);
-        let has_diff = self.diff_state.is_some();
 
         let app_mention = self.app_state.clone();
         let rel_for_mention = rel_path.clone();
 
-        let mut header_actions = h_flex().items_center().gap_1p5();
-        let mode_tabs = TabBar::new("fv-mode-tabs")
+        let mut mode_tabs = TabBar::new("fv-mode-tabs")
             .segmented()
             .small()
-            .h(px(24.))
+            .h(px(24.));
+        if is_md {
+            mode_tabs = mode_tabs.child(
+                Tab::new()
+                    .label(tr(locale, "chat.preview"))
+                    .selected(self.mode == FilePreviewMode::Rendered)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.mode = FilePreviewMode::Rendered;
+                        cx.notify();
+                    })),
+            );
+        }
+        mode_tabs = mode_tabs
             .child(
                 Tab::new()
                     .label(tr(locale, "chat.diff"))
@@ -164,12 +173,16 @@ impl FileViewerView {
                         cx.notify();
                     })),
             );
-        header_actions = header_actions.child(mode_tabs)
+
+        let header_actions = h_flex()
+            .items_center()
+            .gap_1p5()
             .child(
                 Button::new("fv-mention")
                     .outline()
-                    .xsmall()
+                    .small()
                     .h(px(24.))
+                    .icon(Icon::new(crate::icons::AtSignIcon))
                     .label(tr(locale, "panel.mention"))
                     .tooltip(tr(locale, "panel.mentionTooltip"))
                     .on_click(move |_, _, cx| {
@@ -262,14 +275,7 @@ impl FileViewerView {
                     .justify_between()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .truncate()
-                            .child(SharedString::from(format!("{file_name} · {rel_path}"))),
-                    )
+                    .child(mode_tabs)
                     .child(header_actions),
             )
             .child(

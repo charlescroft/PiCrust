@@ -139,11 +139,13 @@ fn open_main_window(
             .detach();
             let act_state = state.clone();
             cx.observe_window_activation(window, move |_, win, cx| {
-                if win.is_window_active() {
-                    act_state.update(cx, |s, cx| {
+                let active = win.is_window_active();
+                act_state.update(cx, |s, cx| {
+                    s.set_window_active(active);
+                    if active {
                         s.on_window_activated(cx);
-                    });
-                }
+                    }
+                });
             })
             .detach();
             let app_state_appearance = state.clone();

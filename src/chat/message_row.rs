@@ -3157,6 +3157,35 @@ mod modified_files_tests {
     }
 
     #[test]
+    fn parses_file_uris_with_line_numbers_and_fragments() {
+        use std::path::PathBuf;
+        assert_eq!(
+            super::parse_file_uri_to_path("file:///Users/charles/app.rs#L10-L20"),
+            Some(PathBuf::from("/Users/charles/app.rs"))
+        );
+        assert_eq!(
+            super::parse_file_uri_to_path("file:///Users/charles/app.rs#L42"),
+            Some(PathBuf::from("/Users/charles/app.rs"))
+        );
+        assert_eq!(
+            super::parse_file_uri_to_path("file:///Users/charles/app.rs:42:10"),
+            Some(PathBuf::from("/Users/charles/app.rs"))
+        );
+        assert_eq!(
+            super::parse_file_uri_to_path("file:///Users/charles/my%20file.md#L5"),
+            Some(PathBuf::from("/Users/charles/my file.md"))
+        );
+        assert_eq!(
+            super::parse_file_uri_to_path("file:///C:/dev/app.rs:42-50"),
+            Some(PathBuf::from("C:/dev/app.rs"))
+        );
+        assert_eq!(
+            super::parse_file_uri_to_path("/Users/charles/app.rs:12"),
+            Some(PathBuf::from("/Users/charles/app.rs"))
+        );
+    }
+
+    #[test]
     fn normalizes_cjk_bold_delimiters_outside_code() {
         let input = "这是**“重要”**内容和**（说明）**继续，还有** 加粗 **以及`**raw**`。";
         let out = super::normalize_cjk_bold_markdown(input);
@@ -3394,16 +3423,47 @@ fn linkify_file_paths(md: &str) -> String {
     out
 }
 
+fn is_line_spec(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    for part in s.split([':', '-']) {
+        let digits = part.strip_prefix('L').or_else(|| part.strip_prefix('l')).unwrap_or(part);
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+    true
+}
+
+fn strip_file_line_suffix(path: &str) -> &str {
+    // Strip URI fragment (`#L10-L20`, `#10`) and query (`?line=10`) first.
+    let without_frag = path.split('#').next().unwrap_or(path);
+    let without_query = without_frag.split('?').next().unwrap_or(without_frag);
+    // Strip trailing `:line`, `:line:col`, `:line-end`, `:L10-L20` only after the last path separator
+    // so Windows drive letters (`C:/...`) are never stripped.
+    let after_sep = without_query.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
+    let tail = &without_query[after_sep..];
+    if let Some(colon_rel) = tail.find(':') {
+        let suffix = &tail[colon_rel + 1..];
+        if is_line_spec(suffix) {
+            return &without_query[..after_sep + colon_rel];
+        }
+    }
+    without_query
+}
+
 fn is_linkable_abs_file_path(s: &str) -> bool {
     if s.contains("://") || s.contains('\n') || s.len() < 4 {
         return false;
     }
-    let is_abs = s.starts_with('/')
-        || (s.len() >= 3 && s.as_bytes()[1] == b':' && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'));
+    let clean = strip_file_line_suffix(s);
+    let is_abs = clean.starts_with('/')
+        || (clean.len() >= 3 && clean.as_bytes()[1] == b':' && (clean.as_bytes()[2] == b'\\' || clean.as_bytes()[2] == b'/'));
     if !is_abs {
         return false;
     }
-    let last_seg = s.rsplit(['/', '\\']).next().unwrap_or("");
+    let last_seg = clean.rsplit(['/', '\\']).next().unwrap_or("");
     last_seg.contains('.') && !last_seg.ends_with('.')
 }
 
@@ -3459,7 +3519,8 @@ fn parse_file_uri_to_path(url: &str) -> Option<PathBuf> {
     } else {
         return None;
     };
-    let decoded = raw.replace("%20", " ");
+    let clean = strip_file_line_suffix(&raw);
+    let decoded = clean.replace("%20", " ");
     Some(PathBuf::from(decoded))
 }
 

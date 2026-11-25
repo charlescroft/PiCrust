@@ -21,10 +21,12 @@ use crate::panels::workflows_panel::WorkflowsPanelView;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, v_flex};
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div,
 };
 
 pub struct WorkbenchPanel {
@@ -150,7 +152,7 @@ impl Render for WorkbenchPanel {
             .enumerate()
             .map(|(idx, &t)| {
                 let app_rm = self.app_state.clone();
-                Tab::new()
+                let tab_item = Tab::new()
                     .max_w(gpui_kit::px(180.))
                     .prefix(Icon::new(tab_icon(t)).xsmall())
                     .label(tab_title(t, file_name.clone(), locale))
@@ -166,7 +168,18 @@ impl Render for WorkbenchPanel {
                                     s.close_right_tab(t, cx);
                                 });
                             }),
-                    )
+                    );
+                if t == RightPanelTab::FileViewer {
+                    if let Some(full_name) = file_name.clone() {
+                        tab_item.tooltip(move |window, cx| {
+                            Tooltip::new(full_name.clone()).build(window, cx)
+                        })
+                    } else {
+                        tab_item
+                    }
+                } else {
+                    tab_item
+                }
             })
             .collect();
 

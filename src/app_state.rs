@@ -124,6 +124,8 @@ pub struct AppState {
     pub diff_view_mode: String,
     pub file_link_click_action: String,
     pub has_user_selected_model: bool,
+    pub window_active: bool,
+    pub window_inactive_since: Option<std::time::Instant>,
     /// `auto` probes local cores; `manual` pins `core_url`.
     pub core_mode: String,
     pub core_url: String,
@@ -488,6 +490,8 @@ impl AppState {
             diff_view_mode: appearance.diff_view_mode,
             file_link_click_action: chat_prefs.file_link_click_action.clone(),
             has_user_selected_model: false,
+            window_active: true,
+            window_inactive_since: None,
             core_mode: appearance.core_mode,
             core_url: appearance.core_url,
             core_probe_results: Vec::new(),
@@ -1155,6 +1159,15 @@ impl AppState {
             });
             let msg = crate::i18n::tr(self.locale, "toast.projectArchived");
             self.show_success_toast(msg, cx);
+        }
+    }
+
+    pub fn set_window_active(&mut self, active: bool) {
+        self.window_active = active;
+        if active {
+            self.window_inactive_since = None;
+        } else if self.window_inactive_since.is_none() {
+            self.window_inactive_since = Some(std::time::Instant::now());
         }
     }
 
@@ -3879,16 +3892,32 @@ impl AppState {
         cx.spawn(async move |_, cx| {
             let mut last_file_sig: Option<(String, u64, std::time::SystemTime)> = None;
             let mut last_dir_sig: Option<(usize, u64)> = None;
-            let mut scan_counter = 0usize;
+            let mut last_dir_scan = std::time::Instant::now();
+            let mut poll_ms = 500u64;
             loop {
-                smol::Timer::after(std::time::Duration::from_millis(500)).await;
-                scan_counter += 1;
+                smol::Timer::after(std::time::Duration::from_millis(poll_ms)).await;
                 let mut check_path: Option<(String, PathBuf, u64)> = None;
                 let mut skip_active_parse = false;
                 let mut alive = false;
+                let mut dir_scan_interval = std::time::Duration::from_secs(3);
                 entity.update(cx, |this, _| {
                     alive = true;
                     skip_active_parse = this.sidecar_connected && this.is_agent_running;
+                    let deep_idle = !this.window_active
+                        && !this.is_agent_running
+                        && this
+                            .window_inactive_since
+                            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(120));
+                    if deep_idle {
+                        poll_ms = 15_000;
+                        dir_scan_interval = std::time::Duration::from_secs(60);
+                    } else if !this.window_active {
+                        poll_ms = 5_000;
+                        dir_scan_interval = std::time::Duration::from_secs(30);
+                    } else {
+                        poll_ms = 500;
+                        dir_scan_interval = std::time::Duration::from_secs(3);
+                    }
                     if let Some(sid) = this.active_session_id.as_deref() {
                         if let Some(sess) = this.sessions.iter().find(|s| s.id == sid) {
                             if let Some(p) = &sess.path {
@@ -3963,9 +3992,10 @@ impl AppState {
                     }
                 }
 
-                // Periodic check for new sessions created in TUI / CLI (~every 3s) off the UI thread.
-                // Only re-parse session files when the directory metadata signature changes.
-                if scan_counter % 6 == 0 {
+                // Periodic check for new sessions created in TUI / CLI off the UI thread.
+                // Automatically throttled when window is inactive/minimized.
+                if last_dir_scan.elapsed() >= dir_scan_interval {
+                    last_dir_scan = std::time::Instant::now();
                     let root = pi_sessions_root();
                     let prev_sig = last_dir_sig;
                     let (sig, scanned_opt) = smol::unblock(move || {
@@ -4036,7 +4066,9 @@ impl AppState {
                 let _ = entity.update(cx, |this, cx| {
                     alive = true;
                     if !this.sidecar_connected {
-                        wait_ms = 500;
+                        wait_ms = if this.window_active { 500 } else { 5_000 };
+                    } else if !this.window_active && !this.is_agent_running {
+                        wait_ms = 30_000;
                     }
 
                     if this.core_mode == "auto" {
@@ -4138,11 +4170,17 @@ impl AppState {
     pub fn start_native_scheduler_and_worker_reaper(&mut self, cx: &mut Context<Self>) {
         let entity = cx.entity().clone();
         cx.spawn(async move |_, cx| {
+            let mut wait_secs = 30u64;
             loop {
-                smol::Timer::after(std::time::Duration::from_secs(30)).await;
+                smol::Timer::after(std::time::Duration::from_secs(wait_secs)).await;
                 let mut alive = false;
                 let _ = entity.update(cx, |this, cx| {
                     alive = true;
+                    wait_secs = if this.sidecar_connected && !this.window_active {
+                        60
+                    } else {
+                        30
+                    };
                     // Keep persistent long connection per user instruction; never terminate the worker for idle memory savings
                     // Native scheduler lease & due-task check when sidecar is not owning scheduler
                     if !this.sidecar_connected
