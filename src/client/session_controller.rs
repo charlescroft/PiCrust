@@ -475,7 +475,7 @@ pub fn parse_session_jsonl_with_siblings(
 }
 
 /// Computes cumulative session stats + current post-compaction context usage from a `.jsonl` file.
-pub fn compute_stats_from_jsonl(path: &Path, context_window: u64) -> SessionStats {
+pub fn compute_stats_from_jsonl(path: &Path, context_window: Option<u64>) -> SessionStats {
     let Ok(file) = File::open(path) else {
         return SessionStats::default();
     };
@@ -560,11 +560,12 @@ pub fn compute_stats_from_jsonl(path: &Path, context_window: u64) -> SessionStat
     }
 
     if let Some(ctx_tok) = last_ctx_tokens {
-        let win = context_window.max(1);
         stats.context_tokens = Some(ctx_tok);
-        stats.context_window = Some(win);
-        stats.context_used_pct = ((ctx_tok as f64 / win as f64) * 100.0).clamp(0.0, 100.0) as f32;
-        stats.has_context_usage = true;
+        if let Some(win) = context_window.filter(|&w| w > 0) {
+            stats.context_window = Some(win);
+            stats.context_used_pct = ((ctx_tok as f64 / win as f64) * 100.0).clamp(0.0, 100.0) as f32;
+            stats.has_context_usage = true;
+        }
     }
     stats
 }

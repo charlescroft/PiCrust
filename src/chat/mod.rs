@@ -249,6 +249,7 @@ pub struct ChatPanel {
     cached_msg_ids: Vec<u64>,
     session_caches: HashMap<String, SessionPanelCache>,
     session_cache_order: Vec<String>,
+    sub_stream_scroll: gpui_kit::ScrollHandle,
 }
 
 impl Focusable for ChatPanel {
@@ -299,6 +300,7 @@ impl ChatPanel {
             cached_msg_ids: init_msg_ids,
             session_caches: HashMap::new(),
             session_cache_order: Vec::new(),
+            sub_stream_scroll: gpui_kit::ScrollHandle::new(),
         }
     }
 
@@ -1422,66 +1424,44 @@ impl Render for ChatPanel {
                             .child(tr(locale, "subagents.noOutputYet")),
                     );
                 } else {
-                    let joined = lines.join("\n");
-                    stream_body = stream_body.child(
-                        div()
-                            .w_full()
-                            .p_3()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().secondary.opacity(0.35))
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_xs()
-                            .text_color(cx.theme().foreground)
-                            .child(joined),
-                    );
+                    let mut log_box = v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_0p5()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().secondary.opacity(0.35))
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_xs()
+                        .text_color(cx.theme().foreground);
+                    for line in lines {
+                        log_box = log_box.child(div().w_full().child(line));
+                    }
+                    stream_body = stream_body.child(log_box);
                 }
             }
             div()
-                .id("focused-sub-stream-scroll")
+                .relative()
                 .flex_1()
                 .min_h_0()
                 .w_full()
-                .overflow_y_scroll()
-                .child(stream_body)
+                .child(
+                    div()
+                        .id("focused-sub-stream-scroll")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.sub_stream_scroll)
+                        .child(stream_body),
+                )
+                .vertical_scrollbar(&self.sub_stream_scroll)
                 .into_any_element()
         } else {
             body_area
         };
 
         let bottom_composer_el = if focused_sub_run.is_some() {
-            let app_back_bottom = self.app_state.clone();
-            h_flex()
-                .w_full()
-                .px_4()
-                .py_2p5()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().secondary.opacity(0.45))
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(tr(locale, "subagents.viewingStreamBanner")),
-                )
-                .child(
-                    Button::new("focused-sub-back-bottom")
-                        .outline()
-                        .small()
-                        .h(px(26.))
-                        .icon(IconName::ArrowLeft)
-                        .label(tr(locale, "subagents.backToMain"))
-                        .on_click(move |_, _, cx| {
-                            app_back_bottom.update(cx, |s, cx| {
-                                s.exit_focused_sub_run(cx);
-                            });
-                        }),
-                )
-                .into_any_element()
+            div().into_any_element()
         } else if is_archived_session {
             let app_unarch = self.app_state.clone();
             let sid_unarch = self.app_state.read(cx).active_session_id.clone();

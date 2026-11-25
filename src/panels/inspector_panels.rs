@@ -47,6 +47,7 @@ pub fn render_inspector_panel(
             format_tokens_km(win),
             stats.context_used_pct
         ),
+        (Some(tok), None) => format!("{} / …", format_tokens_km(tok)),
         (None, Some(win)) => format!("— / {}", format_tokens_km(win)),
         _ if stats.has_context_usage => format!("{:.1}%", stats.context_used_pct),
         _ => "—".to_string(),
@@ -108,11 +109,10 @@ pub fn render_inspector_panel(
         session_card = session_card.child(row);
     }
 
-    let window_tokens = stats
+    let known_window_tokens = stats
         .context_window
         .or_else(|| state.selected_model.as_ref().and_then(|m| m.context_window))
-        .unwrap_or(200_000)
-        .max(1);
+        .filter(|&w| w > 0);
 
     let est_messages_tokens: u64 = state
         .messages
@@ -143,13 +143,33 @@ pub fn render_inspector_panel(
             (s_tok, est_tools_tokens, est_messages_tokens, total)
         }
     };
-    let free_tokens = window_tokens.saturating_sub(total_ctx_tokens);
-    let pct_of_win = |v: u64| -> f32 { ((v as f64 / window_tokens as f64) * 100.0).clamp(0.0, 100.0) as f32 };
+    let free_tokens = known_window_tokens
+        .map(|w| w.saturating_sub(total_ctx_tokens))
+        .unwrap_or(0);
+    let pct_of_win = |v: u64| -> f32 {
+        match known_window_tokens {
+            Some(w) if w > 0 => ((v as f64 / w as f64) * 100.0).clamp(0.0, 100.0) as f32,
+            _ => 0.0,
+        }
+    };
     let sys_pct = pct_of_win(sys_tokens);
     let tool_pct = pct_of_win(tool_tokens);
     let msg_pct = pct_of_win(msg_tokens);
     let total_pct = pct_of_win(total_ctx_tokens);
-    let free_pct = (100.0 - (sys_pct + tool_pct + msg_pct)).max(0.0);
+    let free_pct = if known_window_tokens.is_some() {
+        (100.0 - (sys_pct + tool_pct + msg_pct)).max(0.0)
+    } else {
+        0.0
+    };
+    let ctx_breakdown_header = match known_window_tokens {
+        Some(w) => format!(
+            "{} / {} ({:.1}%)",
+            format_tokens_km(total_ctx_tokens),
+            format_tokens_km(w),
+            total_pct
+        ),
+        None => format!("{} / …", format_tokens_km(total_ctx_tokens)),
+    };
 
     let context_card = v_flex()
         .p_3()
@@ -167,12 +187,7 @@ pub fn render_inspector_panel(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(format!(
-                            "{} / {} ({:.1}%)",
-                            format_tokens_km(total_ctx_tokens),
-                            format_tokens_km(window_tokens),
-                            total_pct
-                        )),
+                        .child(ctx_breakdown_header),
                 ),
         )
         .child(

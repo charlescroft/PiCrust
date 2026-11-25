@@ -9,6 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::progress::{Progress, ProgressCircle};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::select::{
     SearchableVec, Select, SelectDelegate, SelectEvent, SelectGroup, SelectItem, SelectState,
 };
@@ -1101,6 +1102,7 @@ impl ComposerView {
         let ctx_tokens = state.stats.context_tokens;
         let ctx_window = state.stats.context_window;
         let ctx_pct = state.stats.context_used_pct;
+        let ctx_loading = state.is_context_window_loading();
         let total_cost = state.stats.cost_usd;
         let is_workspace_project = !state.active_is_temp_chat
             && !state
@@ -2080,7 +2082,7 @@ impl ComposerView {
         //    - Left: Project chip, Model selector, Context usage
         //    - Right: Icon-only upward menus for Thinking level, Tools preset, and Session automation
         // Monochrome foreground color matching adjacent text height (~13.5px), danger >= 90%, warning >= 75%
-        let ctx_ring_color = if !has_ctx || ctx_tokens.is_none() {
+        let ctx_ring_color = if ctx_loading || !has_ctx || ctx_tokens.is_none() {
             cx.theme().muted_foreground
         } else if ctx_pct >= 90.0 {
             cx.theme().danger
@@ -2089,14 +2091,21 @@ impl ComposerView {
         } else {
             cx.theme().foreground
         };
-        let ctx_label = if has_ctx && ctx_tokens.is_some() {
+        let ctx_label = if ctx_loading {
+            "…".to_string()
+        } else if has_ctx && ctx_tokens.is_some() {
             format!("{ctx_pct:.0}%")
         } else {
             "—".to_string()
         };
         let ctx_tooltip = {
             let mut parts = Vec::new();
-            if has_ctx && ctx_tokens.is_some() {
+            if ctx_loading {
+                parts.push(tr(locale, "chat.loadingContextWindow").to_string());
+                if let Some(tok) = ctx_tokens {
+                    parts.push(format!("{} / …", format_tokens_km(tok)));
+                }
+            } else if has_ctx && ctx_tokens.is_some() {
                 parts.push(format!("{ctx_pct:.1}%"));
                 if let (Some(tok), Some(win)) = (ctx_tokens, ctx_window) {
                     parts.push(format!(
@@ -2264,7 +2273,13 @@ impl ComposerView {
                                 h_flex()
                                     .items_center()
                                     .gap_1p5()
-                                    .child(
+                                    .child(if ctx_loading {
+                                        Spinner::new()
+                                            .icon(Icon::new(crate::icons::LoaderCircleIcon))
+                                            .xsmall()
+                                            .color(cx.theme().muted_foreground)
+                                            .into_any_element()
+                                    } else {
                                         ProgressCircle::new("composer-ctx-circle")
                                             .value(if has_ctx && ctx_tokens.is_some() {
                                                 ctx_pct.max(4.0)
@@ -2272,8 +2287,9 @@ impl ComposerView {
                                                 0.0
                                             })
                                             .size(px(15.))
-                                            .color(ctx_ring_color),
-                                    )
+                                            .color(ctx_ring_color)
+                                            .into_any_element()
+                                    })
                                     .child(
                                         div()
                                             .text_xs()

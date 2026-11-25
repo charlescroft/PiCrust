@@ -125,6 +125,8 @@ pub struct AppState {
     pub diff_view_mode: String,
     pub file_link_click_action: String,
     pub has_user_selected_model: bool,
+    pub initial_sidecar_sync_done: bool,
+    pub session_state_loading: bool,
     pub window_active: bool,
     pub window_inactive_since: Option<std::time::Instant>,
     /// `auto` probes local cores; `manual` pins `core_url`.
@@ -363,7 +365,7 @@ impl AppState {
                     parse_session_jsonl_with_siblings(&p, None, &mut ctrl.next_local_msg_id);
                 messages = parsed_msgs;
                 initial_siblings = siblings;
-                initial_stats = compute_stats_from_jsonl(&p, 200_000);
+                initial_stats = compute_stats_from_jsonl(&p, None);
                 todos = extract_todos_from_jsonl(&p);
                 let sid_ref = active_session_id.as_deref();
                 for msg in &messages {
@@ -496,6 +498,8 @@ impl AppState {
             diff_view_mode: appearance.diff_view_mode,
             file_link_click_action: chat_prefs.file_link_click_action.clone(),
             has_user_selected_model: false,
+            initial_sidecar_sync_done: false,
+            session_state_loading: false,
             window_active: true,
             window_inactive_since: None,
             core_mode: appearance.core_mode,
@@ -625,6 +629,19 @@ impl AppState {
         // Populate initial state immediately from local disk store (Phase 6.3.1 zero-RPC path)
         state.load_local_store_snapshot();
         state.sync_tool_subagent_runs_from_messages();
+
+        // Fallback timer so offline / manual mode never spins the context window loader indefinitely
+        let entity_boot = cx.entity().clone();
+        cx.spawn(async move |_, cx| {
+            smol::Timer::after(std::time::Duration::from_secs(5)).await;
+            let _ = entity_boot.update(cx, |this, cx| {
+                if !this.initial_sidecar_sync_done {
+                    this.initial_sidecar_sync_done = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
 
         // Kick off initial sidecar probe & refresh + lightweight external session watcher
         let entity = cx.entity().clone();
@@ -914,6 +931,7 @@ impl AppState {
                 }
             }
             self.clamp_thinking_level_to_model();
+        self.sync_stats_context_window();
         }
 
         let pi_web = local_store::read_pi_web_settings();
@@ -1542,6 +1560,46 @@ impl AppState {
         cx.notify();
     }
 
+    pub fn is_context_window_loading(&self) -> bool {
+        self.stats.context_window.is_none()
+            && (!self.initial_sidecar_sync_done || self.session_state_loading)
+    }
+
+    pub fn apply_context_tokens(&mut self, tokens: u64) {
+        self.stats.context_tokens = Some(tokens);
+        if let Some(win) = self
+            .selected_model
+            .as_ref()
+            .and_then(|m| m.context_window)
+            .or(self.stats.context_window)
+            .filter(|&w| w > 0)
+        {
+            self.stats.context_window = Some(win);
+            self.stats.context_used_pct =
+                ((tokens as f64 / win as f64) * 100.0).clamp(0.0, 100.0) as f32;
+            self.stats.has_context_usage = true;
+        } else {
+            self.stats.context_used_pct = 0.0;
+            self.stats.has_context_usage = false;
+        }
+    }
+
+    pub fn sync_stats_context_window(&mut self) {
+        if let Some(cw) = self
+            .selected_model
+            .as_ref()
+            .and_then(|m| m.context_window)
+            .filter(|&w| w > 0)
+        {
+            self.stats.context_window = Some(cw);
+            if let Some(tokens) = self.stats.context_tokens {
+                self.stats.context_used_pct =
+                    ((tokens as f64 / cw as f64) * 100.0).clamp(0.0, 100.0) as f32;
+                self.stats.has_context_usage = true;
+            }
+        }
+    }
+
     pub fn restore_model_for_workspace(&mut self, cwd: &Path, cx: &mut Context<Self>) -> bool {
         let cwd_key = cwd.to_string_lossy().into_owned();
         let saved = crate::app_settings::load_app_settings()
@@ -1568,6 +1626,7 @@ impl AppState {
                 self.selected_model = Some(found);
                 self.clamp_thinking_level_to_model();
                 self.ensure_selected_model_visible(cx);
+                self.sync_stats_context_window();
                 return true;
             }
         }
@@ -1578,6 +1637,7 @@ impl AppState {
         self.selected_model = Some(model.clone());
         self.has_user_selected_model = true;
         self.clamp_thinking_level_to_model();
+        self.sync_stats_context_window();
         let clamped_lvl = self.thinking_level;
         let prov = model.provider.clone();
         let mid = model.id.clone();
@@ -2058,20 +2118,41 @@ impl AppState {
             let target_id_log = target_id.clone();
             cx.spawn(async move |_, cx| {
                 let lines = smol::unblock(move || {
-                    std::fs::read_to_string(&log_path)
-                        .map(|raw| {
-                            let all: Vec<String> = raw.lines().map(String::from).collect();
-                            if all.len() > 400 {
-                                all[all.len() - 400..].to_vec()
+                    use std::io::{Read as _, Seek as _, SeekFrom};
+                    let Ok(mut file) = std::fs::File::open(&log_path) else {
+                        return Vec::new();
+                    };
+                    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                    let max_bytes: u64 = 32 * 1024;
+                    if len > max_bytes {
+                        let _ = file.seek(SeekFrom::End(-(max_bytes as i64)));
+                    }
+                    let mut buf = Vec::new();
+                    if file.read_to_end(&mut buf).is_err() {
+                        return Vec::new();
+                    }
+                    let raw = String::from_utf8_lossy(&buf);
+                    let mut all: Vec<String> = raw
+                        .lines()
+                        .skip(if len > max_bytes { 1 } else { 0 })
+                        .map(|l| {
+                            if l.chars().count() > 240 {
+                                format!("{}…", l.chars().take(240).collect::<String>())
                             } else {
-                                all
+                                l.to_string()
                             }
                         })
-                        .unwrap_or_default()
+                        .collect();
+                    if all.len() > 120 {
+                        all.drain(0..all.len() - 120);
+                    }
+                    all
                 })
                 .await;
                 let _ = entity.update(cx, |this, cx| {
-                    if this.focused_sub_run_id.as_deref() == Some(target_id_log.as_str()) {
+                    if this.focused_sub_run_id.as_deref() == Some(target_id_log.as_str())
+                        && this.focused_sub_log_lines != lines
+                    {
                         this.focused_sub_log_lines = lines;
                         cx.notify();
                     }
@@ -2462,6 +2543,8 @@ impl AppState {
                         this.apply_agent_state_response(&val);
                     }
                 }
+                this.initial_sidecar_sync_done = true;
+                this.sync_stats_context_window();
                 this.sync_tool_subagent_runs_from_messages();
                 if let Some(sid) = this.active_session_id.clone() {
                     if this.messages.is_empty() {
@@ -2719,10 +2802,18 @@ impl AppState {
         }
         if !self.has_user_selected_model {
             let chat_prefs = crate::app_settings::load_app_settings().chat;
-            if let (Some(lp), Some(lm)) = (
-                chat_prefs.last_selected_provider.as_deref(),
-                chat_prefs.last_selected_model_id.as_deref(),
-            ) {
+            let cwd_key = self.active_cwd.to_string_lossy().into_owned();
+            let ws_saved = chat_prefs.workspace_models.get(&cwd_key).cloned();
+            let preferred = ws_saved.or_else(|| {
+                match (
+                    chat_prefs.last_selected_provider.as_deref(),
+                    chat_prefs.last_selected_model_id.as_deref(),
+                ) {
+                    (Some(lp), Some(lm)) => Some((lp.to_string(), lm.to_string())),
+                    _ => None,
+                }
+            });
+            if let Some((lp, lm)) = preferred {
                 if let Some(found) = self
                     .visible_picker_models()
                     .into_iter()
@@ -2730,6 +2821,15 @@ impl AppState {
                 {
                     self.selected_model = Some(found);
                 }
+            }
+        } else if let Some(cur) = self.selected_model.clone() {
+            if let Some(refreshed) = self
+                .models
+                .iter()
+                .find(|m| m.provider == cur.provider && m.id == cur.id)
+                .cloned()
+            {
+                self.selected_model = Some(refreshed);
             }
         }
         if let Some(def) = val.get("defaultModel") {
@@ -2757,6 +2857,7 @@ impl AppState {
             }
         }
         self.clamp_thinking_level_to_model();
+        self.sync_stats_context_window();
     }
 
     /// pi only advertises the levels of models in its own capability catalog, so a
@@ -4029,7 +4130,7 @@ impl AppState {
             let mut poll_ms = 500u64;
             loop {
                 smol::Timer::after(std::time::Duration::from_millis(poll_ms)).await;
-                let mut check_path: Option<(String, PathBuf, u64)> = None;
+                let mut check_path: Option<(String, PathBuf, Option<u64>)> = None;
                 let mut skip_active_parse = false;
                 let mut alive = false;
                 let mut dir_scan_interval = std::time::Duration::from_secs(3);
@@ -4061,7 +4162,7 @@ impl AppState {
                                     .selected_model
                                     .as_ref()
                                     .and_then(|m| m.context_window)
-                                    .unwrap_or(200_000);
+                                    .filter(|&w| w > 0);
                                 check_path = Some((sid.to_string(), PathBuf::from(p), cw));
                             }
                         }
@@ -4725,8 +4826,14 @@ impl AppState {
                     self.selected_model = Some(found);
                 }
             }
+            if let Some(m_cw) = m_obj.get("contextWindow").and_then(Value::as_u64).filter(|&w| w > 0) {
+                if self.stats.context_window.is_none() {
+                    self.stats.context_window = Some(m_cw);
+                }
+            }
         }
         self.clamp_thinking_level_to_model();
+        self.sync_stats_context_window();
         if running {
             if let Some(streaming_msg) = st.get("streamingMessage") {
                 if !streaming_msg.is_null() {
@@ -5256,14 +5363,9 @@ impl AppState {
             self.close_right_tab(RightPanelTab::GitGraph, cx);
         }
 
-        let ctx_win = self
-            .selected_model
-            .as_ref()
-            .and_then(|m| m.context_window)
-            .unwrap_or(200_000);
-
         self.messages.clear();
         self.branch_siblings.clear();
+        self.stats = SessionStats::default();
         let mut restored_local_model = false;
         // Fast local JSONL load so switching sessions is instant and works offline
         if let Some(ref p) = local_jsonl_path {
@@ -5273,7 +5375,6 @@ impl AppState {
                 self.messages = parsed;
             }
             self.branch_siblings = siblings;
-            self.stats = compute_stats_from_jsonl(p, ctx_win);
             let local_todos = extract_todos_from_jsonl(p);
             if !local_todos.is_empty() {
                 self.todos_from_tool = true;
@@ -5319,6 +5420,13 @@ impl AppState {
             }
             self.clamp_thinking_level_to_model();
             self.ensure_selected_model_visible(cx);
+            let resolved_ctx_win = self
+                .selected_model
+                .as_ref()
+                .and_then(|m| m.context_window)
+                .filter(|&w| w > 0);
+            self.stats = compute_stats_from_jsonl(p, resolved_ctx_win);
+            self.sync_stats_context_window();
 
             let sid_ref = Some(session_id.as_str());
             for msg in &self.messages {
@@ -5337,6 +5445,7 @@ impl AppState {
             restored_local_model = self.restore_model_for_workspace(&cwd, cx);
             self.clamp_thinking_level_to_model();
             self.ensure_selected_model_visible(cx);
+            self.sync_stats_context_window();
         }
         cx.notify();
 
@@ -5363,6 +5472,7 @@ impl AppState {
             }
         }
 
+        self.session_state_loading = self.sidecar_connected;
         let client = self.client.clone();
         let entity = cx.entity().clone();
         let task = cx.spawn(async move |_, cx| {
@@ -5373,6 +5483,7 @@ impl AppState {
                 if this.controller.load_request_id != req_id {
                     return;
                 }
+                this.session_state_loading = false;
                 if let Ok(payload) = result {
                     let ctx_obj = payload.get("context").unwrap_or(&payload);
                     this.has_earlier_messages = ctx_obj.get("hasEarlierMessages").and_then(Value::as_bool).unwrap_or(false);
@@ -5425,17 +5536,7 @@ impl AppState {
                         }
                     }
                     if let Some(ctx_tok) = compute_context_tokens_from_payload(&payload) {
-                        let window = this
-                            .stats
-                            .context_window
-                            .or_else(|| this.selected_model.as_ref().and_then(|m| m.context_window))
-                            .unwrap_or(200_000)
-                            .max(1);
-                        this.stats.context_tokens = Some(ctx_tok);
-                        this.stats.context_window = Some(window);
-                        this.stats.context_used_pct =
-                            ((ctx_tok as f64 / window as f64) * 100.0).clamp(0.0, 100.0) as f32;
-                        this.stats.has_context_usage = true;
+                        this.apply_context_tokens(ctx_tok);
                     }
                     // Merge any newly extracted inline artifacts into the cross-session library
                     // without wiping historical artifacts from other sessions.
@@ -5497,6 +5598,7 @@ impl AppState {
                     if restored_local_model || prev_still_visible {
                         if let Some(ref local_m) = prev_selected {
                             this.selected_model = Some(local_m.clone());
+                            this.sync_stats_context_window();
                         }
                     }
                     let sidecar_differs = match (&sidecar_model, &this.selected_model) {
@@ -5632,6 +5734,11 @@ impl AppState {
             | AgentSseEvent::TurnEnd { duration_ms, .. } => {
                 if self.suppress_next_prompt_reload {
                     return;
+                }
+                for bg in &mut self.background_task_runs {
+                    if bg.source.as_deref() == Some("agy") && bg.is_active() {
+                        bg.state = "complete".to_string();
+                    }
                 }
                 for m in &mut self.messages {
                     if m.role == MessageRole::Assistant {
@@ -5771,17 +5878,7 @@ impl AppState {
                                         }
                                     }
                                     if let Some(ctx_tok) = compute_context_tokens_from_payload(&payload) {
-                                        let window = this
-                                            .stats
-                                            .context_window
-                                            .or_else(|| this.selected_model.as_ref().and_then(|m| m.context_window))
-                                            .unwrap_or(200_000)
-                                            .max(1);
-                                        this.stats.context_tokens = Some(ctx_tok);
-                                        this.stats.context_window = Some(window);
-                                        this.stats.context_used_pct =
-                                            ((ctx_tok as f64 / window as f64) * 100.0).clamp(0.0, 100.0) as f32;
-                                        this.stats.has_context_usage = true;
+                                        this.apply_context_tokens(ctx_tok);
                                     }
                                 }
                             }
@@ -6273,6 +6370,7 @@ impl AppState {
                 if role != "assistant" {
                     return;
                 }
+                let mut pending_turn_ctx: Option<u64> = None;
                 if let Some(last) = self.messages.last_mut() {
                     if last.role == MessageRole::Assistant {
                         // Parse authoritative final assistant message blocks if provided
@@ -6320,17 +6418,7 @@ impl AppState {
                                 let cw = usage.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0);
                                 let turn_ctx = inp + out + cr + cw;
                                 if turn_ctx > 0 {
-                                    let win = self
-                                        .stats
-                                        .context_window
-                                        .or_else(|| self.selected_model.as_ref().and_then(|m| m.context_window))
-                                        .unwrap_or(200_000)
-                                        .max(1);
-                                    self.stats.context_tokens = Some(turn_ctx);
-                                    self.stats.context_window = Some(win);
-                                    self.stats.context_used_pct =
-                                        ((turn_ctx as f64 / win as f64) * 100.0).clamp(0.0, 100.0) as f32;
-                                    self.stats.has_context_usage = true;
+                                    pending_turn_ctx = Some(turn_ctx);
                                 }
                             }
                             let parsed = parse_session_messages(
@@ -6355,6 +6443,9 @@ impl AppState {
                             last.timestamp = current_local_hhmm();
                         }
                     }
+                }
+                if let Some(turn_ctx) = pending_turn_ctx {
+                    self.apply_context_tokens(turn_ctx);
                 }
             }
             AgentSseEvent::ToolExecutionStart {
