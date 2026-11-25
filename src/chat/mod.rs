@@ -586,13 +586,13 @@ impl ChatPanel {
                 self.cached_msg_ids = ids;
             }
             self.scroller.update(cx, |s, cx| {
-                if s.is_scrolled_up() {
-                    let _ = s.splice(new_count..old_count, 0, cx);
-                    if new_count > 0 {
-                        let _ = s.remeasure_items(new_count - 1..new_count, cx);
-                    }
-                } else {
-                    s.reset(new_count, cx);
+                let was_scrolled_up = s.is_scrolled_up();
+                let _ = s.splice(new_count..old_count, 0, cx);
+                if new_count > 0 {
+                    let _ = s.remeasure_items(new_count - 1..new_count, cx);
+                }
+                if !was_scrolled_up {
+                    s.scroll_to_end(cx);
                 }
             });
         } else if new_count > 0 && tail_sig != self.last_tail_sig {
@@ -1014,10 +1014,13 @@ impl Render for ChatPanel {
 
         let full_session_title = session_title.clone();
 
-        // Subagents dropdown placed to the left of the conversation title
+        // Subagents & background tasks dropdown placed to the left of the conversation title
         let subagent_runs = state_snap.active_subagent_runs();
         let active_subagents = subagent_runs.iter().filter(|r| r.is_active()).count();
         let subagent_status_text = state_snap.subagent_status_text.clone();
+        let focused_sub_run = state_snap.focused_sub_run();
+        let focused_sub_messages = state_snap.focused_sub_messages.clone();
+        let focused_sub_log_lines = state_snap.focused_sub_log_lines.clone();
         let app_for_subagents = self.app_state.clone();
 
         let subagent_btn_label = if active_subagents > 0 {
@@ -1122,41 +1125,37 @@ impl Render for ChatPanel {
                                 details.push(run.state.clone());
                             }
                         }
+                        let kind_prefix = if run.is_background_task() {
+                            tr(locale, "subagents.backgroundTask")
+                        } else {
+                            run.kind.as_str()
+                        };
                         let line = format!(
-                            "{glyph} {} [{}] — {}",
+                            "{glyph} [{kind_prefix}] {} — {}",
                             run.label,
-                            run.kind,
                             details.join(" · ")
                         );
-                        if let Some(child_sid) = run.session_id.clone() {
-                            let app_open = app_for_subagents.clone();
-                            menu = menu.item(
-                                PopupMenuItem::element(move |_, _| {
-                                    div()
-                                        .max_w(px(316.))
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(line.clone())
-                                })
-                                .icon(IconName::ExternalLink)
-                                .on_click(move |_, _, cx| {
-                                    app_open.update(cx, |s, cx| {
-                                        s.select_session(child_sid.clone(), cx);
-                                    });
-                                }),
-                            );
-                        } else {
-                            menu = menu.item(
-                                PopupMenuItem::element(move |_, _| {
-                                    div()
-                                        .max_w(px(340.))
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(line.clone())
-                                })
-                                .disabled(true),
-                            );
-                        }
+                        let run_id_for_click = run.id.clone();
+                        let app_focus = app_for_subagents.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, _| {
+                                div()
+                                    .max_w(px(316.))
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(line.clone())
+                            })
+                            .icon(if run.is_background_task() {
+                                IconName::SquareTerminal
+                            } else {
+                                IconName::ExternalLink
+                            })
+                            .on_click(move |_, _, cx| {
+                                app_focus.update(cx, |s, cx| {
+                                    s.focus_sub_run(run_id_for_click.clone(), cx);
+                                });
+                            }),
+                        );
                         for child in &run.children {
                             let c_glyph = match child.state.as_str() {
                                 "running" => "●",
@@ -1218,65 +1217,145 @@ impl Render for ChatPanel {
             },
         );
 
-        let conversation_header = h_flex()
-            .w_full()
-            .h(px(36.))
-            .px_4()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(div().flex_shrink_0().child(subagent_dropdown))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        h_flex()
-                            .max_w_full()
-                            .min_w_0()
-                            .items_center()
-                            .gap_1p5()
-                            .children(is_temp_chat.then(|| {
-                                div()
-                                    .id("conv-header-temp-clock")
-                                    .flex_shrink_0()
-                                    .cursor_default()
-                                    .tooltip(move |w, cx| {
-                                        Tooltip::new(tr(locale, "status.tempChatWorkspace"))
-                                            .build(w, cx)
-                                    })
-                                    .child(
-                                        Icon::new(crate::icons::ClockIcon)
-                                            .xsmall()
-                                            .text_color(cx.theme().muted_foreground),
-                                    )
-                            }))
-                            .child(
-                                div()
-                                    .id("conv-header-title")
-                                    .flex_1()
-                                    .min_w_0()
-                                    .max_w(px(580.))
-                                    .truncate()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .tooltip(move |w, cx| {
-                                        Tooltip::new(full_session_title.clone())
-                                            .max_w(px(480.))
-                                            .build(w, cx)
-                                    })
-                                    .child(session_title),
-                            ),
-                    ),
-            )
-            .child(div().w(px(32.)).flex_shrink_0());
+        let conversation_header = if let Some(ref focused_run) = focused_sub_run {
+            let app_back = self.app_state.clone();
+            let prefix = if focused_run.is_background_task() {
+                tr(locale, "subagents.backgroundTask")
+            } else {
+                tr(locale, "subagents.label")
+            };
+            let focused_title = format!("[{prefix}] {}", focused_run.label);
+            let is_run_active = focused_run.is_active();
+            let log_path_btn = focused_run.log_path.clone().map(|lp| {
+                let app_open_log = self.app_state.clone();
+                Button::new("focused-sub-open-log")
+                    .ghost()
+                    .small()
+                    .h(px(24.))
+                    .icon(IconName::ExternalLink)
+                    .tooltip(tr(locale, "panel.openFile"))
+                    .on_click(move |_, _, cx| {
+                        app_open_log.update(cx, |s, cx| {
+                            s.preview_file_in_sidebar(std::path::PathBuf::from(&lp), cx);
+                        });
+                    })
+            });
+            h_flex()
+                .w_full()
+                .h(px(36.))
+                .px_4()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_1p5()
+                        .child(
+                            Button::new("conv-sub-back-btn")
+                                .ghost()
+                                .small()
+                                .h(px(26.))
+                                .icon(IconName::ArrowLeft)
+                                .label(tr(locale, "subagents.backToMain"))
+                                .on_click(move |_, _, cx| {
+                                    app_back.update(cx, |s, cx| {
+                                        s.exit_focused_sub_run(cx);
+                                    });
+                                }),
+                        )
+                        .child(subagent_dropdown),
+                )
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .items_center()
+                        .justify_center()
+                        .gap_1p5()
+                        .children(
+                            is_run_active
+                                .then(|| Spinner::new().xsmall().color(cx.theme().primary)),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .font_medium()
+                                .text_color(cx.theme().foreground)
+                                .child(focused_title),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .children(log_path_btn),
+                )
+        } else {
+            h_flex()
+                .w_full()
+                .h(px(36.))
+                .px_4()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(div().flex_shrink_0().child(subagent_dropdown))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            h_flex()
+                                .max_w_full()
+                                .min_w_0()
+                                .items_center()
+                                .gap_1p5()
+                                .children(is_temp_chat.then(|| {
+                                    div()
+                                        .id("conv-header-temp-clock")
+                                        .flex_shrink_0()
+                                        .cursor_default()
+                                        .tooltip(move |w, cx| {
+                                            Tooltip::new(tr(locale, "status.tempChatWorkspace"))
+                                                .build(w, cx)
+                                        })
+                                        .child(
+                                            Icon::new(crate::icons::ClockIcon)
+                                                .xsmall()
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                }))
+                                .child(
+                                    div()
+                                        .id("conv-header-title")
+                                        .flex_1()
+                                        .min_w_0()
+                                        .max_w(px(580.))
+                                        .truncate()
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .tooltip(move |w, cx| {
+                                            Tooltip::new(full_session_title.clone())
+                                                .max_w(px(480.))
+                                                .build(w, cx)
+                                        })
+                                        .child(session_title),
+                                ),
+                        ),
+                )
+                .child(div().w(px(32.)).flex_shrink_0())
+        };
 
         let is_archived_session = {
             let s = self.app_state.read(cx);
@@ -1285,7 +1364,125 @@ impl Render for ChatPanel {
                     || s.sessions.iter().any(|sess| &sess.id == sid && sess.archived)
             })
         };
-        let bottom_composer_el = if is_archived_session {
+        let effective_body_area = if let Some(ref focused_run) = focused_sub_run {
+            let mut stream_body = v_flex().w_full().gap_2().p_4();
+            if !focused_sub_messages.is_empty() {
+                for m in &focused_sub_messages {
+                    let role_lbl = match m.role {
+                        MessageRole::User => "User",
+                        MessageRole::Assistant => "Assistant",
+                        MessageRole::System => "System",
+                        MessageRole::Notice => "Notice",
+                    };
+                    stream_body = stream_body.child(
+                        v_flex()
+                            .w_full()
+                            .gap_1()
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().secondary.opacity(0.25))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(role_lbl),
+                            )
+                            .children((!m.thinking.is_empty()).then(|| {
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(m.thinking.clone())
+                            }))
+                            .children((!m.content.is_empty()).then(|| {
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().foreground)
+                                    .child(m.content.clone())
+                            })),
+                    );
+                }
+            } else {
+                let lines: Vec<String> = if !focused_sub_log_lines.is_empty() {
+                    focused_sub_log_lines.clone()
+                } else if !focused_run.output_tail.is_empty() {
+                    focused_run.output_tail.clone()
+                } else if let Some(ref p) = focused_run.progress_text {
+                    vec![p.clone()]
+                } else {
+                    Vec::new()
+                };
+                if lines.is_empty() {
+                    stream_body = stream_body.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(tr(locale, "subagents.noOutputYet")),
+                    );
+                } else {
+                    let joined = lines.join("\n");
+                    stream_body = stream_body.child(
+                        div()
+                            .w_full()
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().secondary.opacity(0.35))
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_xs()
+                            .text_color(cx.theme().foreground)
+                            .child(joined),
+                    );
+                }
+            }
+            div()
+                .id("focused-sub-stream-scroll")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scroll()
+                .child(stream_body)
+                .into_any_element()
+        } else {
+            body_area
+        };
+
+        let bottom_composer_el = if focused_sub_run.is_some() {
+            let app_back_bottom = self.app_state.clone();
+            h_flex()
+                .w_full()
+                .px_4()
+                .py_2p5()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().secondary.opacity(0.45))
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr(locale, "subagents.viewingStreamBanner")),
+                )
+                .child(
+                    Button::new("focused-sub-back-bottom")
+                        .outline()
+                        .small()
+                        .h(px(26.))
+                        .icon(IconName::ArrowLeft)
+                        .label(tr(locale, "subagents.backToMain"))
+                        .on_click(move |_, _, cx| {
+                            app_back_bottom.update(cx, |s, cx| {
+                                s.exit_focused_sub_run(cx);
+                            });
+                        }),
+                )
+                .into_any_element()
+        } else if is_archived_session {
             let app_unarch = self.app_state.clone();
             let sid_unarch = self.app_state.read(cx).active_session_id.clone();
             let locale_arch = self.app_state.read(cx).locale;
@@ -1356,7 +1553,7 @@ impl Render for ChatPanel {
 
             .child(conversation_header)
             .child(render_branch_nav(&self.app_state, window, cx))
-            .child(body_area)
+            .child(effective_body_area)
             .children(q_overlay)
             .child(bottom_composer_el)
             .child(self.palette.clone())

@@ -756,7 +756,7 @@ pub struct SubagentChildInfo {
 #[allow(dead_code)]
 pub struct SubagentRunInfo {
     pub id: String,
-    pub kind: String, // "subagent" | "workflow"
+    pub kind: String, // "subagent" | "workflow" | "background_task"
     pub label: String,
     pub state: String, // "queued" | "running" | "complete" | "failed" | "partial" | "paused" | "stopped"
     pub started_at: Option<u64>,
@@ -768,12 +768,19 @@ pub struct SubagentRunInfo {
     pub tool_count: Option<u64>,
     pub progress_text: Option<String>,
     pub session_id: Option<String>,
+    pub source: Option<String>,
+    pub log_path: Option<String>,
+    pub output_tail: Vec<String>,
     pub children: Vec<SubagentChildInfo>,
 }
 
 impl SubagentRunInfo {
     pub fn is_active(&self) -> bool {
         matches!(self.state.as_str(), "running" | "queued" | "pending" | "starting")
+    }
+
+    pub fn is_background_task(&self) -> bool {
+        self.kind == "background_task"
     }
 }
 

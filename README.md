@@ -104,6 +104,26 @@ PiCrust is designed as the native desktop frontend and execution workbench for t
 - **Async Execution & Review Fanout**: Tracks concurrent child agent tasks, background job lifecycles, and interactive supervisor requests.
 - **Custom Agent Profiles**: Loads and manages agent profiles defined in `~/.pi/agent/agents/*.md` and project-local `.pi/agents/*.md`.
 
+### Background Shell Tasks (`pi-background`)
+- **Extension Dependency (Optional, Recommended)**: Integrates with `pi-background` (`pi install npm:pi-background`) and any extension emitting the `background-tasks` widget.
+- **Non-Blocking Long Commands**: Lets agents run builds, tests, downloads, and dev servers in the background (`bg_run`, `bg_status`, `bg_kill`, and auto-backgrounded `bash` commands) without blocking the main conversation turn.
+- **Top-Left Live Stream View**: Background tasks appear in the top-left **Subagents** dropdown with a `[Background Task]` prefix; clicking any item switches the active pane into a live streaming log view with a one-click **Back** arrow to return to the main chat.
+
+### Interactive Questionnaires (`ask_user_question`)
+- **Extension Dependency (Optional)**: Integrates with `@juicesharp/rpiv-ask-user-question` to render structured single/multi-select choice cards and side-by-side markdown previews directly inside the chat pane.
+
+### Antigravity Account Pool (`pi-agy-link`)
+- **Extension Dependency (Optional)**: When `pi-agy-link` is installed, PiCrust automatically enables the status-bar quota badge and the **Antigravity** settings page (account pool management, plan tier overrides, quota warmup schedules, orchestrator overrides, and ACP cache metrics). When not installed, all AGY UI elements remain hidden.
+
+### Recommended Extension Setup
+All extensions are optional and can be installed at any time via the `pi` CLI or **Settings → Plugins**:
+```bash
+pi install npm:pi-subagents
+pi install npm:pi-background
+pi install npm:@juicesharp/rpiv-todo
+pi install npm:@juicesharp/rpiv-ask-user-question
+```
+
 ---
 
 ## Installation & Getting Started

@@ -387,6 +387,10 @@ fn en_text(key: &'static str) -> &'static str {
         "subagents.noneRunning" => "No subagents active",
         "subagents.manageProfiles" => "Subagent Settings...",
         "subagents.openSession" => "Open subagent session",
+        "subagents.backgroundTask" => "Background Task",
+        "subagents.backToMain" => "Back",
+        "subagents.viewingStreamBanner" => "Viewing live output · Click Back in the top-left to return to the main chat",
+        "subagents.noOutputYet" => "Waiting for output…",
         "subagents.noticeTitle" => "Subagent Result",
         "subagents.output" => "Output",
 
@@ -1093,6 +1097,10 @@ fn zh_text(key: &'static str) -> &'static str {
         "subagents.noneRunning" => "当前无运行中的子代理",
         "subagents.manageProfiles" => "子代理设置...",
         "subagents.openSession" => "打开子代理会话",
+        "subagents.backgroundTask" => "后台任务",
+        "subagents.backToMain" => "返回主对话",
+        "subagents.viewingStreamBanner" => "正在查看实时流式输出 · 点击左上角返回主对话",
+        "subagents.noOutputYet" => "等待输出…",
         "subagents.noticeTitle" => "子 Agent 返回",
         "subagents.output" => "返回结果",
 

@@ -92,6 +92,7 @@ pub struct AppState {
     pub right_panel_tab: RightPanelTab,
     pub open_right_tabs: Vec<RightPanelTab>,
     pub right_panel_width: Pixels,
+    pub right_panel_resizing: bool,
     pub settings_open: bool,
     /// Page the settings modal should open on (0 = General, 1 = Models).
     pub settings_initial_page: usize,
@@ -204,6 +205,10 @@ pub struct AppState {
     pub extension_statuses: Vec<ExtensionStatusItem>,
     pub subagent_runs: Vec<SubagentRunInfo>,
     pub tool_subagent_runs: Vec<SubagentRunInfo>,
+    pub background_task_runs: Vec<SubagentRunInfo>,
+    pub focused_sub_run_id: Option<String>,
+    pub focused_sub_messages: Vec<ChatMessage>,
+    pub focused_sub_log_lines: Vec<String>,
     pub subagent_status_text: Option<String>,
 
     pub artifacts: Vec<ArtifactRecord>,
@@ -461,6 +466,7 @@ impl AppState {
             right_panel_tab: RightPanelTab::Inspector,
             open_right_tabs: Vec::new(),
             right_panel_width: px(440.),
+            right_panel_resizing: false,
             settings_open: false,
             settings_initial_page: 0,
             settings_busy: false,
@@ -561,6 +567,10 @@ impl AppState {
             extension_statuses: Vec::new(),
             subagent_runs: Vec::new(),
             tool_subagent_runs: Vec::new(),
+            background_task_runs: Vec::new(),
+            focused_sub_run_id: None,
+            focused_sub_messages: Vec::new(),
+            focused_sub_log_lines: Vec::new(),
             subagent_status_text: None,
             artifacts,
             active_artifact_id,
@@ -1863,16 +1873,46 @@ impl AppState {
 
         let client = self.client.clone();
         let entity = cx.entity().clone();
+        let provider = self.selected_model.as_ref().map(|m| m.provider.clone());
+        let model_id = self.selected_model.as_ref().map(|m| m.id.clone());
+        let thinking_lvl = self.thinking_level;
         cx.spawn(async move |_, cx| {
-            let res = client
-                .send_agent_command(
-                    &sid,
-                    serde_json::json!({
-                        "type": "prompt",
-                        "message": crate::client::session_controller::IMPLICIT_CONTINUE_PROMPT,
-                    }),
-                )
-                .await;
+            let model_sync = if let (Some(p), Some(m)) = (provider.as_deref(), model_id.as_deref()) {
+                match client.set_session_model(&sid, p, m).await {
+                    Ok(_) => {
+                        let _ = client.set_thinking_level(&sid, thinking_lvl).await;
+                        Ok(())
+                    }
+                    Err(_) => {
+                        smol::Timer::after(std::time::Duration::from_millis(150)).await;
+                        match client.set_session_model(&sid, p, m).await {
+                            Ok(_) => {
+                                let _ = client.set_thinking_level(&sid, thinking_lvl).await;
+                                Ok(())
+                            }
+                            Err(err) => Err(anyhow::anyhow!(
+                                "Failed to switch session model to {p}/{m}: {err}"
+                            )),
+                        }
+                    }
+                }
+            } else {
+                Ok(())
+            };
+            let res = match model_sync {
+                Ok(()) => {
+                    client
+                        .send_agent_command(
+                            &sid,
+                            serde_json::json!({
+                                "type": "prompt",
+                                "message": crate::client::session_controller::IMPLICIT_CONTINUE_PROMPT,
+                            }),
+                        )
+                        .await
+                }
+                Err(err) => Err(err),
+            };
             let _ = entity.update(cx, |this, cx| {
                 this.controller.send_in_flight = false;
                 if let Err(err) = res {
@@ -1951,6 +1991,13 @@ impl AppState {
 
     pub fn active_subagent_runs(&self) -> Vec<SubagentRunInfo> {
         let mut merged = self.subagent_runs.clone();
+        for bg_run in &self.background_task_runs {
+            if let Some(existing) = merged.iter_mut().find(|r| r.id == bg_run.id) {
+                *existing = bg_run.clone();
+            } else {
+                merged.push(bg_run.clone());
+            }
+        }
         for tool_run in &self.tool_subagent_runs {
             if !merged.iter().any(|r| r.id == tool_run.id) {
                 let mut run = tool_run.clone();
@@ -1970,7 +2017,87 @@ impl AppState {
                 merged.push(run);
             }
         }
+        merged.sort_by_key(|r| if r.is_active() { 0u8 } else { 1u8 });
         merged
+    }
+
+    pub fn focused_sub_run(&self) -> Option<SubagentRunInfo> {
+        let target_id = self.focused_sub_run_id.as_deref()?;
+        self.active_subagent_runs()
+            .into_iter()
+            .find(|r| r.id == target_id)
+    }
+
+    pub fn focus_sub_run(&mut self, run_id: String, cx: &mut Context<Self>) {
+        self.focused_sub_run_id = Some(run_id.clone());
+        self.focused_sub_messages.clear();
+        self.focused_sub_log_lines.clear();
+        self.refresh_focused_sub_run_data(cx);
+        cx.notify();
+    }
+
+    pub fn exit_focused_sub_run(&mut self, cx: &mut Context<Self>) {
+        if self.focused_sub_run_id.is_some()
+            || !self.focused_sub_messages.is_empty()
+            || !self.focused_sub_log_lines.is_empty()
+        {
+            self.focused_sub_run_id = None;
+            self.focused_sub_messages.clear();
+            self.focused_sub_log_lines.clear();
+            cx.notify();
+        }
+    }
+
+    pub fn refresh_focused_sub_run_data(&mut self, cx: &mut Context<Self>) {
+        let Some(run) = self.focused_sub_run() else {
+            return;
+        };
+        let target_id = run.id.clone();
+        if let Some(log_path) = run.log_path.clone() {
+            let entity = cx.entity().clone();
+            let target_id_log = target_id.clone();
+            cx.spawn(async move |_, cx| {
+                let lines = smol::unblock(move || {
+                    std::fs::read_to_string(&log_path)
+                        .map(|raw| {
+                            let all: Vec<String> = raw.lines().map(String::from).collect();
+                            if all.len() > 400 {
+                                all[all.len() - 400..].to_vec()
+                            } else {
+                                all
+                            }
+                        })
+                        .unwrap_or_default()
+                })
+                .await;
+                let _ = entity.update(cx, |this, cx| {
+                    if this.focused_sub_run_id.as_deref() == Some(target_id_log.as_str()) {
+                        this.focused_sub_log_lines = lines;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        if let Some(child_sid) = run.session_id.clone() {
+            if self.sidecar_connected {
+                let client = self.client.clone();
+                let entity = cx.entity().clone();
+                cx.spawn(async move |_, cx| {
+                    if let Ok(payload) = client.get_session(&child_sid).await {
+                        let _ = entity.update(cx, |this, cx| {
+                            if this.focused_sub_run_id.as_deref() == Some(target_id.as_str()) {
+                                let mut next_id = 1u64;
+                                this.focused_sub_messages =
+                                    parse_session_messages(&payload, &mut next_id);
+                                cx.notify();
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
+        }
     }
 
     pub fn apply_pi_web_subagent_details(
@@ -2032,6 +2159,9 @@ impl AppState {
                 tool_count: None,
                 progress_text: desc,
                 session_id: sid,
+                source: None,
+                log_path: None,
+                output_tail: Vec::new(),
                 children: Vec::new(),
             });
         }
@@ -2124,6 +2254,9 @@ impl AppState {
                     tool_count: None,
                     progress_text: desc,
                     session_id: sid,
+                    source: None,
+                    log_path: None,
+                    output_tail: Vec::new(),
                     children: Vec::new(),
                 });
             }
@@ -3900,9 +4033,12 @@ impl AppState {
                 let mut skip_active_parse = false;
                 let mut alive = false;
                 let mut dir_scan_interval = std::time::Duration::from_secs(3);
-                entity.update(cx, |this, _| {
+                entity.update(cx, |this, cx| {
                     alive = true;
                     skip_active_parse = this.sidecar_connected && this.is_agent_running;
+                    if this.window_active && this.focused_sub_run_id.is_some() {
+                        this.refresh_focused_sub_run_data(cx);
+                    }
                     let deep_idle = !this.window_active
                         && !this.is_agent_running
                         && this
@@ -4031,6 +4167,7 @@ impl AppState {
             .subagent_runs
             .iter()
             .chain(self.tool_subagent_runs.iter())
+            .chain(self.background_task_runs.iter())
             .filter(|r| matches!(r.state.as_str(), "running" | "queued" | "starting"))
             .count();
         let pending_ui_requests = usize::from(self.pending_ui_request.is_some())
@@ -4913,6 +5050,10 @@ impl AppState {
         self.is_loading_earlier = false;
         self.subagent_runs.clear();
         self.tool_subagent_runs.clear();
+        self.background_task_runs.clear();
+        self.focused_sub_run_id = None;
+        self.focused_sub_messages.clear();
+        self.focused_sub_log_lines.clear();
         self.subagent_status_text = None;
         cx.notify();
     }
@@ -5050,8 +5191,11 @@ impl AppState {
 
     pub fn select_session(&mut self, session_id: String, cx: &mut Context<Self>) {
         if self.active_session_id.as_deref() == Some(session_id.as_str()) && !self.messages.is_empty() {
-            if self.active_page != WorkspacePage::Chat {
+            if self.active_page != WorkspacePage::Chat || self.focused_sub_run_id.is_some() {
                 self.active_page = WorkspacePage::Chat;
+                self.focused_sub_run_id = None;
+                self.focused_sub_messages.clear();
+                self.focused_sub_log_lines.clear();
                 cx.notify();
             }
             return;
@@ -5075,6 +5219,10 @@ impl AppState {
         self.continuing_prefix_text.clear();
         self.subagent_runs.clear();
         self.tool_subagent_runs.clear();
+        self.background_task_runs.clear();
+        self.focused_sub_run_id = None;
+        self.focused_sub_messages.clear();
+        self.focused_sub_log_lines.clear();
         self.subagent_status_text = None;
         self.todos.clear();
         self.todos_expanded = false;
@@ -5134,7 +5282,13 @@ impl AppState {
             self.sync_tool_subagent_runs_from_messages();
 
             let (extracted_model, extracted_thinking) = extract_model_and_thinking_from_jsonl(p);
-            if let Some((prov, mid)) = extracted_model {
+            let cwd_key = self.active_cwd.to_string_lossy().into_owned();
+            let workspace_saved_model = crate::app_settings::load_app_settings()
+                .chat
+                .workspace_models
+                .get(&cwd_key)
+                .cloned();
+            if let Some((prov, mid)) = workspace_saved_model {
                 if let Some(found) = self
                     .visible_picker_models()
                     .into_iter()
@@ -5142,6 +5296,18 @@ impl AppState {
                 {
                     self.selected_model = Some(found);
                     restored_local_model = true;
+                }
+            }
+            if !restored_local_model {
+                if let Some((prov, mid)) = extracted_model {
+                    if let Some(found) = self
+                        .visible_picker_models()
+                        .into_iter()
+                        .find(|m| m.provider == prov && m.id == mid)
+                    {
+                        self.selected_model = Some(found);
+                        restored_local_model = true;
+                    }
                 }
             }
             if !restored_local_model {
@@ -5176,6 +5342,25 @@ impl AppState {
 
         if self.sidecar_connected {
             self.connect_session_sse(session_id.clone(), cx);
+            if !self.is_agent_running {
+                if let Some(next_model) = self.selected_model.clone() {
+                    let sync_client = self.client.clone();
+                    let sync_sid = session_id.clone();
+                    let sync_thinking = self.thinking_level;
+                    cx.spawn(async move |_, _| {
+                        if sync_client
+                            .set_session_model(&sync_sid, &next_model.provider, &next_model.id)
+                            .await
+                            .is_ok()
+                        {
+                            let _ = sync_client
+                                .set_thinking_level(&sync_sid, sync_thinking)
+                                .await;
+                        }
+                    })
+                    .detach();
+                }
+            }
         }
 
         let client = self.client.clone();
@@ -5304,7 +5489,12 @@ impl AppState {
                                 .any(|m| m.provider == *p && m.id == *id)
                         })
                         .unwrap_or(true);
-                    if restored_local_model {
+                    let prev_still_visible = prev_selected.as_ref().is_some_and(|local_m| {
+                        this.visible_picker_models()
+                            .iter()
+                            .any(|m| m.provider == local_m.provider && m.id == local_m.id)
+                    });
+                    if restored_local_model || prev_still_visible {
                         if let Some(ref local_m) = prev_selected {
                             this.selected_model = Some(local_m.clone());
                         }
@@ -5318,12 +5508,19 @@ impl AppState {
                         if let (Some(sid), Some(next_model)) =
                             (this.active_session_id.clone(), this.selected_model.clone())
                         {
-                            if this.sidecar_connected {
+                            if this.sidecar_connected && !this.is_agent_running {
                                 let client = this.client.clone();
+                                let sync_thinking = this.thinking_level;
                                 cx.spawn(async move |_, _| {
-                                    let _ = client
+                                    if client
                                         .set_session_model(&sid, &next_model.provider, &next_model.id)
-                                        .await;
+                                        .await
+                                        .is_ok()
+                                    {
+                                        let _ = client
+                                            .set_thinking_level(&sid, sync_thinking)
+                                            .await;
+                                    }
                                 })
                                 .detach();
                             }
@@ -6235,8 +6432,45 @@ impl AppState {
                         tool_count: None,
                         progress_text: task_desc,
                         session_id: resume_sid,
+                        source: None,
+                        log_path: None,
+                        output_tail: Vec::new(),
                         children: Vec::new(),
                     });
+                } else if let Some(ref a) = args {
+                    let is_bg = a.get("background").and_then(Value::as_bool).unwrap_or(false)
+                        || a.get("isDaemon").and_then(Value::as_bool).unwrap_or(false)
+                        || a.get("IsDaemon").and_then(Value::as_bool).unwrap_or(false);
+                    if is_bg {
+                        let lbl = a
+                            .get("toolSummary")
+                            .or_else(|| a.get("description"))
+                            .or_else(|| a.get("command"))
+                            .or_else(|| a.get("CommandLine"))
+                            .and_then(Value::as_str)
+                            .map(|s| s.chars().take(64).collect::<String>())
+                            .unwrap_or_else(|| tool_name.clone());
+                        self.background_task_runs.retain(|r| r.id != tool_call_id);
+                        self.background_task_runs.push(SubagentRunInfo {
+                            id: tool_call_id.clone(),
+                            kind: "background_task".to_string(),
+                            label: lbl,
+                            state: "running".to_string(),
+                            started_at: None,
+                            ended_at: None,
+                            model: None,
+                            thinking: None,
+                            current_tool: Some(tool_name.clone()),
+                            turn_count: None,
+                            tool_count: None,
+                            progress_text: None,
+                            session_id: None,
+                            source: Some("tool".to_string()),
+                            log_path: None,
+                            output_tail: Vec::new(),
+                            children: Vec::new(),
+                        });
+                    }
                 }
                 if let Some(last) = self.messages.last_mut() {
                     if !last.content.trim().is_empty() {
@@ -6383,6 +6617,142 @@ impl AppState {
                     run.state = if is_error { "failed" } else { "complete" }.to_string();
                     run.current_tool = None;
                 }
+                if let Some(bg) = self.background_task_runs.iter_mut().find(|r| r.id == tool_call_id) {
+                    bg.state = if is_error { "failed" } else { "complete" }.to_string();
+                    bg.current_tool = None;
+                    if let Some(out_txt) = result
+                        .as_ref()
+                        .map(|val| flatten_content_text(val.get("content")))
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        bg.output_tail = out_txt
+                            .lines()
+                            .map(String::from)
+                            .rev()
+                            .take(120)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
+                        if let Some(last_line) = bg.output_tail.last() {
+                            bg.progress_text = Some(last_line.chars().take(120).collect());
+                        }
+                    }
+                }
+                // Adapter for `pi-background` extension (`bg_run`, auto-backgrounded `bash`, `bg_kill`)
+                if !is_error && tool_name == "bg_run" {
+                    let out_txt = result
+                        .as_ref()
+                        .map(|val| flatten_content_text(val.get("content")))
+                        .unwrap_or_default();
+                    let job_id = details_val
+                        .and_then(|d| d.get("id").and_then(Value::as_str))
+                        .map(String::from)
+                        .or_else(|| {
+                            out_txt
+                                .strip_prefix("Started ")
+                                .and_then(|s| s.split(';').next())
+                                .map(|s| s.trim().to_string())
+                        });
+                    let log_path = details_val
+                        .and_then(|d| d.get("log").and_then(Value::as_str))
+                        .map(String::from)
+                        .or_else(|| {
+                            out_txt
+                                .split("log: ")
+                                .nth(1)
+                                .and_then(|s| s.split('.').next())
+                                .map(|s| s.trim().to_string())
+                        });
+                    if let Some(jid) = job_id.filter(|s| !s.is_empty()) {
+                        let cmd_summary = self
+                            .messages
+                            .last()
+                            .and_then(|m| m.tool_calls.iter().find(|t| t.id.as_ref() == tool_call_id))
+                            .and_then(|tc| {
+                                tc.arguments
+                                    .iter()
+                                    .find(|(k, _)| k.as_ref() == "command")
+                                    .map(|(_, v)| v.to_string())
+                            })
+                            .map(|c| c.chars().take(48).collect::<String>());
+                        let label = match cmd_summary {
+                            Some(ref c) if !c.is_empty() => format!("{jid} · {c}"),
+                            _ => jid.clone(),
+                        };
+                        self.background_task_runs.retain(|r| r.id != jid);
+                        self.background_task_runs.push(SubagentRunInfo {
+                            id: jid,
+                            kind: "background_task".to_string(),
+                            label,
+                            state: "running".to_string(),
+                            started_at: None,
+                            ended_at: None,
+                            model: None,
+                            thinking: None,
+                            current_tool: Some("bg_run".to_string()),
+                            turn_count: None,
+                            tool_count: None,
+                            progress_text: Some("Running in background…".to_string()),
+                            session_id: None,
+                            source: Some("pi-background".to_string()),
+                            log_path,
+                            output_tail: Vec::new(),
+                            children: Vec::new(),
+                        });
+                    }
+                } else if !is_error && tool_name == "bash" {
+                    let out_txt = result
+                        .as_ref()
+                        .map(|val| flatten_content_text(val.get("content")))
+                        .unwrap_or_default();
+                    if let Some(after) = out_txt.split("moved to the background as ").nth(1) {
+                        if let Some(jid) = after.split(['.', ' ', '\n']).next().filter(|s| !s.is_empty()) {
+                            let log_path = out_txt
+                                .lines()
+                                .rev()
+                                .find_map(|l| l.strip_prefix("log: "))
+                                .map(|s| s.trim().to_string());
+                            self.background_task_runs.retain(|r| r.id != jid);
+                            self.background_task_runs.push(SubagentRunInfo {
+                                id: jid.to_string(),
+                                kind: "background_task".to_string(),
+                                label: jid.to_string(),
+                                state: "running".to_string(),
+                                started_at: None,
+                                ended_at: None,
+                                model: None,
+                                thinking: None,
+                                current_tool: Some("bash".to_string()),
+                                turn_count: None,
+                                tool_count: None,
+                                progress_text: Some("Moved to background…".to_string()),
+                                session_id: None,
+                                source: Some("pi-background".to_string()),
+                                log_path,
+                                output_tail: Vec::new(),
+                                children: Vec::new(),
+                            });
+                        }
+                    }
+                } else if !is_error && tool_name == "bg_kill" {
+                    if let Some(target_id) = self
+                        .messages
+                        .last()
+                        .and_then(|m| m.tool_calls.iter().find(|t| t.id.as_ref() == tool_call_id))
+                        .and_then(|tc| {
+                            tc.arguments
+                                .iter()
+                                .find(|(k, _)| k.as_ref() == "id")
+                                .map(|(_, v)| v.to_string())
+                        })
+                    {
+                        if let Some(bg) = self.background_task_runs.iter_mut().find(|r| r.id == target_id) {
+                            bg.state = "stopped".to_string();
+                            bg.current_tool = None;
+                        }
+                    }
+                }
                 if let Some(last) = self.messages.last_mut() {
                     let extra_diff = if tool_name == "edit" {
                         build_diff_from_tool(&tool_name, None, details_val)
@@ -6459,6 +6829,18 @@ impl AppState {
                             self.subagent_runs.clear();
                         } else if let Some(runs) = parse_subagent_async_json_widget(&lines) {
                             self.subagent_runs = runs;
+                        }
+                        if self.focused_sub_run_id.is_some() {
+                            self.refresh_focused_sub_run_data(cx);
+                        }
+                    } else if key == "background-tasks" {
+                        if lines.is_empty() {
+                            self.background_task_runs.clear();
+                        } else if let Some(runs) = crate::client::session_controller::parse_background_tasks_widget(&lines) {
+                            self.background_task_runs = runs;
+                        }
+                        if self.focused_sub_run_id.is_some() {
+                            self.refresh_focused_sub_run_data(cx);
                         }
                     } else if key == "agy-link-state" {
                         self.agy_link_loading = false;
@@ -7897,6 +8279,7 @@ impl AppState {
         let tool_names = self.tool_preset.tool_names();
         let provider = self.selected_model.as_ref().map(|m| m.provider.clone());
         let model_id = self.selected_model.as_ref().map(|m| m.id.clone());
+        let thinking_lvl_enum = self.thinking_level;
         let thinking_lvl = Some(self.thinking_level.as_str().to_string());
         let entity = cx.entity().clone();
 
@@ -7918,16 +8301,43 @@ impl AppState {
         cx.spawn(async move |_, cx| {
             let result = match active_session {
                 Some(ref sid) => {
-                    if let (Some(p), Some(m)) = (provider.as_deref(), model_id.as_deref()) {
-                        let _ = client.set_session_model(sid, p, m).await;
-                    }
-                    let mut cmd = json!({ "type": "prompt", "message": text });
-                    if !images_payload.is_empty() {
-                        if let Some(obj) = cmd.as_object_mut() {
-                            obj.insert("images".to_string(), json!(images_payload));
+                    let model_sync = if let (Some(p), Some(m)) =
+                        (provider.as_deref(), model_id.as_deref())
+                    {
+                        match client.set_session_model(sid, p, m).await {
+                            Ok(_) => {
+                                let _ = client.set_thinking_level(sid, thinking_lvl_enum).await;
+                                Ok(())
+                            }
+                            Err(_) => {
+                                smol::Timer::after(std::time::Duration::from_millis(150)).await;
+                                match client.set_session_model(sid, p, m).await {
+                                    Ok(_) => {
+                                        let _ =
+                                            client.set_thinking_level(sid, thinking_lvl_enum).await;
+                                        Ok(())
+                                    }
+                                    Err(err) => Err(anyhow::anyhow!(
+                                        "Failed to switch session model to {p}/{m}: {err}"
+                                    )),
+                                }
+                            }
                         }
+                    } else {
+                        Ok(())
+                    };
+                    match model_sync {
+                        Ok(()) => {
+                            let mut cmd = json!({ "type": "prompt", "message": text });
+                            if !images_payload.is_empty() {
+                                if let Some(obj) = cmd.as_object_mut() {
+                                    obj.insert("images".to_string(), json!(images_payload));
+                                }
+                            }
+                            client.send_agent_command(sid, cmd).await
+                        }
+                        Err(err) => Err(err),
                     }
-                    client.send_agent_command(sid, cmd).await
                 }
                 None => {
                     let effective_cwd = if is_temp_chat {

@@ -106,6 +106,26 @@ PiCrust 是专为 **Pi 编码智能体生态**（`@earendil-works/pi-coding-agen
 - **异步任务协同追踪**：跟踪子代理在后台或隔离 Git Worktree 中的异步派发任务、并行扇出审查（Review Fanout）及督导交互通道。
 - **自定义角色配置**：自动扫描并加载用户在 `~/.pi/agent/agents/*.md` 或项目级 `.pi/agents/*.md` 中定义的定制 Subagent Profile 角色配置。
 
+### 后台命令与长任务管理 (`pi-background`)
+- **扩展依赖（可选，推荐）**：深度适配 `pi-background`（`pi install npm:pi-background`），同时支持任意通过 `background-tasks` widget 上报的扩展。
+- **非阻塞后台执行**：允许所有模型通过 `bg_run`、`bg_status`、`bg_kill`（以及超时自动转后台的 `bash`）在后台运行构建、测试、下载与开发服务，不阻塞主对话轮次。
+- **左上角实时流式视图**：所有后台任务统一归口至左上角 **子代理** 下拉菜单并带 **`[后台任务]`** 前缀；点击即可在当前对话窗口切换至实时流式日志视图，点击左上角 **返回主对话** 箭头即可秒回。
+
+### 结构化问卷交互 (`ask_user_question`)
+- **扩展依赖（可选）**：适配 `@juicesharp/rpiv-ask-user-question`，在对话区原生渲染单选/多选卡片与侧边预览。
+
+### Antigravity 账号池集成 (`pi-agy-link`)
+- **扩展依赖（可选）**：检测到安装 `pi-agy-link` 后自动启用状态栏配额徽章与 **Antigravity** 设置页（账号池管理、Plan Tier 固定、配额预热计划、Orchestrator 覆盖与 ACP 缓存指标）；未安装时自动隐藏所有 AGY 相关入口。
+
+### 推荐扩展一键安装
+以下扩展均为可选，可随时通过 `pi` CLI 或客户端 **设置 → 插件** 安装：
+```bash
+pi install npm:pi-subagents
+pi install npm:pi-background
+pi install npm:@juicesharp/rpiv-todo
+pi install npm:@juicesharp/rpiv-ask-user-question
+```
+
 ---
 
 ## 编译与快速上手

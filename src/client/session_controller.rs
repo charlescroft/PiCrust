@@ -1714,6 +1714,22 @@ pub fn parse_subagent_async_json_widget(lines: &[String]) -> Option<Vec<Subagent
                 });
             }
         }
+        let source = r.get("source").and_then(Value::as_str).map(String::from);
+        let log_path = r
+            .get("logPath")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from);
+        let output_tail = r
+            .get("outputTail")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
         out.push(SubagentRunInfo {
             id,
             kind,
@@ -1728,7 +1744,99 @@ pub fn parse_subagent_async_json_widget(lines: &[String]) -> Option<Vec<Subagent
             tool_count,
             progress_text,
             session_id: run_session_id,
+            source,
+            log_path,
+            output_tail,
             children,
+        });
+    }
+    Some(out)
+}
+
+/// Parses a `background-tasks` extension widget payload (JSON array or `{ tasks | runs: [...] }`)
+/// into unified `SubagentRunInfo` entries with `kind = "background_task"` by default.
+pub fn parse_background_tasks_widget(lines: &[String]) -> Option<Vec<SubagentRunInfo>> {
+    let joined = lines.join("\n");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        return Some(Vec::new());
+    }
+    let val: Value = serde_json::from_str(trimmed).ok()?;
+    let arr = val
+        .as_array()
+        .or_else(|| val.get("tasks").and_then(Value::as_array))
+        .or_else(|| val.get("runs").and_then(Value::as_array))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("bg-task")
+            .to_string();
+        let kind = item
+            .get("kind")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("background_task")
+            .to_string();
+        let label = item
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&id)
+            .to_string();
+        let state = item
+            .get("state")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("running")
+            .to_string();
+        let started_at = item.get("startedAt").and_then(Value::as_u64);
+        let ended_at = item.get("endedAt").and_then(Value::as_u64);
+        let progress_text = item
+            .get("progressText")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from);
+        let source = item
+            .get("source")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from);
+        let log_path = item
+            .get("logPath")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from);
+        let output_tail = item
+            .get("outputTail")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default();
+        let session_id = item
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from);
+        out.push(SubagentRunInfo {
+            id,
+            kind,
+            label,
+            state,
+            started_at,
+            ended_at,
+            model: None,
+            thinking: None,
+            current_tool: None,
+            turn_count: None,
+            tool_count: None,
+            progress_text,
+            session_id,
+            source,
+            log_path,
+            output_tail,
+            children: Vec::new(),
         });
     }
     Some(out)
@@ -2641,6 +2749,23 @@ mod tests {
         assert!(parsed[1].content.contains("Part 2: references stay valid."));
         assert_eq!(parsed[1].stop_reason.as_deref(), Some("stop"));
         assert!(parsed[1].error_message.is_none());
+    }
+
+    #[test]
+    fn parses_background_tasks_widget_json() {
+        let lines = vec![
+            r#"[{"id":"task-1","kind":"background_task","label":"task-1","state":"running","source":"agy","progressText":"building...","outputTail":["line 1","line 2"],"logPath":"/tmp/task-1.log","startedAt":1700000000}]"#.to_string(),
+        ];
+        let parsed = parse_background_tasks_widget(&lines).expect("should parse json array");
+        assert_eq!(parsed.len(), 1);
+        let run = &parsed[0];
+        assert_eq!(run.id, "task-1");
+        assert!(run.is_background_task());
+        assert_eq!(run.state, "running");
+        assert_eq!(run.source.as_deref(), Some("agy"));
+        assert_eq!(run.progress_text.as_deref(), Some("building..."));
+        assert_eq!(run.log_path.as_deref(), Some("/tmp/task-1.log"));
+        assert_eq!(run.output_tail, vec!["line 1", "line 2"]);
     }
 }
 
