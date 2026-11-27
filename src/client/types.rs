@@ -1054,6 +1054,8 @@ pub struct AgyLinkSettings {
     pub model_api_max_retries: u32,
     #[serde(default = "default_agy_slim_prompt_rules")]
     pub slim_prompt_rules: bool,
+    #[serde(default = "default_agy_prompt_max_bytes")]
+    pub prompt_max_bytes: u64,
     #[serde(default = "default_agy_transport")]
     pub transport: String,
     #[serde(default)]
@@ -1118,6 +1120,10 @@ fn default_agy_slim_prompt_rules() -> bool {
     true
 }
 
+fn default_agy_prompt_max_bytes() -> u64 {
+    150_000
+}
+
 fn default_agy_transport() -> String {
     "acp".to_string()
 }
@@ -1159,6 +1165,7 @@ impl Default for AgyLinkSettings {
             effective_compact_limit: default_agy_effective_compact_limit(),
             model_api_max_retries: default_agy_model_api_max_retries(),
             slim_prompt_rules: default_agy_slim_prompt_rules(),
+            prompt_max_bytes: default_agy_prompt_max_bytes(),
             transport: default_agy_transport(),
             acp_active_processes: 0,
             acp_sessions: 0,

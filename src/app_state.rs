@@ -5822,70 +5822,75 @@ impl AppState {
                     let body = crate::i18n::tr(self.locale, "notify.taskCompleteBody");
                     self.trigger_desktop_notification(title, body);
                 }
-                if let Some(sid) = self.active_session_id.clone() {
-                    let client = self.client.clone();
-                    let entity = cx.entity().clone();
-                    cx.spawn(async move |_, cx| {
-                        let session_res = client.get_session(&sid).await;
-                        let state_res = client.get_agent_state(&sid).await.ok();
-                        let _ = entity.update(cx, |this, cx| {
-                            if this.active_session_id.as_deref() == Some(sid.as_str()) {
-                                if let Some(st_val) = state_res {
-                                    this.apply_agent_state_response(&st_val);
-                                }
-                                if let Ok(payload) = session_res {
-                                    if let Some(path_str) = this
-                                        .sessions
-                                        .iter()
-                                        .find(|s| s.id == sid)
-                                        .and_then(|s| s.path.as_deref())
-                                    {
-                                        let p = PathBuf::from(path_str);
-                                        let (_, siblings) = parse_session_jsonl_with_siblings(
-                                            &p,
-                                            None,
+                let has_queued_outbox = !self.outbox.is_empty();
+                if !has_queued_outbox {
+                    if let Some(sid) = self.active_session_id.clone() {
+                        let client = self.client.clone();
+                        let entity = cx.entity().clone();
+                        cx.spawn(async move |_, cx| {
+                            let session_res = client.get_session(&sid).await;
+                            let state_res = client.get_agent_state(&sid).await.ok();
+                            let _ = entity.update(cx, |this, cx| {
+                                if this.active_session_id.as_deref() == Some(sid.as_str())
+                                    && !this.is_agent_running
+                                {
+                                    if let Some(st_val) = state_res {
+                                        this.apply_agent_state_response(&st_val);
+                                    }
+                                    if let Ok(payload) = session_res {
+                                        if let Some(path_str) = this
+                                            .sessions
+                                            .iter()
+                                            .find(|s| s.id == sid)
+                                            .and_then(|s| s.path.as_deref())
+                                        {
+                                            let p = PathBuf::from(path_str);
+                                            let (_, siblings) = parse_session_jsonl_with_siblings(
+                                                &p,
+                                                None,
+                                                &mut this.controller.next_local_msg_id,
+                                            );
+                                            this.branch_siblings = siblings;
+                                        }
+                                        let parsed = parse_session_messages(
+                                            &payload,
                                             &mut this.controller.next_local_msg_id,
                                         );
-                                        this.branch_siblings = siblings;
-                                    }
-                                    let parsed = parse_session_messages(
-                                        &payload,
-                                        &mut this.controller.next_local_msg_id,
-                                    );
-                                    if !parsed.is_empty() {
-                                        let mut merged = parsed;
-                                        for (idx, m) in merged.iter_mut().enumerate() {
-                                            if let Some(prev) = this.messages.get(idx) {
-                                                if prev.role == m.role
-                                                    && (prev.entry_id == m.entry_id
-                                                        || prev.content == m.content)
-                                                {
-                                                    m.id = prev.id;
+                                        if !parsed.is_empty() {
+                                            let mut merged = parsed;
+                                            for (idx, m) in merged.iter_mut().enumerate() {
+                                                if let Some(prev) = this.messages.get(idx) {
+                                                    if prev.role == m.role
+                                                        && (prev.entry_id == m.entry_id
+                                                            || prev.content == m.content)
+                                                    {
+                                                        m.id = prev.id;
+                                                    }
                                                 }
                                             }
+                                            this.messages = merged;
                                         }
-                                        this.messages = merged;
-                                    }
-                                    if let Some(stats_obj) = payload.get("stats") {
-                                        if let Some(tok) = stats_obj.get("tokens") {
-                                            this.stats.input_tokens = tok.get("input").and_then(Value::as_u64).unwrap_or(0);
-                                            this.stats.output_tokens = tok.get("output").and_then(Value::as_u64).unwrap_or(0);
-                                            this.stats.cache_read_tokens = tok.get("cacheRead").and_then(Value::as_u64).unwrap_or(0);
-                                            this.stats.cache_write_tokens = tok.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0);
+                                        if let Some(stats_obj) = payload.get("stats") {
+                                            if let Some(tok) = stats_obj.get("tokens") {
+                                                this.stats.input_tokens = tok.get("input").and_then(Value::as_u64).unwrap_or(0);
+                                                this.stats.output_tokens = tok.get("output").and_then(Value::as_u64).unwrap_or(0);
+                                                this.stats.cache_read_tokens = tok.get("cacheRead").and_then(Value::as_u64).unwrap_or(0);
+                                                this.stats.cache_write_tokens = tok.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0);
+                                            }
+                                            if let Some(cost) = stats_obj.get("cost").and_then(Value::as_f64) {
+                                                this.stats.cost_usd = cost;
+                                            }
                                         }
-                                        if let Some(cost) = stats_obj.get("cost").and_then(Value::as_f64) {
-                                            this.stats.cost_usd = cost;
+                                        if let Some(ctx_tok) = compute_context_tokens_from_payload(&payload) {
+                                            this.apply_context_tokens(ctx_tok);
                                         }
-                                    }
-                                    if let Some(ctx_tok) = compute_context_tokens_from_payload(&payload) {
-                                        this.apply_context_tokens(ctx_tok);
                                     }
                                 }
-                            }
-                            cx.notify();
-                        });
-                    })
-                    .detach();
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    }
                 }
                 self.flush_next_outbox(cx);
             }

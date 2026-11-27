@@ -2568,6 +2568,49 @@ pub fn antigravity_setting_page(app_state: Entity<AppState>, locale: AppLocale, 
             )
             .description("Override agy's internal 256K auto-compaction budget via AGY_CLI_AUTO_COMPACT_OVERRIDE (also updates Pi's reported context window)."),
         )
+        .item({
+            let app_pmb_r = app_state.clone();
+            let app_pmb_w = app_state.clone();
+            let pmb_options = vec![
+                (SharedString::from("default"), SharedString::from("Default (150 KB)")),
+                (SharedString::from("300k"), SharedString::from("300 KB")),
+                (SharedString::from("512k"), SharedString::from("512 KB")),
+                (SharedString::from("1m"), SharedString::from("1 MB")),
+                (SharedString::from("2m"), SharedString::from("2 MB")),
+                (SharedString::from("0"), SharedString::from("Unlimited (0)")),
+            ];
+            SettingItem::new(
+                "Prompt Max Bytes",
+                SettingField::dropdown(
+                    pmb_options,
+                    move |cx: &App| {
+                        let bytes = app_pmb_r
+                            .read(cx)
+                            .agy_link_state
+                            .as_ref()
+                            .map(|s| s.settings.prompt_max_bytes)
+                            .unwrap_or(150_000);
+                        let key = match bytes {
+                            0 => "0",
+                            150_000 => "default",
+                            300_000 | 307_200 => "300k",
+                            512_000 | 524_288 => "512k",
+                            1_000_000 | 1_048_576 => "1m",
+                            2_000_000 | 2_097_152 => "2m",
+                            _ => "default",
+                        };
+                        SharedString::from(key)
+                    },
+                    move |val: SharedString, cx: &mut App| {
+                        app_pmb_w.update(cx, |s, cx| {
+                            s.send_agy_command(format!("/agy prompt-max-bytes {val}"), cx);
+                        });
+                    },
+                )
+                .w(SETTINGS_DROPDOWN_W),
+            )
+            .description("Maximum UTF-8 byte budget for agy prompts before trimming/spilling context (/agy prompt-max-bytes; 0 = unlimited).")
+        })
         .item(
             SettingItem::new(
                 "Model API Max Retries",

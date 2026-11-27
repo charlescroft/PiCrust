@@ -331,6 +331,24 @@ impl QuestionnaireView {
         let app_cancel = self.app_state.clone();
         let req_id = self.request.request_id.clone();
 
+        let top_title = {
+            let req_title = self.request.title.as_deref().map(str::trim).unwrap_or("");
+            let first_q_text = self
+                .questions
+                .first()
+                .map(|q| q.question.trim())
+                .unwrap_or("");
+            if req_title.is_empty() || req_title == first_q_text {
+                if self.questions.len() > 1 {
+                    format!("Question 1 / {}", self.questions.len())
+                } else {
+                    "Question".to_string()
+                }
+            } else {
+                req_title.to_string()
+            }
+        };
+
         v_flex()
             .w_full()
             .max_w(px(chat_width))
@@ -343,18 +361,19 @@ impl QuestionnaireView {
             .bg(cx.theme().popover)
             .child(
                 h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
                     .justify_between()
                     .items_center()
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .text_sm()
                             .font_semibold()
-                            .child(
-                                self.request
-                                    .title
-                                    .clone()
-                                    .unwrap_or_else(|| "Extension Prompt".to_string()),
-                            ),
+                            .child(top_title),
                     )
                     .child(
                         Button::new("dismiss-questionnaire")
