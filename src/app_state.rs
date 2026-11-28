@@ -5383,13 +5383,9 @@ impl AppState {
             self.sync_tool_subagent_runs_from_messages();
 
             let (extracted_model, extracted_thinking) = extract_model_and_thinking_from_jsonl(p);
-            let cwd_key = self.active_cwd.to_string_lossy().into_owned();
-            let workspace_saved_model = crate::app_settings::load_app_settings()
-                .chat
-                .workspace_models
-                .get(&cwd_key)
-                .cloned();
-            if let Some((prov, mid)) = workspace_saved_model {
+            // Prefer this session's own recorded model first so switching models in
+            // Dialogue A never overwrites Dialogue B in the same workspace.
+            if let Some((prov, mid)) = extracted_model {
                 if let Some(found) = self
                     .visible_picker_models()
                     .into_iter()
@@ -5400,24 +5396,10 @@ impl AppState {
                 }
             }
             if !restored_local_model {
-                if let Some((prov, mid)) = extracted_model {
-                    if let Some(found) = self
-                        .visible_picker_models()
-                        .into_iter()
-                        .find(|m| m.provider == prov && m.id == mid)
-                    {
-                        self.selected_model = Some(found);
-                        restored_local_model = true;
-                    }
-                }
-            }
-            if !restored_local_model {
                 let cwd = self.active_cwd.clone();
                 restored_local_model = self.restore_model_for_workspace(&cwd, cx);
             }
-            if let Some(tl) = extracted_thinking {
-                self.thinking_level = tl;
-            }
+            self.thinking_level = extracted_thinking.unwrap_or(ThinkingLevel::Medium);
             self.clamp_thinking_level_to_model();
             self.ensure_selected_model_visible(cx);
             let resolved_ctx_win = self
@@ -5451,25 +5433,6 @@ impl AppState {
 
         if self.sidecar_connected {
             self.connect_session_sse(session_id.clone(), cx);
-            if !self.is_agent_running {
-                if let Some(next_model) = self.selected_model.clone() {
-                    let sync_client = self.client.clone();
-                    let sync_sid = session_id.clone();
-                    let sync_thinking = self.thinking_level;
-                    cx.spawn(async move |_, _| {
-                        if sync_client
-                            .set_session_model(&sync_sid, &next_model.provider, &next_model.id)
-                            .await
-                            .is_ok()
-                        {
-                            let _ = sync_client
-                                .set_thinking_level(&sync_sid, sync_thinking)
-                                .await;
-                        }
-                    })
-                    .detach();
-                }
-            }
         }
 
         self.session_state_loading = self.sidecar_connected;
@@ -5590,12 +5553,7 @@ impl AppState {
                                 .any(|m| m.provider == *p && m.id == *id)
                         })
                         .unwrap_or(true);
-                    let prev_still_visible = prev_selected.as_ref().is_some_and(|local_m| {
-                        this.visible_picker_models()
-                            .iter()
-                            .any(|m| m.provider == local_m.provider && m.id == local_m.id)
-                    });
-                    if restored_local_model || prev_still_visible {
+                    if restored_local_model {
                         if let Some(ref local_m) = prev_selected {
                             this.selected_model = Some(local_m.clone());
                             this.sync_stats_context_window();
@@ -8470,6 +8428,41 @@ impl AppState {
                                 .and_then(Value::as_str)
                             {
                                 this.active_session_id = Some(new_id.to_string());
+                                if !this.sessions.iter().any(|s| s.id == new_id) {
+                                    let cwd_str = this.active_cwd.to_string_lossy().into_owned();
+                                    let proj_name = this
+                                        .active_cwd
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(String::from);
+                                    let first_msg = text.trim();
+                                    let title_preview = if first_msg.is_empty() {
+                                        None
+                                    } else {
+                                        Some(first_msg.chars().take(80).collect::<String>())
+                                    };
+                                    this.sessions.insert(
+                                        0,
+                                        SessionSummary {
+                                            id: new_id.to_string(),
+                                            name: title_preview.clone(),
+                                            first_message: title_preview,
+                                            cwd: Some(cwd_str),
+                                            project_name: proj_name,
+                                            updated_at: Some(chrono::Utc::now().to_rfc3339()),
+                                            created_at: Some(chrono::Utc::now().to_rfc3339()),
+                                            parent_session: None,
+                                            message_count: this.messages.len(),
+                                            is_running: true,
+                                            awaiting_input: false,
+                                            pinned: false,
+                                            archived: false,
+                                            workspace_kind: Some(this.active_workspace_kind),
+                                            relation: None,
+                                            path: None,
+                                        },
+                                    );
+                                }
                                 if is_temp_chat {
                                     this.temp_chat_ids.insert(new_id.to_string());
                                     crate::client::local_store::register_temp_chat(

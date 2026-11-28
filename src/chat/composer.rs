@@ -1008,12 +1008,13 @@ impl ComposerView {
             });
         } else if selected_key != self.synced_selected_key {
             self.synced_selected_key = selected_key.clone();
+            let delegate = ModelGroupDelegate::from_models(&models_snapshot);
+            let sel_ix = selected_key.as_ref().and_then(|(p, id)| {
+                let k = SharedString::from(format!("{p}:{id}"));
+                delegate.position(&k)
+            });
             self.model_select.update(cx, |sel, cx| {
-                if let Some((p, id)) = selected_key {
-                    sel.set_selected_value(&SharedString::from(format!("{p}:{id}")), window, cx);
-                } else {
-                    sel.set_selected_index(None, window, cx);
-                }
+                sel.set_selected_index(sel_ix, window, cx);
             });
         }
 
